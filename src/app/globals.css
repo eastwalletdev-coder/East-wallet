@@ -1,0 +1,133 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Space+Grotesk:wght@300;400;500;600;700&family=Michroma&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 240 10% 3.9%;
+    --foreground: 210 20% 98%;
+    --card: 240 10% 6%;
+    --card-foreground: 210 20% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 210 20% 98%;
+    --primary: 263.4 70% 50.4%; /* Neon Purple */
+    --primary-foreground: 210 20% 98%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 210 20% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 199 89% 48%; /* Cyber Blue */
+    --accent-foreground: 210 20% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 240 3.7% 15.9%;
+    --input: 240 3.7% 15.9%;
+    --ring: 263.4 70% 50.4%;
+    --radius: 1rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply bg-background text-foreground selection:bg-primary/30;
+    touch-action: manipulation;
+  }
+}
+
+.glass {
+  @apply bg-card/60 backdrop-blur-md border border-border/50;
+}
+
+@keyframes shimmer-shine {
+  0% { background-position: 200% 0; }
+  100% { background-position: 0% 0; }
+}
+
+@keyframes rotate-beam-old {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes globe-spin {
+  from { transform: rotateY(0deg); }
+  to { transform: rotateY(360deg); }
+}
+
+.animate-shimmer-shine {
+  animation: shimmer-shine 4.3s linear infinite;
+}
+
+.animate-rotate-beam {
+  animation: rotate-beam 12s linear infinite;
+}
+
+.animate-globe-spin {
+  animation: globe-spin 120s linear infinite;
+}
+
+/* Hide scrollbars for a cleaner app experience */
+::-webkit-scrollbar {
+  display: none;
+}
+
+/* Glass card utility */
+.glass-card {
+  @apply bg-card/40 backdrop-blur-md border border-white/5;
+}
+
+/* Premium gradient text */
+.premium-gradient-text {
+  @apply bg-gradient-to-br from-white via-white/90 to-primary bg-clip-text text-transparent;
+}
+
+/* Fade in animation */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out forwards;
+}
+
+/* Full-width card layout — cards stretch to near edges like Grass/Bitget */
+.card-full {
+  @apply w-full rounded-2xl;
+}
+
+/* Reduce default card inner padding on mobile */
+@media (max-width: 420px) {
+  .card-content-compact {
+    padding: 12px !important;
+  }
+}
+
+/* Rotate-beam — orbits around the globe's rim like a radar sweep */
+@keyframes rotate-beam {
+  0%   { transform: rotate(0deg); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: rotate(360deg); opacity: 0; }
+}
+
+/* ── Pure App Feel — disable browser context menu & text selection ── */
+* {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Re-enable selection only on input fields */
+input, textarea, [contenteditable] {
+  -webkit-user-select: text;
+  -moz-user-select: text;
+  user-select: text;
+}

@@ -215,15 +215,11 @@ export default function Home() {
 
           {/* Globe grid — no background card */}
           <div className="relative w-[360px] h-[360px] flex items-center justify-center" style={{ perspective: "800px", transformStyle: "preserve-3d" }}>
-            {/* Orbiting beam — sweeps around the globe's edge (2D rotate), not through the middle */}
+            {/* Orbiting beam — identical pattern to SplashScreen's globe beam */}
             <div
               className="absolute inset-0 z-40 animate-rotate-beam pointer-events-none"
-              style={{ transformOrigin: "50% 50%" }}
             >
-              {/* Bright tip sitting at the circle's rim */}
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[4px] h-[36px] rounded-full bg-gradient-to-b from-white via-white/60 to-transparent blur-[1px]" />
-              {/* Soft glow trailing the tip */}
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[24px] h-[24px] -translate-y-1/3 rounded-full bg-white/30 blur-[10px]" />
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[360px] h-[2px] bg-gradient-to-r from-transparent via-white/100 to-transparent blur-[2px]" />
             </div>
 
             {/* Vertical grid lines (spinning) */}

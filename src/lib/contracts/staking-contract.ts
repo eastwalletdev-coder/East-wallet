@@ -89,7 +89,9 @@ export async function execute(
 
     await identityClient.query(`
       UPDATE identity.users SET balance = balance - $1, staked_amount = staked_amount + $1,
-        eastpass_tier = $2, stake_locked_until = $3, last_active = $4, updated_at = NOW()
+        eastpass_tier = $2, stake_locked_until = $3, last_active = $4,
+        last_staking_claim_at = CASE WHEN last_staking_claim_at = 0 THEN $4 ELSE last_staking_claim_at END,
+        updated_at = NOW()
       WHERE telegram_id = $5
     `, [amount, newTier.level, lockedUntil, timestamp, tgId]);
 
@@ -120,8 +122,9 @@ export async function execute(
     const staked = Number(user.staked_amount);
     if (staked <= 0) return { success: false, error: 'NOTHING_STAKED' };
 
-    // Simple pro-rata reward since last claim (or since stake began), capped daily.
-    const lastClaim = Number(user.last_active || Date.now());
+    // Dedicated timestamp — NOT last_active, which mining claims and
+    // stake() itself also touch and would silently reset this clock.
+    const lastClaim = Number(user.last_staking_claim_at || 0) || Number(user.created_at ? new Date(user.created_at).getTime() : Date.now());
     const elapsedDays = Math.min(30, Math.max(0, (Date.now() - lastClaim) / 86_400_000));
     const reward = Math.round(staked * (STAKING_APY / 365) * elapsedDays * 100) / 100;
     if (reward <= 0) return { success: false, error: 'NOTHING_TO_CLAIM_YET' };
@@ -136,7 +139,7 @@ export async function execute(
     });
 
     await identityClient.query(`
-      UPDATE identity.users SET balance = balance + $1, last_active = $2, updated_at = NOW()
+      UPDATE identity.users SET balance = balance + $1, last_active = $2, last_staking_claim_at = $2, updated_at = NOW()
       WHERE telegram_id = $3
     `, [reward, Date.now(), tgId]);
 

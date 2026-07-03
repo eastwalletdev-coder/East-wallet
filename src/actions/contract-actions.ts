@@ -48,12 +48,21 @@ export async function claimVestedContract(tgId: string, initData?: string) {
 
 // ─── Mining ────────────────────────────────────────────────────────
 export async function claimMiningRewardContract(tgId: string, initData?: string) {
+  // Fast pre-check (Redis) — pure UX, saves a wasted round trip for an
+  // obviously-too-early claim. NOT the source of truth: see mining-contract.ts,
+  // the DB-side check inside the row-locked transaction is what's authoritative.
   const cooldown = await checkClaimCooldown(tgId);
   if (!cooldown.allowed) return { success: false, error: 'COOLDOWN_ACTIVE', remainingSeconds: cooldown.remainingSeconds };
 
   const res = await callContract({
     tgId, initData, contractAddress: CONTRACTS.MINING, functionName: 'claimMiningReward', params: {},
   });
+
+  if (!res.success && res.error?.startsWith('COOLDOWN_ACTIVE:')) {
+    const remainingSeconds = Number(res.error.split(':')[1]) || 0;
+    return { success: false, error: 'COOLDOWN_ACTIVE', remainingSeconds };
+  }
+
   if (res.success) {
     await setClaimCooldown(tgId);
     await invalidateCachedUser(tgId);

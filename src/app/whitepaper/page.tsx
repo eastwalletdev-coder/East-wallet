@@ -77,14 +77,17 @@ export default function WhitepaperPage() {
       </Section>
 
       <Section title="2. Hybrid Architecture">
-        <p className="text-white font-bold mb-1">Identity Layer (L1) — NeonDB A</p>
+        <p className="text-white font-bold mb-1">Identity Layer (L1) — Relational Node/DB A</p>
         <p>Handles user registry, active balances, Telegram ID to wallet address mapping, validator management, cold storage archives, and referral tracking. Acts as the primary validation gateway.</p>
         <div className="my-2 border-t border-white/5" />
-        <p className="text-white font-bold mb-1">Ledger Layer (L2) — NeonDB B</p>
+        <p className="text-white font-bold mb-1">Ledger Layer (L2) — Relational Node/DB B</p>
         <p>Stores transaction proof blocks using SHA-256 chaining. Only stores active data (last 30 days) before blocks are atomically migrated to Cold Storage in L1. Supply bucket enforcement ensures tokenomics caps are never exceeded.</p>
         <div className="my-2 border-t border-white/5" />
-        <p className="text-white font-bold mb-1">Cache Layer — Upstash Redis</p>
-        <p>Handles 24-hour claim rate limiting, network status cache, and top-10 validator snapshots. Falls back gracefully to NeonDB if Redis is unavailable.</p>
+        <p className="text-white font-bold mb-1">Cache Layer — In-Memory Cache Node</p>
+        <p>Handles 24-hour claim rate limiting, network status cache, and top-10 validator snapshots. Falls back gracefully to the primary Node/DB if the cache layer is unavailable.</p>
+        <div className="my-2 border-t border-white/5" />
+        <p className="text-white font-bold mb-1">Relay Layer — Light Node Hub</p>
+        <p>A lightweight relay process forwards newly sealed block headers from the validator layer to all connected Light Nodes in real time, and carries heartbeat/participation signals back. It holds no permanent state and is not part of consensus.</p>
       </Section>
 
       <Section title="3. Rolling Archive & Pruning">
@@ -145,6 +148,32 @@ export default function WhitepaperPage() {
           <Row label="Trigger" value="4 claims by referred user" />
           <Row label="Lifetime cap" value="5,000 EAST" />
           <Row label="Registration" value="Auto via Telegram deep link" />
+        </div>
+      </Section>
+
+      <Section title="9. Roadmap">
+        <p className="text-white/50 text-[10px] uppercase font-bold mb-1">✓ Achieved</p>
+        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mb-3">
+          <p className="text-white/70 text-sm">→ Hybrid dual-layer ledger (SHA-256 chaining, Anchor Protocol)</p>
+          <p className="text-white/70 text-sm">→ Proof of Contribution consensus (PoS + PoA + PoR)</p>
+          <p className="text-white/70 text-sm">→ Native custodial wallet, deterministic from Telegram ID</p>
+          <p className="text-white/70 text-sm">→ Smart-contract execution layer for Mining, Staking, Vesting — ABI whitelist, nonce protection, gas metering, signature verification</p>
+          <p className="text-white/70 text-sm">→ EastPass tiers, staking-boosted mining, referral protocol</p>
+          <p className="text-white/70 text-sm">→ Explorer with cross-layer search (block, tx, address, EAST ID)</p>
+          <p className="text-white/70 text-sm">→ Fault recovery — validator governance voting for network incidents</p>
+          <p className="text-white/70 text-sm">→ Light Node network — real-time header relay, client-side header verification, participation tracking</p>
+        </div>
+
+        <p className="text-white/50 text-[10px] uppercase font-bold mb-1">⚙ In Progress</p>
+        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mb-3">
+          <p className="text-white/70 text-sm">→ Light Node → Validator feedback loop: participation quorum contributing to block finality, not just passive observation</p>
+          <p className="text-white/70 text-sm">→ Public RPC layer (balance/block/transaction queries) for external tooling</p>
+          <p className="text-white/70 text-sm">→ External EVM wallet linking (bring-your-own-wallet, alongside the native custodial wallet)</p>
+        </div>
+
+        <p className="text-white/50 text-[10px] uppercase font-bold mb-1">◇ Planned — Q4</p>
+        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5">
+          <p className="text-white/70 text-sm">→ P2P Marketplace — peer-to-peer EAST trading with order book and escrowed settlement, natively inside the app</p>
         </div>
       </Section>
 

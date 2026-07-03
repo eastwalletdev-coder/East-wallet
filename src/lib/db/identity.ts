@@ -216,6 +216,38 @@ export async function migrateIdentityV6() {
 }
 
 /**
+ * Migration v7: authoritative, race-proof mining cooldown + a claim
+ * timestamp for staking rewards that isn't shared with anything else.
+ *
+ * Two separate bugs, same root cause (reusing a general-purpose field
+ * as a specific authoritative check):
+ *  - Redis (checkClaimCooldown) was the ONLY thing enforcing the 24h
+ *    mining claim limit — a check-then-act gap between the Redis check
+ *    and the actual mint, plus Redis failing OPEN if misconfigured,
+ *    meant a user could double-claim by firing concurrent requests.
+ *    `last_mining_claim_at` is checked + updated inside the same
+ *    row-locked (FOR UPDATE) DB transaction as the mint, so it can't
+ *    be raced — Redis stays only as a fast pre-check for UX.
+ *  - claimStakingReward used `last_active` as its "time since last
+ *    claim" reference — but `last_active` is also bumped by mining
+ *    claims and by stake() itself, so any mining claim silently reset
+ *    the staking-reward clock, systematically underpaying active
+ *    miners. `last_staking_claim_at` is dedicated to this one purpose.
+ */
+export async function migrateIdentityV7() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS last_mining_claim_at BIGINT NOT NULL DEFAULT 0;`);
+    await client.query(`ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS last_staking_claim_at BIGINT NOT NULL DEFAULT 0;`);
+    console.log('[EASTCHAIN] Identity schema migration v7 completed (last_mining_claim_at, last_staking_claim_at columns)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v7 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Backfill public_key for every existing user that doesn't have one yet
  * (old users created before the keypair system existed). Also usable to
  * (re)generate a keypair for a single user by id.

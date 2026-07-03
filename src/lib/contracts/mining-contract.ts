@@ -12,6 +12,7 @@ import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import crypto from 'crypto';
 
 const SYSTEM_ADDRESS = '0x0000000000000000000000000000000000000000';
+const MINING_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24h — mirrors Redis TTL, but this is the real gate
 
 function txHash(seed: string): string {
   return '0x' + crypto.createHash('sha256').update(`${seed}_${Date.now()}_${Math.random()}`).digest('hex');
@@ -67,6 +68,19 @@ export async function execute(
   const { tgId, user, identityClient, ledgerClient } = ctx;
   if (functionName !== 'claimMiningReward') return { success: false, error: 'UNIMPLEMENTED_FUNCTION' };
 
+  // Authoritative cooldown gate — `user` was fetched with FOR UPDATE by the
+  // engine, so this check + the mint below are atomic with respect to any
+  // other concurrent call for the same tgId. Redis (contract-actions.ts)
+  // is only a fast pre-check for UX now; this is what actually enforces it.
+  const lastClaimAt = Number(user.last_mining_claim_at || 0);
+  const elapsed = Date.now() - lastClaimAt;
+  if (lastClaimAt > 0 && elapsed < MINING_COOLDOWN_MS) {
+    return {
+      success: false,
+      error: `COOLDOWN_ACTIVE:${Math.ceil((MINING_COOLDOWN_MS - elapsed) / 1000)}`,
+    };
+  }
+
   const tier = getTierFromStaked(Number(user.staked_amount));
   const boostedReward = MINING_REWARD * tier.boost;
 
@@ -80,7 +94,7 @@ export async function execute(
   });
 
   await identityClient.query(
-    'UPDATE identity.users SET balance = balance + $1, last_active = $2, updated_at = NOW() WHERE telegram_id = $3',
+    'UPDATE identity.users SET balance = balance + $1, last_active = $2, last_mining_claim_at = $2, updated_at = NOW() WHERE telegram_id = $3',
     [boostedReward, Date.now(), tgId]
   );
 

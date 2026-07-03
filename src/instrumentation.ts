@@ -5,7 +5,7 @@
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const { initIdentitySchema, migrateIdentityV2, migrateIdentityV3, migrateIdentityV4, migrateIdentityV5, migrateIdentityV6, backfillKeypairs } = await import('@/lib/db/identity');
+    const { initIdentitySchema, migrateIdentityV2, migrateIdentityV3, migrateIdentityV4, migrateIdentityV5, migrateIdentityV6, migrateIdentityV7, backfillKeypairs } = await import('@/lib/db/identity');
     const { initLedgerSchema, migrateSchemaV2, migrateContractSchema } = await import('@/lib/db/ledger');
     const { runEpoch } = await import('@/lib/poc-engine');
 
@@ -24,6 +24,7 @@ export async function register() {
       await migrateIdentityV4();
       await migrateIdentityV5();
       await migrateIdentityV6();
+      await migrateIdentityV7();
       await migrateContractSchema();
 
       // Backfill Ed25519 public keys

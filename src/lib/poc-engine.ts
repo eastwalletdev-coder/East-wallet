@@ -39,41 +39,61 @@ export async function runEpoch(): Promise<void> {
     const sevenDaysAgo = new Date(now - 7 * EPOCH_MS).toISOString();
     const oneDayAgo = new Date(now - EPOCH_MS).toISOString();
 
-    // Get all users with staking
+    // Get all users with staking — identity DB only, no cross-database joins.
     const usersRes = await identityClient.query(`
       SELECT
         u.telegram_id,
         u.wallet_address,
         u.staked_amount,
         u.last_active,
-        u.eastpass_tier,
-        (
-          SELECT COUNT(*) FROM ledger.transactions t
-          WHERE t.recipient_id = u.telegram_id
-          AND t.tx_type = 'MINING'
-          AND t.created_at > $1
-        ) as claims_7d,
-        (
-          SELECT COUNT(*) FROM ledger.transactions t
-          WHERE t.recipient_id = u.telegram_id
-          AND t.tx_type = 'MINING'
-        ) as claims_total
+        u.eastpass_tier
       FROM identity.users u
       WHERE u.staked_amount > 0
-    `, [sevenDaysAgo]);
+    `);
 
     if (usersRes.rows.length === 0) {
       console.log('[EASTCHAIN PoC] No staking users found, epoch skipped');
       return;
     }
 
+    // Claims data lives in the ledger DB (separate Postgres/Neon project from
+    // identity), so `ledger.transactions` is NOT reachable from identityClient
+    // — that cross-database subquery was the bug that silently broke every
+    // epoch run. Fetch aggregated claim counts here instead, then merge in JS.
+    const claimsRes = await ledgerClient.query(`
+      SELECT
+        recipient_id,
+        COUNT(*) FILTER (WHERE created_at > $1) as claims_7d,
+        COUNT(*) as claims_total
+      FROM ledger.transactions
+      WHERE tx_type = 'MINING'
+      GROUP BY recipient_id
+    `, [sevenDaysAgo]);
+
+    const claimsByUser = new Map<string, { claims7d: number; claimsTotal: number }>();
+    for (const row of claimsRes.rows) {
+      claimsByUser.set(row.recipient_id, {
+        claims7d: Number(row.claims_7d),
+        claimsTotal: Number(row.claims_total),
+      });
+    }
+
+    const usersWithClaims = usersRes.rows.map((r: any) => {
+      const c = claimsByUser.get(r.telegram_id);
+      return {
+        ...r,
+        claims_7d: c?.claims7d ?? 0,
+        claims_total: c?.claimsTotal ?? 0,
+      };
+    });
+
     // Find max values for normalization
-    const maxStake = Math.max(...usersRes.rows.map((r: any) => Number(r.staked_amount)));
-    const maxClaims7d = Math.max(...usersRes.rows.map((r: any) => Number(r.claims_7d)));
-    const maxClaimsTotal = Math.max(...usersRes.rows.map((r: any) => Number(r.claims_total)));
+    const maxStake = Math.max(...usersWithClaims.map((r: any) => Number(r.staked_amount)));
+    const maxClaims7d = Math.max(...usersWithClaims.map((r: any) => Number(r.claims_7d)));
+    const maxClaimsTotal = Math.max(...usersWithClaims.map((r: any) => Number(r.claims_total)));
 
     // Calculate PoC score for each user
-    const scored = usersRes.rows.map((r: any) => {
+    const scored = usersWithClaims.map((r: any) => {
       const stakeScore = maxStake > 0 ? Number(r.staked_amount) / maxStake : 0;
 
       // Uptime: combination of last_active (24h) + claims in 7 days

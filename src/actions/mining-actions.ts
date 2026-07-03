@@ -13,7 +13,8 @@ import { getCachedUser, setCachedUser, invalidateCachedUser, setNetworkStatus } 
 import { generateWalletFromTelegramId } from '@/lib/blockchain';
 import { getPublicKeyForUser } from '@/lib/keypair-service';
 import { validateTelegramData, extractVerifiedUserId } from '@/lib/telegram';
-import { computeBlockHash, computeSequenceHash, computeMerkleRoot } from '@/lib/block-engine';
+import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
+import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import { generateEastId } from '@/lib/east-id';
 import { stakeEastContract, claimMiningRewardContract, claimVestedContract } from '@/actions/contract-actions';
 import crypto from 'crypto';
@@ -64,14 +65,22 @@ async function sealSingleTx(
   const merkleRoot = computeMerkleRoot([tx.txHash]);
   const sequenceHash = computeSequenceHash(prevHash, blockIndex, timestamp);
   const blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, 1);
+  // System auto-assigns the current top-ranked validator to this block —
+  // no manual validator signature needed, mirrors real blockchain behavior.
+  const validatorId = await getActiveValidator();
 
   // Create block
   await ledgerClient.query(`
     INSERT INTO ledger.blocks
       (block_index, block_hash, prev_hash, sequence_hash, merkle_root,
        tx_count, total_gas, is_empty, validator_id)
-    VALUES ($1,$2,$3,$4,$5,1,$6,FALSE,NULL)
-  `, [blockIndex, blockHash, prevHash, sequenceHash, merkleRoot, tx.gasFee || 0]);
+    VALUES ($1,$2,$3,$4,$5,1,$6,FALSE,$7)
+  `, [blockIndex, blockHash, prevHash, sequenceHash, merkleRoot, tx.gasFee || 0, validatorId]);
+
+  publishBlockToRailway({
+    height: blockIndex, hash: blockHash, previousHash: prevHash, merkleRoot,
+    validator: validatorId, timestamp, epoch: Math.floor(timestamp / 86_400_000),
+  });
 
   // Insert transaction
   await ledgerClient.query(`

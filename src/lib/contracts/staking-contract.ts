@@ -6,7 +6,8 @@
  */
 import { mintFromBucket } from '@/lib/db/ledger';
 import { getTierFromStaked } from '@/lib/ledger';
-import { computeBlockHash, computeSequenceHash, computeMerkleRoot } from '@/lib/block-engine';
+import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
+import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import crypto from 'crypto';
 
 const STAKING_POOL_ADDRESS = '0x0000000000000000000000000000000000000001';
@@ -36,11 +37,19 @@ async function sealSingleTx(ledgerClient: any, tx: {
   const merkleRoot = computeMerkleRoot([tx.txHash]);
   const sequenceHash = computeSequenceHash(prevHash, blockIndex, timestamp);
   const blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, 1);
+  // System auto-assigns the current top-ranked validator to this block —
+  // no manual validator signature needed, mirrors real blockchain behavior.
+  const validatorId = await getActiveValidator();
 
   await ledgerClient.query(`
     INSERT INTO ledger.blocks (block_index, block_hash, prev_hash, sequence_hash, merkle_root, tx_count, total_gas, is_empty, validator_id)
-    VALUES ($1,$2,$3,$4,$5,1,0,FALSE,NULL)
-  `, [blockIndex, blockHash, prevHash, sequenceHash, merkleRoot]);
+    VALUES ($1,$2,$3,$4,$5,1,0,FALSE,$6)
+  `, [blockIndex, blockHash, prevHash, sequenceHash, merkleRoot, validatorId]);
+
+  publishBlockToRailway({
+    height: blockIndex, hash: blockHash, previousHash: prevHash, merkleRoot,
+    validator: validatorId, timestamp, epoch: Math.floor(timestamp / 86_400_000),
+  });
 
   await ledgerClient.query(`
     INSERT INTO ledger.transactions (tx_hash, block_index, tx_type, sender_address, recipient_address, sender_id, recipient_id, amount, gas_fee, status)

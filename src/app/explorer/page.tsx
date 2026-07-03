@@ -34,7 +34,7 @@ export default function ExplorerPage() {
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-140px)] overflow-y-auto pb-8">
+    <div className="flex flex-col pb-8">
       {/* Search Bar */}
       <div className="px-3 pt-4 pb-3 space-y-2">
         <p className="text-white/40 text-[10px] uppercase font-black tracking-widest">Block Explorer</p>

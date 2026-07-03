@@ -162,6 +162,22 @@ export default function ProfilePage() {
               {isFounder ? "Chain Architect" : (user?.stakedAmount || 0) >= 500 ? "Active Validator" : "Miner Node"}
             </span>
           </div>
+
+          <Link href="/validator" className="p-4 flex items-center justify-between border-t border-white/[0.04] hover:bg-white/[0.02] transition-colors">
+            <div className="flex items-center gap-3">
+              <Shield className="w-4 h-4 text-primary" />
+              <span className="text-white text-sm">Validator Panel</span>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/20" />
+          </Link>
+
+          <Link href="/lightnode" className="p-4 flex items-center justify-between border-t border-white/[0.04] hover:bg-white/[0.02] transition-colors">
+            <div className="flex items-center gap-3">
+              <Globe className="w-4 h-4 text-primary" />
+              <span className="text-white text-sm">Light Node</span>
+            </div>
+            <ChevronRight className="w-4 h-4 text-white/20" />
+          </Link>
         </div>
       </div>
 

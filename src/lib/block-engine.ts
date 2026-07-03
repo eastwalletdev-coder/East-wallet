@@ -6,6 +6,7 @@
 import { createHash } from 'crypto';
 import { ledgerPool } from './db/ledger';
 import { identityPool } from './db/identity';
+import { publishBlockToRailway } from './lightnode-publisher';
 
 const BATCH_WINDOW_MS = 5_000;       // 5 seconds batch window
 const MAX_TX_PER_BLOCK = 10;         // max tx per block
@@ -86,7 +87,7 @@ async function getLastBlock(): Promise<{ blockIndex: number; blockHash: string }
 }
 
 // ─── Get active validator ─────────────────────────────────────────
-async function getActiveValidator(): Promise<string | null> {
+export async function getActiveValidator(): Promise<string | null> {
   const client = await identityPool.connect();
   try {
     const res = await client.query(`
@@ -152,6 +153,11 @@ async function sealBlock(txs: PendingTx[], isEmpty: boolean): Promise<{
       txs.length, txs.reduce((s, t) => s + t.gasFee, 0),
       isEmpty, validatorId
     ]);
+
+    publishBlockToRailway({
+      height: blockIndex, hash: blockHash, previousHash: prevHash, merkleRoot,
+      validator: validatorId, timestamp, epoch: Math.floor(timestamp / 86_400_000),
+    });
 
     // 2. Insert all transactions
     for (const tx of txs) {

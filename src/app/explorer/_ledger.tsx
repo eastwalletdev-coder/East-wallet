@@ -128,6 +128,12 @@ export default function LedgerContent() {
                   <p className="text-[8px] text-muted-foreground uppercase font-bold">Miner</p>
                   <p className="font-code text-[9px] text-primary/70 truncate">{block.miner_address}</p>
                 </div>
+                <div className="bg-background/40 rounded p-2 border border-border/30">
+                  <p className="text-[8px] text-muted-foreground uppercase font-bold">Validated By</p>
+                  <p className="font-code text-[9px] text-primary/70 truncate">
+                    {block.validator_id ? `Validator #${block.validator_id}` : 'No active validator'}
+                  </p>
+                </div>
                 <div className="flex justify-between text-[9px] font-bold uppercase">
                   <span className="text-muted-foreground">Reward: <span className="text-primary">{block.reward} EAST</span></span>
                   <div className="flex items-center text-green-500"><ShieldCheck className="w-3 h-3 mr-1" />VERIFIED</div>

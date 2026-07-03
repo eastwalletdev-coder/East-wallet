@@ -104,6 +104,12 @@ export function BlockDetailSheet({ blockIndex, onClose }: BlockDetailSheetProps)
                 <p className="text-[9px] uppercase font-black text-white/30 mb-1">Merkle Root</p>
                 <p className="font-mono text-[10px] text-white/40 break-all">{block.merkle_root || '—'}</p>
               </div>
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] uppercase font-black text-white/30">Validated By</span>
+                <span className="font-mono text-[10px] text-primary/80">
+                  {block.validator_id ? `Validator #${block.validator_id}` : 'No active validator'}
+                </span>
+              </div>
               <div className="grid grid-cols-3 gap-2 pt-1">
                 <div className="bg-white/5 rounded-xl p-2 text-center">
                   <p className="text-[9px] text-white/30 uppercase font-black">Txs</p>

@@ -4,24 +4,35 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Activity, Zap, RefreshCcw, MessageSquare, Archive, ShieldCheck, Cpu, CheckCircle2 } from 'lucide-react';
+import { Activity, Zap, RefreshCcw, MessageSquare, Archive, ShieldCheck, Cpu, CheckCircle2, Radio } from 'lucide-react';
 import { claimMiningReward, initiateConsensusRecovery, performRollingArchive, getChainState } from '@/actions/mining-actions';
 import { useToast } from '@/hooks/use-toast';
 import { getTierFromStaked } from '@/lib/ledger';
 import { cn } from '@/lib/utils';
 import { useTelegram } from '@/hooks/use-telegram';
+import { getLightNodeClient, type LightNodeState } from '@/lib/lightnode/client';
+
+const MIN_VERIFIED_HEADERS = 5;
+const MIN_PARTICIPATION_SECONDS = 120;
 
 export function MiningDashboard() {
   const { userId, user, initData, loading: userLoading, refreshUser } = useTelegram();
-  const [isMining, setIsMining] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [isReadyToClaim, setIsReadyToClaim] = useState(false);
+  const [nodeState, setNodeState] = useState<LightNodeState | null>(null);
   const [isClaiming, setIsClaiming] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
   const [isRolling, setIsRolling] = useState(false);
   const [networkStatus, setNetworkStatus] = useState<string>('active');
   const [blockCount, setBlockCount] = useState(0);
   const { toast } = useToast();
+
+  // Subscribe to the real Light Node relay — this is the actual source of
+  // truth for mining eligibility now (5 headers verified + 120s connected),
+  // replacing the old fake client-side progress timer.
+  useEffect(() => {
+    const client = getLightNodeClient();
+    const unsub = client.subscribe(setNodeState);
+    return () => { unsub(); };
+  }, []);
 
   useEffect(() => {
     async function fetchChainState() {
@@ -40,22 +51,22 @@ export function MiningDashboard() {
   const isNetworkRecovering = networkStatus === 'recovering';
   const tier = getTierFromStaked(user?.stakedAmount || 0);
 
-  useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isMining && !isReadyToClaim && !isNetworkHalted && !isNetworkRecovering) {
-      interval = setInterval(() => {
-        setProgress(prev => {
-          if (prev >= 100) {
-            setIsMining(false);
-            setIsReadyToClaim(true);
-            return 100;
-          }
-          return prev + 4;
-        });
-      }, 120);
-    }
-    return () => clearInterval(interval);
-  }, [isMining, isReadyToClaim, isNetworkHalted, isNetworkRecovering]);
+  const isConnecting = nodeState?.connectionStatus === 'connecting';
+  const isConnected = nodeState?.connectionStatus === 'connected';
+  const isNodeActive = isConnecting || isConnected;
+  const isReadyToClaim = nodeState?.eligible === true;
+
+  // Progress reflects the SLOWER of the two real requirements — both the
+  // header count and the 120s participation clock must complete, so the
+  // bar only fills as fast as whichever one is lagging.
+  const headerPct = nodeState ? Math.min(100, (nodeState.verifiedHeaderCount / MIN_VERIFIED_HEADERS) * 100) : 0;
+  const timePct = nodeState ? Math.min(100, (nodeState.participationSeconds / MIN_PARTICIPATION_SECONDS) * 100) : 0;
+  const progress = isReadyToClaim ? 100 : Math.min(headerPct, timePct);
+
+  const handleInitiateMining = () => {
+    if (isNetworkHalted || isNodeActive) return;
+    getLightNodeClient().connect();
+  };
 
   const handleClaimReward = async () => {
     if (isClaiming || !isReadyToClaim) return;
@@ -64,14 +75,10 @@ export function MiningDashboard() {
       const result = await claimMiningReward(userId, initData);
       if (result.success) {
         toast({ title: "Block Verified", description: `Ledger synced. Reward: +${result.reward} EAST.` });
-        setProgress(0);
-        setIsReadyToClaim(false);
+        getLightNodeClient().markClaimed(String(result.blockIndex ?? Date.now()));
         refreshUser();
       } else {
         toast({ variant: "destructive", title: "Protocol Rejected", description: result.error });
-        setIsMining(false);
-        setProgress(0);
-        setIsReadyToClaim(false);
       }
     } catch {
       toast({ variant: "destructive", title: "Network Error", description: "Failed to reach ledger. Check your connection." });
@@ -136,34 +143,42 @@ export function MiningDashboard() {
             </div>
             <div className={cn(
               "p-4 rounded-2xl transition-all duration-700",
-              isMining ? "bg-primary/20 scale-110 glow-pulse" : isReadyToClaim ? "bg-green-500/20" : "bg-white/5"
+              isNodeActive ? "bg-primary/20 scale-110 glow-pulse" : isReadyToClaim ? "bg-green-500/20" : "bg-white/5"
             )}>
               {isReadyToClaim
                 ? <CheckCircle2 className="w-6 h-6 text-green-500" />
-                : <Zap className={cn("w-6 h-6 transition-colors duration-500", isMining ? "text-primary fill-primary" : "text-white/20")} />
+                : <Zap className={cn("w-6 h-6 transition-colors duration-500", isNodeActive ? "text-primary fill-primary" : "text-white/20")} />
               }
             </div>
           </div>
 
           <div className="mt-10 space-y-3">
             <div className="flex justify-between items-end text-[9px] font-black uppercase tracking-[0.15em]">
-              <span className="text-white/30">Hashing Progress</span>
+              <span className="text-white/30">Node Participation</span>
               <span className={cn(
                 "transition-colors",
                 isNetworkRecovering ? "text-yellow-500" : isNetworkHalted ? "text-red-500" : isReadyToClaim ? "text-green-500" : "text-primary"
               )}>
-                {isNetworkRecovering ? "Syncing..." : isNetworkHalted ? "Interrupted" : isReadyToClaim ? "Complete" : isMining ? "Mining..." : "Standby"}
+                {isNetworkRecovering ? "Syncing..." : isNetworkHalted ? "Interrupted" : isReadyToClaim ? "Complete" :
+                  isConnecting ? "Connecting Node..." :
+                  isConnected ? `${nodeState?.verifiedHeaderCount ?? 0}/${MIN_VERIFIED_HEADERS} headers · ${nodeState?.participationSeconds ?? 0}/${MIN_PARTICIPATION_SECONDS}s` :
+                  "Standby"}
               </span>
             </div>
             <div className="relative h-1.5 w-full bg-white/5 rounded-full overflow-hidden">
               <div
                 className={cn(
                   "absolute top-0 left-0 h-full transition-all duration-300 ease-out",
-                  isReadyToClaim ? "bg-green-500" : isMining ? "bg-primary" : "bg-white/20"
+                  isReadyToClaim ? "bg-green-500" : isNodeActive ? "bg-primary" : "bg-white/20"
                 )}
                 style={{ width: `${progress}%` }}
               />
             </div>
+            {isConnected && !isReadyToClaim && (
+              <p className="text-[9px] text-white/30 font-medium normal-case">
+                Stay connected — closing the app resets your participation timer.
+              </p>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -204,16 +219,16 @@ export function MiningDashboard() {
               </Button>
             ) : (
               <Button
-                disabled={isNetworkHalted || isMining}
-                onClick={() => { setProgress(0); setIsMining(true); }}
+                disabled={isNetworkHalted || isNodeActive}
+                onClick={handleInitiateMining}
                 className={cn(
                   "w-full h-20 rounded-2xl font-headline font-black text-sm tracking-[0.25em] uppercase transition-all duration-500 border-0 shadow-2xl",
-                  isMining ? "bg-white/5 text-white/20 cursor-wait" : "bg-primary text-white hover:opacity-90 shadow-primary/30"
+                  isNodeActive ? "bg-white/5 text-white/20 cursor-wait" : "bg-primary text-white hover:opacity-90 shadow-primary/30"
                 )}
               >
                 <div className="flex items-center space-x-3">
-                  {isMining ? <Activity className="w-5 h-5 animate-pulse" /> : <Zap className="w-5 h-5 fill-white" />}
-                  <span>{isNetworkHalted ? "Network Locked" : isMining ? "Mining in Progress" : "Initiate Mining Cycle"}</span>
+                  {isConnecting ? <Radio className="w-5 h-5 animate-pulse" /> : isConnected ? <Activity className="w-5 h-5 animate-pulse" /> : <Zap className="w-5 h-5 fill-white" />}
+                  <span>{isNetworkHalted ? "Network Locked" : isConnecting ? "Connecting Node..." : isConnected ? "Node Active — Verifying..." : "Initiate Mining Cycle"}</span>
                 </div>
               </Button>
             )}
@@ -221,7 +236,7 @@ export function MiningDashboard() {
               <Button
                 variant="outline"
                 onClick={handleManualRolling}
-                disabled={isRolling || isMining || isClaiming}
+                disabled={isRolling || isNodeActive || isClaiming}
                 className="h-14 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/40 text-[10px] font-black uppercase tracking-widest"
               >
                 <Archive className="w-4 h-4 mr-2 opacity-50" />

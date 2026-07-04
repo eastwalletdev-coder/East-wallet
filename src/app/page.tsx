@@ -216,7 +216,7 @@ export default function Home() {
           </div>
 
           {/* Globe grid — no background card */}
-          <div className="relative w-[360px] h-[360px] flex items-center justify-center" style={{ perspective: "800px", transformStyle: "preserve-3d" }}>
+          <div className="relative w-[360px] h-[360px] rounded-full overflow-hidden flex items-center justify-center" style={{ perspective: "800px", transformStyle: "preserve-3d" }}>
             {/* Orbiting beam — identical pattern to SplashScreen's globe beam */}
             <div
               className="absolute inset-0 z-40 animate-rotate-beam pointer-events-none"

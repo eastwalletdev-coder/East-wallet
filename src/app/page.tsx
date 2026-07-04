@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react";
-import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Activity, RefreshCcw, Archive, ShieldCheck, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, ChevronDown } from "lucide-react";
+import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Activity, RefreshCcw, Archive, ShieldCheck, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, Radio, ChevronDown } from "lucide-react";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { TradingTerminal } from "@/components/p2p/TradingTerminal";
 import { Badge } from "@/components/ui/badge";
@@ -18,15 +18,17 @@ import { AuditTrailSheet } from "@/components/AuditTrailSheet";
 import { getEastTransactions, type Transaction } from "@/lib/transaction-service";
 import { MINING_REWARD } from "@/lib/blockchain";
 import { cn } from "@/lib/utils";
+import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
+
+const MIN_VERIFIED_HEADERS = 5;
+const MIN_PARTICIPATION_SECONDS = 120;
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const { userId, user, initData, loading: userLoading, refreshUser } = useTelegram();
   const { toast } = useToast();
 
-  const [isMining, setIsMining] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [isReadyToClaim, setIsReadyToClaim] = useState(false);
+  const [nodeState, setNodeState] = useState<LightNodeState | null>(null);
   const [isClaiming, setIsClaiming] = useState(false);
   const [isRecovering, setIsRecovering] = useState(false);
   const [isRolling, setIsRolling] = useState(false);
@@ -82,6 +84,14 @@ export default function Home() {
   const tier = getTierFromStaked(user?.stakedAmount || 0);
   const walletAddress = user?.walletAddress || '0x...';
 
+  const isConnecting = nodeState?.connectionStatus === 'connecting';
+  const isConnected = nodeState?.connectionStatus === 'connected';
+  const isNodeActive = isConnecting || isConnected;
+  const isReadyToClaim = nodeState?.eligible === true;
+  const headerPct = nodeState ? Math.min(100, (nodeState.verifiedHeaderCount / MIN_VERIFIED_HEADERS) * 100) : 0;
+  const timePct = nodeState ? Math.min(100, (nodeState.participationSeconds / MIN_PARTICIPATION_SECONDS) * 100) : 0;
+  const progress = isReadyToClaim ? 100 : Math.min(headerPct, timePct);
+
   useEffect(() => {
     if (!walletAddress || walletAddress === '0x...') { setTxLoading(false); return; }
     let cancelled = false;
@@ -101,17 +111,10 @@ export default function Home() {
   }, [walletAddress]);
 
   useEffect(() => {
-    let interval: NodeJS.Timeout;
-    if (isMining && !isReadyToClaim && !isNetworkHalted) {
-      interval = setInterval(() => {
-        setProgress(prev => {
-          if (prev >= 100) { setIsMining(false); setIsReadyToClaim(true); return 100; }
-          return prev + 4;
-        });
-      }, 120);
-    }
-    return () => clearInterval(interval);
-  }, [isMining, isReadyToClaim, isNetworkHalted]);
+    const client = getLightNodeClient();
+    const unsub = client.subscribe(setNodeState);
+    return () => { unsub(); };
+  }, []);
 
   const formatCountdown = (secs: number) => {
     const h = Math.floor(secs / 3600);
@@ -132,6 +135,7 @@ export default function Home() {
       if (result.success) {
         toast({ title: "Block Verified", description: `+${result.reward} EAST mined.` });
         setCountdown(24 * 60 * 60);
+        getLightNodeClient().markClaimed(String(result.blockIndex ?? Date.now()));
         refreshUser();
       } else {
         toast({ variant: "destructive", title: "Rejected", description: result.error });
@@ -139,11 +143,8 @@ export default function Home() {
     } catch (err: any) {
       toast({ variant: "destructive", title: "Error", description: err?.message || "Request failed" });
     } finally {
-      // Always reset mining state regardless of success/error/timeout
+      // Always reset claiming/dialog state regardless of success/error/timeout
       setIsClaiming(false);
-      setIsMining(false);
-      setProgress(0);
-      setIsReadyToClaim(false);
       setSigOpen(false);
     }
   };
@@ -215,7 +216,7 @@ export default function Home() {
           </div>
 
           {/* Globe grid — no background card */}
-          <div className="relative w-[360px] h-[360px] rounded-full overflow-hidden flex items-center justify-center" style={{ perspective: "800px", transformStyle: "preserve-3d" }}>
+          <div className="relative w-[360px] h-[360px] flex items-center justify-center" style={{ perspective: "800px", transformStyle: "preserve-3d" }}>
             {/* Orbiting beam — identical pattern to SplashScreen's globe beam */}
             <div
               className="absolute inset-0 z-40 animate-rotate-beam pointer-events-none"
@@ -288,22 +289,25 @@ export default function Home() {
                 </div>
               </div>
               <div className={cn("p-3 rounded-2xl transition-all duration-700",
-                isMining ? "bg-primary/20 scale-110" : isReadyToClaim ? "bg-green-500/20" : "bg-white/5")}>
+                isNodeActive ? "bg-primary/20 scale-110" : isReadyToClaim ? "bg-green-500/20" : "bg-white/5")}>
                 {isReadyToClaim
                   ? <CheckCircle2 className="w-5 h-5 text-green-500" />
-                  : <Zap className={cn("w-5 h-5", isMining ? "text-primary fill-primary" : "text-white/20")} />}
+                  : <Zap className={cn("w-5 h-5", isNodeActive ? "text-primary fill-primary" : "text-white/20")} />}
               </div>
             </div>
             <div className="mt-4 space-y-1.5">
               <div className="flex justify-between text-[9px] font-black uppercase tracking-[0.15em]">
-                <span className="text-white/30">Hash Progress</span>
-                <span className={isReadyToClaim ? "text-green-500" : isMining ? "text-primary" : "text-white/30"}>
-                  {isReadyToClaim ? "Ready to Claim" : isMining ? "Mining..." : "Standby"}
+                <span className="text-white/30">Node Participation</span>
+                <span className={isReadyToClaim ? "text-green-500" : isNodeActive ? "text-primary" : "text-white/30"}>
+                  {isReadyToClaim ? "Ready to Claim" :
+                    isConnecting ? "Connecting Node..." :
+                    isConnected ? `${nodeState?.verifiedHeaderCount ?? 0}/${MIN_VERIFIED_HEADERS} headers · ${nodeState?.participationSeconds ?? 0}/${MIN_PARTICIPATION_SECONDS}s` :
+                    "Standby"}
                 </span>
               </div>
               <div className="relative h-1 w-full bg-white/5 rounded-full overflow-hidden">
                 <div className={cn("absolute top-0 left-0 h-full transition-all duration-300",
-                  isReadyToClaim ? "bg-green-500" : isMining ? "bg-primary" : "bg-white/10")}
+                  isReadyToClaim ? "bg-green-500" : isNodeActive ? "bg-primary" : "bg-white/10")}
                   style={{ width: `${progress}%` }} />
               </div>
             </div>
@@ -331,15 +335,15 @@ export default function Home() {
             </Button>
           ) : (
             <Button
-              disabled={isNetworkHalted || isMining}
-              onClick={() => { setProgress(0); setIsMining(true); }}
+              disabled={isNetworkHalted || isNodeActive}
+              onClick={() => getLightNodeClient().connect()}
               className={cn("w-full h-14 rounded-2xl font-black uppercase tracking-widest border-0",
-                isMining ? "bg-white/5 text-white/20 cursor-wait" : "bg-primary text-white hover:opacity-90")}>
-              {isMining ? <Activity className="w-4 h-4 mr-2 animate-pulse" /> : <Zap className="w-4 h-4 mr-2 fill-white" />}
-              {isNetworkHalted ? "Network Locked" : isMining ? "Mining in Progress" : "Initiate Mining Cycle"}
+                isNodeActive ? "bg-white/5 text-white/20 cursor-wait" : "bg-primary text-white hover:opacity-90")}>
+              {isConnecting ? <Radio className="w-4 h-4 mr-2 animate-pulse" /> : isConnected ? <Activity className="w-4 h-4 mr-2 animate-pulse" /> : <Zap className="w-4 h-4 mr-2 fill-white" />}
+              {isNetworkHalted ? "Network Locked" : isConnecting ? "Connecting Node..." : isConnected ? "Node Active — Verifying..." : "Initiate Mining Cycle"}
             </Button>
           )}
-          <Button variant="outline" onClick={handlePrune} disabled={isRolling || isMining}
+          <Button variant="outline" onClick={handlePrune} disabled={isRolling || isNodeActive}
             className="h-12 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/40 text-[10px] font-black uppercase">
             <Archive className="w-4 h-4 mr-2 opacity-50" />Prune L2
           </Button>
@@ -354,129 +358,7 @@ export default function Home() {
         </div>
         {/* end Mining Buttons */}
 
-        {/* EAST Chain Wallet Card */}
-        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30 px-1 mt-1">EAST Chain Wallet</p>
-        <Card className="bg-gradient-to-br from-primary/10 via-background to-accent/5 border-primary/20 w-full rounded-2xl">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex-1 min-w-0 mr-3">
-                <p className="text-[9px] text-white/30 uppercase font-bold mb-1">Chain Address</p>
-                <p className="font-code text-[10px] text-primary/70 truncate">{walletAddress}</p>
-              </div>
-              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={handleCopyAddress}>
-                {copied ? <CheckCheck className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
-              </Button>
-            </div>
-            <div className="text-center py-3 border-y border-white/5 mb-3">
-              <h3 className="text-2xl font-code font-bold">
-                {userLoading ? "---" : (user?.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                <span className="text-primary text-sm ml-2">EAST</span>
-              </h3>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <SendDialog open={sendOpen} onOpenChange={setSendOpen} />
-              <ReceiveDialog address={walletAddress} open={receiveOpen} onOpenChange={setReceiveOpen} />
-              <Sheet>
-                <SheetTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="h-11 rounded-xl bg-primary border-primary hover:bg-primary/80 text-white font-black uppercase text-[10px] tracking-wider flex items-center gap-1.5"
-                  >
-                    <Store className="w-4 h-4 text-white" />
-                    P2P
-                  </Button>
-                </SheetTrigger>
-                <SheetContent
-                  side="bottom"
-                  className="h-[92vh] p-0 bg-background border-t border-primary/20 rounded-t-2xl overflow-hidden"
-                >
-                  <div className="relative h-full w-full">
-                    <div className="absolute inset-0 blur-md pointer-events-none select-none opacity-60">
-                      <TradingTerminal />
-                    </div>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background/40">
-                      <Clock className="w-8 h-8 text-primary" />
-                      <p className="text-lg font-black uppercase tracking-widest text-foreground">Coming Soon</p>
-                      <p className="text-xs text-muted-foreground">P2P marketplace is on its way.</p>
-                    </div>
-                  </div>
-                </SheetContent>
-              </Sheet>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Recent EAST Transactions */}
-        <button
-          onClick={() => setActivityCollapsed(!activityCollapsed)}
-          className="flex items-center justify-between w-full px-1 mt-1"
-        >
-          <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30">Recent Activity</p>
-          <ChevronDown className={cn(
-            "w-3.5 h-3.5 text-white/30 transition-transform",
-            activityCollapsed ? "-rotate-90" : "rotate-0"
-          )} />
-        </button>
-        {!activityCollapsed && (
-          <Card className="bg-card/40 border-white/5 w-full rounded-2xl">
-            <CardContent className="p-2">
-              {txLoading ? (
-                <p className="text-[10px] text-muted-foreground text-center py-6">Loading transactions...</p>
-              ) : transactions.length === 0 ? (
-                <p className="text-[10px] text-muted-foreground text-center py-6">No transactions yet.</p>
-              ) : (
-                <div className="divide-y divide-white/5 max-h-[340px] overflow-y-auto">
-                  {transactions.map((tx) => (
-                    <div key={tx.id} className="flex items-center justify-between py-2.5 px-1.5">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className={cn(
-                          "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
-                          tx.type === 'send' ? "bg-red-500/10" : tx.type === 'stake' ? "bg-amber-500/10" : "bg-green-500/10"
-                        )}>
-                          {tx.type === 'send' ? (
-                            <ArrowUpRight className="w-4 h-4 text-red-400" />
-                          ) : tx.type === 'stake' ? (
-                            <Lock className="w-4 h-4 text-amber-400" />
-                          ) : (
-                            <ArrowDownLeft className="w-4 h-4 text-green-400" />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold capitalize truncate">{tx.type}</p>
-                          <p className="text-[9px] text-muted-foreground font-mono truncate max-w-[140px]">
-                            {tx.address ? `${tx.address.slice(0, 8)}...${tx.address.slice(-6)}` : ''}
-                          </p>
-                        </div>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <p className={cn(
-                          "text-xs font-code font-bold",
-                          tx.amount.startsWith('-') ? "text-red-400" : "text-green-400"
-                        )}>
-                          {tx.amount} <span className="text-[9px] text-muted-foreground">{tx.token}</span>
-                        </p>
-                        <p className="text-[9px] text-muted-foreground">{tx.date}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
-        <p className="text-[9px] text-white/20 uppercase font-black tracking-[0.3em] text-center py-2">
-          Protocol: <span className="text-primary">Anchor Protocol Active</span>
-        </p>
-      </div>
-
-      {/* Signature Dialog — mining claim */}
-      <SignatureDialog
-        open={sigOpen}
-        onOpenChange={(v) => { if (!isClaiming) setSigOpen(v); }}
-        txType="MINING_CLAIM"
-        from="EASTCHAIN"
-        to={walletAddress.length > 10 ? `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : walletAddress}
+`${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}` : walletAddress}
         amount={MINING_REWARD * getTierFromStaked(user?.stakedAmount || 0).boost}
         gasFee={0}
         onConfirm={handleClaim}

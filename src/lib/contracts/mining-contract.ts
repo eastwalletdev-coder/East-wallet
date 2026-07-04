@@ -12,7 +12,7 @@ import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import crypto from 'crypto';
 
 const SYSTEM_ADDRESS = '0x0000000000000000000000000000000000000000';
-const MINING_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24h — mirrors Redis TTL, but this is the real gate
+export const MINING_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24h — mirrors Redis TTL, but this is the real gate
 
 function txHash(seed: string): string {
   return '0x' + crypto.createHash('sha256').update(`${seed}_${Date.now()}_${Math.random()}`).digest('hex');

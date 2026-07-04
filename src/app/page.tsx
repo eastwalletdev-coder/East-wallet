@@ -139,6 +139,7 @@ export default function Home() {
     } catch (err: any) {
       toast({ variant: "destructive", title: "Error", description: err?.message || "Request failed" });
     } finally {
+      // Always reset mining state regardless of success/error/timeout
       setIsClaiming(false);
       setIsMining(false);
       setProgress(0);

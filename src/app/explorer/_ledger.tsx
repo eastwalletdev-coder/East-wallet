@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Hash, ShieldCheck, Lock, MessageSquare, Database, Archive, PieChart, ChevronRight } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Progress } from '@/components/ui/progress';
 import { MAX_SUPPLY, MINING_REWARDS_CAP } from '@/lib/blockchain';
 import { getChainState, getRecentBlocks } from '@/actions/mining-actions';
@@ -36,7 +35,7 @@ export default function LedgerContent() {
   const miningMinted = chainState?.buckets?.mining?.minted || 0;
 
   return (
-    <div className="px-2 py-4 space-y-4 pb-24 overflow-y-auto">
+    <div className="px-2 py-4 space-y-4 pb-24">
       <div className="flex items-center justify-between">
         <h2 className="font-headline text-[10px] font-black uppercase text-muted-foreground">Block Explorer</h2>
         {loading ? <Badge variant="outline" className="animate-pulse text-[9px]">Syncing...</Badge>
@@ -99,58 +98,57 @@ export default function LedgerContent() {
       </p>
 
       <ScrollArea className="h-[280px] rounded-xl">
-        <div className="space-y-3 pr-4">
-          {blocks.map((block: any) => (
-            <Card
-              key={block.block_hash}
-              className="bg-card/20 border-border/20 cursor-pointer hover:bg-card/40 hover:border-primary/30 transition-all active:scale-[0.98]"
-              onClick={() => setSelectedBlock(block.block_index)}
-            >
-              <CardContent className="px-2 py-4 space-y-2">
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center space-x-2">
-                    <div className="bg-primary/20 text-primary p-1.5 rounded-lg">
-                      <Hash className="w-3 h-3" />
-                    </div>
-                    <div>
-                      <p className="text-xs font-bold font-code">Block #{block.block_index}</p>
-                      <p className="text-[9px] text-muted-foreground">{new Date(block.created_at).toLocaleTimeString()}</p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20 text-[8px] uppercase font-black">
-                      {block.tx_type || 'BLOCK'}
-                    </Badge>
-                    <ChevronRight className="w-3 h-3 text-white/20" />
-                  </div>
-                </div>
-                <div className="bg-background/40 rounded p-2 border border-border/30">
-                  <p className="text-[8px] text-muted-foreground uppercase font-bold">Miner</p>
-                  <p className="font-code text-[9px] text-primary/70 truncate">{block.miner_address}</p>
-                </div>
-                <div className="bg-background/40 rounded p-2 border border-border/30">
-                  <p className="text-[8px] text-muted-foreground uppercase font-bold">Validated By</p>
-                  <p className="font-code text-[9px] text-primary/70 truncate">
-                    {block.validator_id ? `Validator #${block.validator_id}` : 'No active validator'}
-                  </p>
-                </div>
-                <div className="flex justify-between text-[9px] font-bold uppercase">
-                  <span className="text-muted-foreground">Reward: <span className="text-primary">{block.reward} EAST</span></span>
-                  <div className="flex items-center text-green-500"><ShieldCheck className="w-3 h-3 mr-1" />VERIFIED</div>
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-          {chainState?.lastPrunedIndex >= 0 && (
-            <div className="py-4 border-t border-dashed border-border/50 flex flex-col items-center space-y-2">
-              <Archive className="w-4 h-4 text-muted-foreground opacity-50" />
-              <p className="text-[9px] text-muted-foreground uppercase font-bold text-center">
-                Blocks before #{chainState.lastPrunedIndex + 1} archived to Cold Storage
-              </p>
+        <div className="space-y-3">
+  {blocks.map((block: any) => (
+    <Card
+      key={block.block_hash}
+      className="bg-card/20 border-border/20 cursor-pointer hover:bg-card/40 hover:border-primary/30 transition-all active:scale-[0.98]"
+      onClick={() => setSelectedBlock(block.block_index)}
+    >
+      <CardContent className="px-2 py-4 space-y-2">
+        <div className="flex justify-between items-start">
+          <div className="flex items-center space-x-2">
+            <div className="bg-primary/20 text-primary p-1.5 rounded-lg">
+              <Hash className="w-3 h-3" />
             </div>
-          )}
+            <div>
+              <p className="text-xs font-bold font-code">Block #{block.block_index}</p>
+              <p className="text-[9px] text-muted-foreground">{new Date(block.created_at).toLocaleTimeString()}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20 text-[8px] uppercase font-black">
+              {block.tx_type || 'BLOCK'}
+            </Badge>
+            <ChevronRight className="w-3 h-3 text-white/20" />
+          </div>
         </div>
-      </ScrollArea>
+        <div className="bg-background/40 rounded p-2 border border-border/30">
+          <p className="text-[8px] text-muted-foreground uppercase font-bold">Miner</p>
+          <p className="font-code text-[9px] text-primary/70 truncate">{block.miner_address}</p>
+        </div>
+        <div className="bg-background/40 rounded p-2 border border-border/30">
+          <p className="text-[8px] text-muted-foreground uppercase font-bold">Validated By</p>
+          <p className="font-code text-[9px] text-primary/70 truncate">
+            {block.validator_id ? `Validator #${block.validator_id}` : 'No active validator'}
+          </p>
+        </div>
+        <div className="flex justify-between text-[9px] font-bold uppercase">
+          <span className="text-muted-foreground">Reward: <span className="text-primary">{block.reward} EAST</span></span>
+          <div className="flex items-center text-green-500"><ShieldCheck className="w-3 h-3 mr-1" />VERIFIED</div>
+        </div>
+      </CardContent>
+    </Card>
+  ))}
+  {chainState?.lastPrunedIndex >= 0 && (
+    <div className="py-4 border-t border-dashed border-border/50 flex flex-col items-center space-y-2">
+      <Archive className="w-4 h-4 text-muted-foreground opacity-50" />
+      <p className="text-[9px] text-muted-foreground uppercase font-bold text-center">
+        Blocks before #{chainState.lastPrunedIndex + 1} archived to Cold Storage
+      </p>
+    </div>
+  )}
+</div>
 
       {/* Block Detail Sheet */}
       <BlockDetailSheet

@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Activity, RefreshCcw, Archive, ShieldCheck, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, ChevronDown } from "lucide-react";
+import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { TradingTerminal } from "@/components/p2p/TradingTerminal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -39,6 +40,7 @@ export default function Home() {
   const [txLoading, setTxLoading] = useState(true);
   const [sigOpen, setSigOpen] = useState(false);
   const [activityCollapsed, setActivityCollapsed] = useState(false);
+
   useEffect(() => { setMounted(true); }, []);
 
   // Fetch cooldown on load
@@ -137,7 +139,6 @@ export default function Home() {
     } catch (err: any) {
       toast({ variant: "destructive", title: "Error", description: err?.message || "Request failed" });
     } finally {
-      // Always reset mining state regardless of success/error/timeout
       setIsClaiming(false);
       setIsMining(false);
       setProgress(0);
@@ -405,65 +406,64 @@ export default function Home() {
         </Card>
 
         {/* Recent EAST Transactions */}
-        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30 px-1 mt-1">Recent Activity</p>
-        {/* Recent EAST Transactions */}
-<button
-  onClick={() => setActivityCollapsed(!activityCollapsed)}
-  className="flex items-center justify-between w-full px-1 mt-1"
->
-  <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30">Recent Activity</p>
-  <ChevronDown className={cn(
-    "w-3.5 h-3.5 text-white/30 transition-transform",
-    activityCollapsed ? "-rotate-90" : "rotate-0"
-  )} />
-</button>
-{!activityCollapsed && (
-  <Card className="bg-card/40 border-white/5 w-full rounded-2xl">
-    <CardContent className="p-2">
-      {txLoading ? (
-        <p className="text-[10px] text-muted-foreground text-center py-6">Loading transactions...</p>
-      ) : transactions.length === 0 ? (
-        <p className="text-[10px] text-muted-foreground text-center py-6">No transactions yet.</p>
-      ) : (
-        <div className="divide-y divide-white/5 max-h-[340px] overflow-y-auto">
-          {transactions.map((tx) => (
-            <div key={tx.id} className="flex items-center justify-between py-2.5 px-1.5">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className={cn(
-                  "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
-                  tx.type === 'send' ? "bg-red-500/10" : tx.type === 'stake' ? "bg-amber-500/10" : "bg-green-500/10"
-                )}>
-                  {tx.type === 'send' ? (
-                    <ArrowUpRight className="w-4 h-4 text-red-400" />
-                  ) : tx.type === 'stake' ? (
-                    <Lock className="w-4 h-4 text-amber-400" />
-                  ) : (
-                    <ArrowDownLeft className="w-4 h-4 text-green-400" />
-                  )}
+        <button
+          onClick={() => setActivityCollapsed(!activityCollapsed)}
+          className="flex items-center justify-between w-full px-1 mt-1"
+        >
+          <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30">Recent Activity</p>
+          <ChevronDown className={cn(
+            "w-3.5 h-3.5 text-white/30 transition-transform",
+            activityCollapsed ? "-rotate-90" : "rotate-0"
+          )} />
+        </button>
+        {!activityCollapsed && (
+          <Card className="bg-card/40 border-white/5 w-full rounded-2xl">
+            <CardContent className="p-2">
+              {txLoading ? (
+                <p className="text-[10px] text-muted-foreground text-center py-6">Loading transactions...</p>
+              ) : transactions.length === 0 ? (
+                <p className="text-[10px] text-muted-foreground text-center py-6">No transactions yet.</p>
+              ) : (
+                <div className="divide-y divide-white/5 max-h-[340px] overflow-y-auto">
+                  {transactions.map((tx) => (
+                    <div key={tx.id} className="flex items-center justify-between py-2.5 px-1.5">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className={cn(
+                          "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
+                          tx.type === 'send' ? "bg-red-500/10" : tx.type === 'stake' ? "bg-amber-500/10" : "bg-green-500/10"
+                        )}>
+                          {tx.type === 'send' ? (
+                            <ArrowUpRight className="w-4 h-4 text-red-400" />
+                          ) : tx.type === 'stake' ? (
+                            <Lock className="w-4 h-4 text-amber-400" />
+                          ) : (
+                            <ArrowDownLeft className="w-4 h-4 text-green-400" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold capitalize truncate">{tx.type}</p>
+                          <p className="text-[9px] text-muted-foreground font-mono truncate max-w-[140px]">
+                            {tx.address ? `${tx.address.slice(0, 8)}...${tx.address.slice(-6)}` : ''}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className={cn(
+                          "text-xs font-code font-bold",
+                          tx.amount.startsWith('-') ? "text-red-400" : "text-green-400"
+                        )}>
+                          {tx.amount} <span className="text-[9px] text-muted-foreground">{tx.token}</span>
+                        </p>
+                        <p className="text-[9px] text-muted-foreground">{tx.date}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-bold capitalize truncate">{tx.type}</p>
-                  <p className="text-[9px] text-muted-foreground font-mono truncate max-w-[140px]">
-                    {tx.address ? `${tx.address.slice(0, 8)}...${tx.address.slice(-6)}` : ''}
-                  </p>
-                </div>
-              </div>
-              <div className="text-right shrink-0">
-                <p className={cn(
-                  "text-xs font-code font-bold",
-                  tx.amount.startsWith('-') ? "text-red-400" : "text-green-400"
-                )}>
-                  {tx.amount} <span className="text-[9px] text-muted-foreground">{tx.token}</span>
-                </p>
-                <p className="text-[9px] text-muted-foreground">{tx.date}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </CardContent>
-  </Card>
-)}
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         <p className="text-[9px] text-white/20 uppercase font-black tracking-[0.3em] text-center py-2">
           Protocol: <span className="text-primary">Anchor Protocol Active</span>
         </p>

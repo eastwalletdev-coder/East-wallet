@@ -55,9 +55,10 @@ export async function getEastTransactions(address: string, limit: number = 8): P
         token: 'EAST',
         amount: `${isSender && !isStake ? '-' : '+'}${Number(tx.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}`,
         status: (tx.status as Transaction['status']) || 'confirmed',
-        date: new Date(tx.created_at).toLocaleString(undefined, {
+        date: new Date(tx.created_at).toLocaleString('en-US', {
           month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-        }),
+          timeZone: 'UTC', hour12: false,
+        }) + ' UTC',
         address: counterparty || '',
       };
     });

@@ -7,7 +7,9 @@
 import { mintFromBucket } from '@/lib/db/ledger';
 import { getTierFromStaked } from '@/lib/ledger';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
+import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { MINING_REWARD, REFERRAL_BONUS, REFERRAL_CAP, REFERRAL_CLAIM_TRIGGER } from '@/lib/blockchain';
+import { LIGHTNODE_REWARD_PER_BLOCK, LIGHTNODE_MAX_BLOCKS_PER_CLAIM } from '@/lib/lightnode/reward-constants';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import crypto from 'crypto';
 
@@ -39,7 +41,7 @@ async function sealSingleTx(ledgerClient: any, tx: {
   // System auto-assigns the current top-ranked validator to this block —
   // no manual validator signature needed, mirrors real blockchain behavior
   // where the elected validator/proposer is attributed to each block.
-  const validatorId = await getActiveValidator();
+  const validatorId = (await resolveBlockProducer(blockIndex)) ?? await getActiveValidator();
 
   await ledgerClient.query(`
     INSERT INTO ledger.blocks (block_index, block_hash, prev_hash, sequence_hash, merkle_root, tx_count, total_gas, is_empty, validator_id)
@@ -82,7 +84,14 @@ export async function execute(
   }
 
   const tier = getTierFromStaked(Number(user.staked_amount));
-  const boostedReward = MINING_REWARD * tier.boost;
+
+  // Light Node bonus: 0.5 EAST per block the device verified this session,
+  // capped server-side — never trust the client's number beyond the cap.
+  const rawVerifiedBlocks = Number(params.verifiedHeaders) || 0;
+  const verifiedBlocks = Math.max(0, Math.min(rawVerifiedBlocks, LIGHTNODE_MAX_BLOCKS_PER_CLAIM));
+  const lightNodeBonus = verifiedBlocks * LIGHTNODE_REWARD_PER_BLOCK;
+
+  const boostedReward = (MINING_REWARD + lightNodeBonus) * tier.boost;
 
   const mint = await mintFromBucket(ledgerClient, 'mining', boostedReward, 'mining_reward', tgId);
   if (!mint.ok) return { success: false, error: `MINING_POOL_EXHAUSTED: ${mint.reason}` };

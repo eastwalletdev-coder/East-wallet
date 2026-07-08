@@ -6,12 +6,34 @@ import { NextRequest, NextResponse } from 'next/server';
 import { runEpoch, getTopValidators } from '@/lib/poc-engine';
 import { notifyNewEpoch } from '@/lib/gossip';
 import { ledgerPool } from '@/lib/db/ledger';
+import { Receiver } from '@upstash/qstash';
+
+// Same verification pattern as /api/empty-block — actually checks the QStash
+// signature instead of just checking whether the header is present.
+async function verifyQStashSignature(req: NextRequest, rawBody: string): Promise<boolean> {
+  const signature = req.headers.get('upstash-signature');
+  const currentKey = process.env.QSTASH_CURRENT_SIGNING_KEY;
+  const nextKey = process.env.QSTASH_NEXT_SIGNING_KEY;
+
+  if (!signature || !currentKey) return false;
+
+  try {
+    const receiver = new Receiver({
+      currentSigningKey: currentKey,
+      nextSigningKey: nextKey || currentKey,
+    });
+    return await receiver.verify({ signature, body: rawBody });
+  } catch {
+    return false;
+  }
+}
 
 export async function POST(req: NextRequest) {
+  const rawBody = await req.text();
+
   const secret = req.headers.get('x-cron-secret');
   const isAdmin = secret === process.env.ADMIN_SECRET;
-  const isQStash = req.headers.get('upstash-signature') !== null
-    && process.env.QSTASH_CURRENT_SIGNING_KEY !== undefined;
+  const isQStash = await verifyQStashSignature(req, rawBody);
 
   if (process.env.NODE_ENV === 'production' && !isAdmin && !isQStash) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

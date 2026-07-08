@@ -126,7 +126,7 @@ export function LightNodePanel() {
             <div className="h-full bg-primary transition-all" style={{ width: `${participationPct}%` }} />
           </div>
           <p className="text-[9px] text-white/30">
-            {state.verifiedHeaderCount}/5 headers verified · {Math.min(120, state.participationSeconds)}/120s active
+            {state.verifiedHeaderCount}/2 headers verified · {Math.min(120, state.participationSeconds)}/120s active
           </p>
         </CardContent>
       </Card>

@@ -35,11 +35,30 @@ export function useTelegram() {
   const fetchUser = useCallback(async (
     telegramId: string, username: string, initDataStr: string, startParam?: string
   ) => {
+    // Retry only for IDENTITY_VIOLATION — this is the error registerOrUpdateUser
+    // returns when initData is missing/not-yet-populated by the Telegram WebView,
+    // which is a timing issue, not an auth failure. Any other error (e.g.
+    // IDENTITY_MISMATCH) means the request itself is invalid, so it must NOT be
+    // retried — retrying those would just repeat a legitimately-rejected request.
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 900;
+
     try {
-      const result = await registerOrUpdateUser(telegramId, username, initDataStr, startParam);
-      if (result.success && result.user) {
-        setUser(result.user as EastUser);
-        setReferralLink(result.referralLink || '');
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const result = await registerOrUpdateUser(telegramId, username, initDataStr, startParam);
+        if (result.success && result.user) {
+          setUser(result.user as EastUser);
+          setReferralLink(result.referralLink || '');
+          return;
+        }
+
+        const isTransient = result.error === 'IDENTITY_VIOLATION';
+        const hasAttemptsLeft = attempt < MAX_ATTEMPTS;
+        if (!isTransient || !hasAttemptsLeft) {
+          console.error('[EASTCHAIN] Failed to register user:', result.error);
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt));
       }
     } catch (err) {
       console.error('[EASTCHAIN] Failed to register user:', err);
@@ -51,8 +70,10 @@ export function useTelegram() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    const webApp = (window as any).Telegram?.WebApp;
-    if (webApp) {
+    let cancelled = false;
+
+    const init = (webApp: any) => {
+      if (cancelled) return;
       webApp.ready();
       const tg = webApp.initDataUnsafe?.user;
       const startParam = webApp.initDataUnsafe?.start_param;
@@ -84,10 +105,44 @@ export function useTelegram() {
         setLoading(false);
         setBalanceLoading(false);
       }
-    } else {
-      setLoading(false);
-      setBalanceLoading(false);
+    };
+
+    // The telegram-web-app.js <script> tag is loaded with `async`, so it can
+    // still be mid-flight when this effect first runs — `window.Telegram`
+    // would be undefined and we'd give up permanently (only fixed by a full
+    // reload or remount). Poll briefly for it instead of checking once.
+    const existing = (window as any).Telegram?.WebApp;
+    if (existing) {
+      init(existing);
+      return;
     }
+
+    const POLL_INTERVAL_MS = 100;
+    const MAX_WAIT_MS = 4000;
+    let waited = 0;
+    const intervalId = setInterval(() => {
+      const webApp = (window as any).Telegram?.WebApp;
+      if (webApp) {
+        clearInterval(intervalId);
+        init(webApp);
+        return;
+      }
+      waited += POLL_INTERVAL_MS;
+      if (waited >= MAX_WAIT_MS) {
+        clearInterval(intervalId);
+        // Not running inside Telegram (or script truly failed to load) —
+        // stop waiting and unblock the UI.
+        if (!cancelled) {
+          setLoading(false);
+          setBalanceLoading(false);
+        }
+      }
+    }, POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
   }, [fetchUser]);
 
   return {

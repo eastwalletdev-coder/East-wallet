@@ -4,14 +4,11 @@
 // Admin-only, same auth pattern as /api/admin/run-epoch.
 import { NextRequest, NextResponse } from 'next/server';
 import { backfillKeypairs } from '@/lib/db/identity';
+import { requireFounderAuth } from '@/lib/admin-auth';
 
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('x-cron-secret');
-  const isAdmin = secret === process.env.ADMIN_SECRET;
-
-  if (process.env.NODE_ENV === 'production' && !isAdmin) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  const auth = requireFounderAuth(req);
+  if (!auth.ok) return NextResponse.json({ error: 'Unauthorized' }, { status: auth.status });
 
   try {
     const body = await req.json().catch(() => ({}));

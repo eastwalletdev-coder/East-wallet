@@ -30,10 +30,10 @@ export function WalletConnectHandler({ uri, onClose }: WalletConnectHandlerProps
   });
 
   useEffect(() => {
-    // Simulasi parsing URI WalletConnect v2
+    // Simulate parsing a WalletConnect v2 URI
     const timer = setTimeout(() => {
       setStep('request');
-      // Simulasi ekstraksi metadata (dalam realitas ini diambil dari relay)
+      // Simulate metadata extraction (in reality this would come from the relay)
       if (uri.includes('uniswap')) {
         setDappInfo({
           name: "Uniswap Interface",

@@ -59,7 +59,7 @@ Return ONLY a JSON object with no markdown or explanation:
     const match = clean.match(/\{[\s\S]*\}/);
     if (match) return JSON.parse(match[0]);
   } catch {
-    // Fallback jika parse gagal
+    // Fallback if parsing fails
   }
 
   return {

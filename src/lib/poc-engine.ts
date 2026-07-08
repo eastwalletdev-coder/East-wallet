@@ -23,6 +23,11 @@ export const TOP_VALIDATORS = Number(process.env.VALIDATOR_COUNT) || 3;
 // rounded up. With 3 validators that's 2/3.
 export const VALIDATOR_QUORUM = Math.ceil((TOP_VALIDATORS * 2) / 3);
 
+// Minimum EAST stake required to be eligible for validator selection.
+// Set at launch, not changed later — changing mid-testnet risks existing
+// validators suddenly losing eligibility (bad UX). Bump env var to increase.
+export const VALIDATOR_MINIMUM_STAKE = Number(process.env.VALIDATOR_MINIMUM_STAKE) || 1000;
+
 // Weights
 const W_STAKE = 0.4;
 const W_UPTIME = 0.35;
@@ -40,6 +45,8 @@ export async function runEpoch(): Promise<void> {
     const oneDayAgo = new Date(now - EPOCH_MS).toISOString();
 
     // Get all users with staking — identity DB only, no cross-database joins.
+    // Only include users with stake >= VALIDATOR_MINIMUM_STAKE to be eligible for
+    // validator selection — prevents low-stake attempts to enter validator set.
     const usersRes = await identityClient.query(`
       SELECT
         u.telegram_id,
@@ -48,8 +55,8 @@ export async function runEpoch(): Promise<void> {
         u.last_active,
         u.eastpass_tier
       FROM identity.users u
-      WHERE u.staked_amount > 0
-    `);
+      WHERE u.staked_amount >= $1
+    `, [VALIDATOR_MINIMUM_STAKE]);
 
     if (usersRes.rows.length === 0) {
       console.log('[EASTCHAIN PoC] No staking users found, epoch skipped');

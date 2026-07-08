@@ -6,8 +6,8 @@ import { toast } from '@/hooks/use-toast';
 
 /**
  * WalletProvider — AES-GCM encrypted localStorage
- * Mnemonic dienkripsi dengan password sebelum disimpan.
- * Password tidak pernah disimpan, hanya dipakai sebagai kunci enkripsi.
+ * Mnemonic is encrypted with a password before being stored.
+ * The password is never stored — it's only used as the encryption key.
  */
 
 // ── Crypto Helpers ────────────────────────────────────────────────────────────

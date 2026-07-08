@@ -248,6 +248,246 @@ export async function migrateIdentityV7() {
 }
 
 /**
+ * Migration v8 — self-custody + validator candidacy.
+ *
+ * Adds:
+ *  - identity.users.self_custody_pubkey / self_custody_migrated_at — a
+ *    pubkey the USER generated and holds themselves (client-side), proven
+ *    via a signature over a claim message signed with their existing
+ *    server-derived key. Separate from the custodial keypair-service.ts
+ *    keys, which the server can still derive on its own.
+ *  - identity.validator_candidates — an admin-reviewed intake queue for
+ *    validator applications. Deliberately NOT auto-approved: this project
+ *    is federated/permissioned at this stage, not permissionless, and the
+ *    schema should be honest about that rather than implying otherwise.
+ *
+ * See src/lib/db/migrations/002_self_custody.sql for the raw SQL if you'd
+ * rather run it directly with psql instead of via this function.
+ */
+export async function migrateIdentityV8() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS self_custody_pubkey VARCHAR(128);`);
+    await client.query(`ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS self_custody_migrated_at TIMESTAMPTZ;`);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_self_custody_pubkey
+        ON identity.users (self_custody_pubkey)
+        WHERE self_custody_pubkey IS NOT NULL;
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.validator_candidates (
+        telegram_id VARCHAR(50) PRIMARY KEY REFERENCES identity.users(telegram_id),
+        public_key VARCHAR(128) NOT NULL,
+        signature VARCHAR(256) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending_review',
+        submitted_at TIMESTAMPTZ DEFAULT NOW(),
+        reviewed_at TIMESTAMPTZ,
+        reviewed_by VARCHAR(50),
+        notes TEXT DEFAULT ''
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_validator_candidates_status ON identity.validator_candidates (status);`);
+    console.log('[EASTCHAIN] Identity schema migration v8 completed (self-custody + validator_candidates)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v8 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Migration v9 — real node liveness tracking, distinct from PoC score.
+ *
+ * `identity.validators` is elected purely by runEpoch()'s scoring (stake +
+ * uptime + reputation from app activity) — it says nothing about whether a
+ * validator is actually running independent node software. These columns
+ * add that missing signal:
+ *   - node_type: 'internal_vercel' (default — no separate node, Vercel
+ *     produces on their behalf, exactly like today) or 'external' (they run
+ *     their own always-on process that heartbeats in).
+ *   - last_heartbeat_at: updated by /api/node/heartbeat. A validator only
+ *     counts toward the "2+ active external nodes" leader-proposal
+ *     threshold if this is recent — being scored highly is not enough on
+ *     its own.
+ */
+export async function migrateIdentityV9() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`ALTER TABLE identity.validators ADD COLUMN IF NOT EXISTS node_type VARCHAR(20) NOT NULL DEFAULT 'internal_vercel';`);
+    await client.query(`ALTER TABLE identity.validators ADD COLUMN IF NOT EXISTS last_heartbeat_at TIMESTAMPTZ;`);
+    console.log('[EASTCHAIN] Identity schema migration v9 completed (node_type, last_heartbeat_at on validators)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v9 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/** How recent a heartbeat must be to count as "actually online" right now. */
+export const HEARTBEAT_FRESHNESS_SECONDS = 90;
+
+/**
+ * Records a heartbeat from an external validator node. Caller MUST verify
+ * the signature before calling this — see /api/node/heartbeat/route.ts.
+ * Also flips node_type to 'external' the first time, since a heartbeat is
+ * proof the caller is running independent node software.
+ */
+export async function recordValidatorHeartbeat(telegramId: string): Promise<void> {
+  const client = await identityPool.connect();
+  try {
+    await client.query(
+      `UPDATE identity.validators
+       SET node_type = 'external', last_heartbeat_at = NOW()
+       WHERE telegram_id = $1`,
+      [telegramId]
+    );
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Active external validators right now — is_active (won this epoch's
+ * scoring) AND node_type='external' AND heartbeat fresh. This is the list
+ * leader-schedule.ts picks from and counts against the "2+" threshold.
+ */
+export async function getActiveExternalValidators(): Promise<Array<{
+  telegramId: string;
+  selfCustodyPubkey: string | null;
+  totalScore: number;
+}>> {
+  const client = await identityPool.connect();
+  try {
+    const res = await client.query(
+      `SELECT v.telegram_id, v.total_score, u.self_custody_pubkey
+       FROM identity.validators v
+       JOIN identity.users u ON u.telegram_id = v.telegram_id
+       WHERE v.is_active = TRUE
+         AND v.node_type = 'external'
+         AND v.last_heartbeat_at > NOW() - INTERVAL '${HEARTBEAT_FRESHNESS_SECONDS} seconds'
+         AND u.self_custody_pubkey IS NOT NULL
+       ORDER BY v.telegram_id ASC` // stable order — deterministic leader picking needs this
+    );
+    return res.rows.map((r: any) => ({
+      telegramId: r.telegram_id,
+      selfCustodyPubkey: r.self_custody_pubkey,
+      totalScore: Number(r.total_score),
+    }));
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Records that a user has taken control of their own keypair. Call only
+ * after verifying the accompanying signature (see self-custody-actions.ts)
+ * — this function itself does not verify anything, it just persists.
+ */
+export async function setSelfCustodyPubkey(telegramId: string, pubkeyHex: string) {
+  const client = await identityPool.connect();
+  try {
+    await client.query(
+      `UPDATE identity.users
+       SET self_custody_pubkey = $1, self_custody_migrated_at = NOW(), updated_at = NOW()
+       WHERE telegram_id = $2`,
+      [pubkeyHex, telegramId]
+    );
+  } finally {
+    client.release();
+  }
+}
+
+export async function getSelfCustodyStatus(telegramId: string): Promise<{
+  selfCustodyPubkey: string | null;
+  migratedAt: string | null;
+}> {
+  const client = await identityPool.connect();
+  try {
+    const res = await client.query(
+      `SELECT self_custody_pubkey, self_custody_migrated_at FROM identity.users WHERE telegram_id = $1`,
+      [telegramId]
+    );
+    if (res.rows.length === 0) return { selfCustodyPubkey: null, migratedAt: null };
+    return {
+      selfCustodyPubkey: res.rows[0].self_custody_pubkey,
+      migratedAt: res.rows[0].self_custody_migrated_at,
+    };
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Insert (or resubmit) a validator candidacy application. Always lands as
+ * 'pending_review' — admin approval happens separately (see
+ * reviewValidatorCandidate). Resubmitting overwrites a prior rejected/
+ * pending application but never touches an already-approved one.
+ */
+export async function submitValidatorCandidate(
+  telegramId: string,
+  pubkeyHex: string,
+  signatureHex: string
+): Promise<{ success: true } | { success: false; error: string }> {
+  const client = await identityPool.connect();
+  try {
+    const existing = await client.query(
+      `SELECT status FROM identity.validator_candidates WHERE telegram_id = $1`,
+      [telegramId]
+    );
+    if (existing.rows.length > 0 && existing.rows[0].status === 'approved') {
+      return { success: false, error: 'ALREADY_APPROVED' };
+    }
+    await client.query(
+      `INSERT INTO identity.validator_candidates (telegram_id, public_key, signature, status, submitted_at)
+       VALUES ($1, $2, $3, 'pending_review', NOW())
+       ON CONFLICT (telegram_id)
+       DO UPDATE SET public_key = $2, signature = $3, status = 'pending_review',
+                      submitted_at = NOW(), reviewed_at = NULL, reviewed_by = NULL`,
+      [telegramId, pubkeyHex, signatureHex]
+    );
+    return { success: true };
+  } finally {
+    client.release();
+  }
+}
+
+export async function listValidatorCandidates(status?: string) {
+  const client = await identityPool.connect();
+  try {
+    const res = status
+      ? await client.query(`SELECT * FROM identity.validator_candidates WHERE status = $1 ORDER BY submitted_at ASC`, [status])
+      : await client.query(`SELECT * FROM identity.validator_candidates ORDER BY submitted_at ASC`);
+    return res.rows;
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Admin action — approve or reject a pending candidate. This is the
+ * manual gate: with a handful of trusted users, review is a deliberate
+ * choice rather than a limitation to route around.
+ */
+export async function reviewValidatorCandidate(
+  telegramId: string,
+  decision: 'approved' | 'rejected',
+  reviewedBy: string,
+  notes = ''
+) {
+  const client = await identityPool.connect();
+  try {
+    await client.query(
+      `UPDATE identity.validator_candidates
+       SET status = $1, reviewed_at = NOW(), reviewed_by = $2, notes = $3
+       WHERE telegram_id = $4`,
+      [decision, reviewedBy, notes, telegramId]
+    );
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Backfill public_key for every existing user that doesn't have one yet
  * (old users created before the keypair system existed). Also usable to
  * (re)generate a keypair for a single user by id.
@@ -279,3 +519,12 @@ export async function backfillKeypairs(onlyTelegramId?: string): Promise<{ updat
     client.release();
   }
 }
+
+/**
+ * Claim message builders live in src/lib/east-claim-messages.ts — a plain
+ * isomorphic module importable from client components too (needed so the
+ * browser can sign the exact same string this server verifies against).
+ * Re-exported here for convenience so existing callers of identity.ts
+ * don't need a second import.
+ */
+export { buildSelfCustodyClaimMessage, buildValidatorClaimMessage } from '@/lib/east-claim-messages';

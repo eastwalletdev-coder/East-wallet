@@ -12,10 +12,17 @@ import { CONTRACTS } from '@/lib/contracts/registry';
 import { checkClaimCooldown, setClaimCooldown, invalidateCachedUser } from '@/lib/db/redis';
 
 // ─── Staking ─────────────────────────────────────────────────────
-export async function stakeEastContract(tgId: string, amount: number, initData?: string) {
+export async function stakeEastContract(
+  tgId: string,
+  amount: number,
+  initData?: string,
+  signature?: string,
+  selfCustodyPubkey?: string
+) {
   if (!Number.isFinite(amount) || amount <= 0) return { success: false, error: 'INVALID_AMOUNT' };
   const res = await callContract({
     tgId, initData, contractAddress: CONTRACTS.STAKING, functionName: 'stake', params: { amount },
+    signature, selfCustodyPubkey,
   });
   if (res.success) await invalidateCachedUser(tgId);
   return res;
@@ -47,7 +54,13 @@ export async function claimVestedContract(tgId: string, initData?: string) {
 }
 
 // ─── Mining ────────────────────────────────────────────────────────
-export async function claimMiningRewardContract(tgId: string, initData?: string) {
+export async function claimMiningRewardContract(
+  tgId: string,
+  initData?: string,
+  verifiedHeaders?: number,
+  signature?: string,
+  selfCustodyPubkey?: string
+) {
   // Fast pre-check (Redis) — pure UX, saves a wasted round trip for an
   // obviously-too-early claim. NOT the source of truth: see mining-contract.ts,
   // the DB-side check inside the row-locked transaction is what's authoritative.
@@ -55,7 +68,9 @@ export async function claimMiningRewardContract(tgId: string, initData?: string)
   if (!cooldown.allowed) return { success: false, error: 'COOLDOWN_ACTIVE', remainingSeconds: cooldown.remainingSeconds };
 
   const res = await callContract({
-    tgId, initData, contractAddress: CONTRACTS.MINING, functionName: 'claimMiningReward', params: {},
+    tgId, initData, contractAddress: CONTRACTS.MINING, functionName: 'claimMiningReward',
+    params: { verifiedHeaders: verifiedHeaders || 0 },
+    signature, selfCustodyPubkey,
   });
 
   if (!res.success && res.error?.startsWith('COOLDOWN_ACTIVE:')) {

@@ -75,12 +75,12 @@ export function RPCProvider({ children }: { children: React.ReactNode }) {
       }
       return { latency: null, status: 'offline' };
     } catch {
-      // Timeout atau network error = benar-benar offline
+      // Timeout or network error = truly offline
       return { latency: null, status: 'offline' };
     }
   };
 
-  // AI RPC Fallback — panggil Claude API untuk carikan node aktif
+  // AI RPC Fallback — call the Claude API to find an active node
   const findRPCWithAI = useCallback(async (chain: string) => {
     setIsFindingRPC(true);
     try {
@@ -104,7 +104,7 @@ export function RPCProvider({ children }: { children: React.ReactNode }) {
         .map((b: any) => b.text)
         .join('');
 
-      // Parse JSON dari response
+      // Parse JSON from the response
       const match = text.match(/\[[\s\S]*?\]/);
       if (!match) return;
 
@@ -118,13 +118,13 @@ export function RPCProvider({ children }: { children: React.ReactNode }) {
         status: 'offline' as const,
       }));
 
-      // Tambahkan ke nodes list
+      // Add to the nodes list
       setNodes(prev => {
         const filtered = prev.filter(n => !n.id.startsWith(`ai-${chain.toLowerCase()}`));
         return [...filtered, ...newNodes];
       });
 
-      // Ping node baru dan auto-connect yang online
+      // Ping the new nodes and auto-connect to whichever is online
       for (const node of newNodes) {
         const result = await pingNode(node);
         if (result.status === 'online') {

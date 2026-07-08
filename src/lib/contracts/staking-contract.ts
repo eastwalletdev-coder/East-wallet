@@ -7,6 +7,7 @@
 import { mintFromBucket } from '@/lib/db/ledger';
 import { getTierFromStaked } from '@/lib/ledger';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
+import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import crypto from 'crypto';
 
@@ -39,7 +40,7 @@ async function sealSingleTx(ledgerClient: any, tx: {
   const blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, 1);
   // System auto-assigns the current top-ranked validator to this block —
   // no manual validator signature needed, mirrors real blockchain behavior.
-  const validatorId = await getActiveValidator();
+  const validatorId = (await resolveBlockProducer(blockIndex)) ?? await getActiveValidator();
 
   await ledgerClient.query(`
     INSERT INTO ledger.blocks (block_index, block_hash, prev_hash, sequence_hash, merkle_root, tx_count, total_gas, is_empty, validator_id)

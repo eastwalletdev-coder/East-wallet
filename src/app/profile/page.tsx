@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { User, Shield, Globe, Award, Settings, FileText, ChevronRight, Crown, Copy, CheckCheck, Users } from 'lucide-react';
+import { User, Shield, Globe, Award, Settings, FileText, ChevronRight, Crown, Copy, CheckCheck, Users, KeyRound } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -170,21 +170,14 @@ export default function ProfilePage() {
             </div>
             <ChevronRight className="w-4 h-4 text-white/20" />
           </Link>
-
-          <Link href="/lightnode" className="p-4 flex items-center justify-between border-t border-white/[0.04] hover:bg-white/[0.02] transition-colors">
-            <div className="flex items-center gap-3">
-              <Globe className="w-4 h-4 text-primary" />
-              <span className="text-white text-sm">Light Node</span>
-            </div>
-            <ChevronRight className="w-4 h-4 text-white/20" />
-          </Link>
         </div>
       </div>
 
       {/* Export Wallet */}
       {userId && (
         <ExportEastWalletSheet telegramId={userId} initData={initData}>
-          <Button variant="outline" className="w-full h-12 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/60 text-[10px] font-black uppercase gap-2">
+          <Button variant="outline" className="w-full h-12 rounded-2xl border border-primary/30 bg-primary/10 hover:bg-primary/20 text-primary text-[10px] font-black uppercase gap-2">
+            <KeyRound className="w-4 h-4" />
             Export Private Key & Seed Phrase
           </Button>
         </ExportEastWalletSheet>

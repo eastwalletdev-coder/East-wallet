@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useEffect } from "react";
-import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Activity, RefreshCcw, Archive, ShieldCheck, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, Radio, ChevronDown } from "lucide-react";
+import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Activity, RefreshCcw, Archive, ShieldCheck, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, Radio, ChevronDown, X } from "lucide-react";
+import { LightNodePanel } from "@/components/LightNodePanel";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { TradingTerminal } from "@/components/p2p/TradingTerminal";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +21,7 @@ import { MINING_REWARD } from "@/lib/blockchain";
 import { cn } from "@/lib/utils";
 import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
 
-const MIN_VERIFIED_HEADERS = 5;
+const MIN_VERIFIED_HEADERS = 2;
 const MIN_PARTICIPATION_SECONDS = 120;
 
 export default function Home() {
@@ -42,6 +43,7 @@ export default function Home() {
   const [txLoading, setTxLoading] = useState(true);
   const [sigOpen, setSigOpen] = useState(false);
   const [activityCollapsed, setActivityCollapsed] = useState(false);
+  const [lightNodeMode, setLightNodeMode] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
@@ -131,7 +133,7 @@ export default function Home() {
   const handleClaim = async () => {
     setIsClaiming(true);
     try {
-      const result = await claimMiningReward(userId, initData);
+      const result = await claimMiningReward(userId, initData, nodeState?.verifiedHeaderCount ?? 0);
       if (result.success) {
         toast({ title: "Block Verified", description: `+${result.reward} EAST mined.` });
         setCountdown(24 * 60 * 60);
@@ -156,6 +158,16 @@ export default function Home() {
       document.body.appendChild(el); el.select(); document.execCommand('copy'); document.body.removeChild(el);
     }
     setCopied(true); setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleEnterLightNode = () => {
+    getLightNodeClient().connect();
+    setLightNodeMode(true);
+  };
+
+  const handleExitLightNode = () => {
+    getLightNodeClient().disconnect();
+    setLightNodeMode(false);
   };
 
   const handleRecovery = async () => {
@@ -316,32 +328,54 @@ export default function Home() {
 
         {/* Mining Buttons */}
         <div className="flex flex-col gap-3">
-          {countdown > 0 ? (
-            <div className="w-full h-14 rounded-2xl bg-white/5 border border-white/10 flex flex-col items-center justify-center gap-0.5">
-              <span className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30">Next Claim In</span>
-              <span className="text-2xl font-code font-bold text-primary tracking-widest">{formatCountdown(countdown)}</span>
+          {lightNodeMode ? (
+            <div className="relative">
+              <button
+                onClick={handleExitLightNode}
+                aria-label="Exit Light Node Mode"
+                className="absolute -top-2 -right-2 z-10 w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 border border-white/10 flex items-center justify-center"
+              >
+                <X className="w-4 h-4 text-white" />
+              </button>
+              <LightNodePanel />
             </div>
-          ) : isNetworkRecovering ? (
-            <Button onClick={handleRecovery} disabled={isRecovering}
-              className="w-full h-14 bg-yellow-600 hover:bg-yellow-500 text-white rounded-2xl font-black uppercase tracking-widest">
-              <RefreshCcw className={cn("w-4 h-4 mr-2", isRecovering && "animate-spin")} />
-              Sign Consensus Recovery
-            </Button>
-          ) : isReadyToClaim ? (
-            <Button onClick={handleClaimRequest} disabled={isClaiming}
-              className="w-full h-14 rounded-2xl bg-green-600 hover:bg-green-500 text-white font-black uppercase tracking-widest">
-              {isClaiming ? <RefreshCcw className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
-              {isClaiming ? "Broadcasting..." : "Claim Mining Reward"}
-            </Button>
           ) : (
-            <Button
-              disabled={isNetworkHalted || isNodeActive}
-              onClick={() => getLightNodeClient().connect()}
-              className={cn("w-full h-14 rounded-2xl font-black uppercase tracking-widest border-0",
-                isNodeActive ? "bg-white/5 text-white/20 cursor-wait" : "bg-primary text-white hover:opacity-90")}>
-              {isConnecting ? <Radio className="w-4 h-4 mr-2 animate-pulse" /> : isConnected ? <Activity className="w-4 h-4 mr-2 animate-pulse" /> : <Zap className="w-4 h-4 mr-2 fill-white" />}
-              {isNetworkHalted ? "Network Locked" : isConnecting ? "Connecting Node..." : isConnected ? "Node Active — Verifying..." : "Initiate Mining Cycle"}
-            </Button>
+            <>
+              {countdown > 0 ? (
+                <div className="w-full h-14 rounded-2xl bg-white/5 border border-white/10 flex flex-col items-center justify-center gap-0.5">
+                  <span className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30">Next Claim In</span>
+                  <span className="text-2xl font-code font-bold text-primary tracking-widest">{formatCountdown(countdown)}</span>
+                </div>
+              ) : isNetworkRecovering ? (
+                <Button onClick={handleRecovery} disabled={isRecovering}
+                  className="w-full h-14 bg-yellow-600 hover:bg-yellow-500 text-white rounded-2xl font-black uppercase tracking-widest">
+                  <RefreshCcw className={cn("w-4 h-4 mr-2", isRecovering && "animate-spin")} />
+                  Sign Consensus Recovery
+                </Button>
+              ) : isReadyToClaim ? (
+                <Button onClick={handleClaimRequest} disabled={isClaiming}
+                  className="w-full h-14 rounded-2xl bg-green-600 hover:bg-green-500 text-white font-black uppercase tracking-widest">
+                  {isClaiming ? <RefreshCcw className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-2" />}
+                  {isClaiming ? "Broadcasting..." : "Claim Mining Reward"}
+                </Button>
+              ) : (
+                <Button
+                  disabled={isNetworkHalted || isNodeActive}
+                  onClick={handleEnterLightNode}
+                  className={cn("w-full h-14 rounded-2xl font-black uppercase tracking-widest border-0",
+                    isNodeActive ? "bg-white/5 text-white/20 cursor-wait" : "bg-primary text-white hover:opacity-90")}>
+                  {isConnecting ? <Radio className="w-4 h-4 mr-2 animate-pulse" /> : isConnected ? <Activity className="w-4 h-4 mr-2 animate-pulse" /> : <Zap className="w-4 h-4 mr-2 fill-white" />}
+                  {isNetworkHalted ? "Network Locked" : isConnecting ? "Connecting Node..." : isConnected ? "Node Active — Verifying..." : "Initiate Mining Cycle"}
+                </Button>
+              )}
+              <Button
+                onClick={handleEnterLightNode}
+                className="w-full h-14 rounded-2xl font-black uppercase tracking-widest border-0 bg-primary text-white hover:opacity-90"
+              >
+                <Radio className="w-4 h-4 mr-2" />
+                Light Node
+              </Button>
+            </>
           )}
           <Button variant="outline" onClick={handlePrune} disabled={isRolling || isNodeActive}
             className="h-12 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/40 text-[10px] font-black uppercase">

@@ -58,7 +58,9 @@ import { ethers } from 'ethers';
 import { identityPool } from '@/lib/db/identity';
 import { ledgerPool } from '@/lib/db/ledger';
 import { validateTelegramData, extractVerifiedUserId } from '@/lib/telegram';
+import { verifyIdentityOrSignature } from '@/lib/auth/dual-mode-identity';
 import { signPayloadForUser, verifySignature, getPublicKeyForUser } from '@/lib/keypair-service';
+import { buildContractCallPayload } from '@/lib/tx-payload-builders';
 import { getNetworkStatus } from '@/lib/db/redis';
 import { CONTRACTS, isKnownCall, paramsMatchAbi } from './registry';
 import * as stakingContract from './staking-contract';
@@ -87,6 +89,9 @@ export interface CallContractParams {
   /** Future external-wallet path — see security note 4 above. */
   evmSignature?: string;
   evmAddress?: string;
+  /** Self-custody signature (alternative to initData, not EVM) */
+  signature?: string;
+  selfCustodyPubkey?: string;
 }
 
 function canonicalPayload(opts: {
@@ -131,13 +136,38 @@ async function getGasPrice(): Promise<number> {
 export async function callContract(
   call: CallContractParams
 ): Promise<{ success: boolean; error?: string; callHash?: string; gasFee?: number; [key: string]: any }> {
-  const { tgId, initData, contractAddress, functionName, params = {}, evmSignature, evmAddress } = call;
+  const { tgId, initData, contractAddress, functionName, params = {}, evmSignature, evmAddress, signature, selfCustodyPubkey } = call;
 
-  // ── 1. Telegram identity (real auth boundary today) ──────────────
+  // ── 1. Identity verification (Telegram OR self-custody signature) ──
   if (IS_PRODUCTION) {
-    if (!initData || !validateTelegramData(initData)) return { success: false, error: 'IDENTITY_VIOLATION' };
-    const verifiedId = extractVerifiedUserId(initData);
-    if (!verifiedId || verifiedId !== tgId) return { success: false, error: 'IDENTITY_MISMATCH' };
+    let userRow;
+    try {
+      const identityClient = await identityPool.connect();
+      const userRes = await identityClient.query(
+        'SELECT self_custody_pubkey FROM identity.users WHERE telegram_id = $1',
+        [tgId]
+      );
+      identityClient.release();
+      userRow = userRes.rows[0] || null;
+    } catch (err) {
+      return { success: false, error: 'DB_LOOKUP_FAILED' };
+    }
+
+    // Build signature payload if signature-mode is being used
+    let signaturePayload: string | undefined;
+    if (signature) {
+      signaturePayload = buildContractCallPayload(tgId, contractAddress, functionName, params);
+    }
+
+    const authResult = await verifyIdentityOrSignature(
+      tgId,
+      initData,
+      selfCustodyPubkey || userRow?.self_custody_pubkey,
+      signature,
+      signaturePayload,
+      true
+    );
+    if (!authResult.success) return { success: false, error: authResult.error };
   }
 
   // ── 2. Network guard ───────────────────────────────────────────

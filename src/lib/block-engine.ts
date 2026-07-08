@@ -7,6 +7,7 @@ import { createHash } from 'crypto';
 import { ledgerPool } from './db/ledger';
 import { identityPool } from './db/identity';
 import { publishBlockToRailway } from './lightnode-publisher';
+import { planBlockProduction, finalizeProposal } from './consensus/leader-schedule';
 
 const BATCH_WINDOW_MS = 5_000;       // 5 seconds batch window
 const MAX_TX_PER_BLOCK = 10;         // max tx per block
@@ -103,7 +104,7 @@ export async function getActiveValidator(): Promise<string | null> {
 }
 
 // ─── Core: Seal a block ──────────────────────────────────────────
-async function sealBlock(txs: PendingTx[], isEmpty: boolean): Promise<{
+async function sealBlock(txs: PendingTx[], isEmpty: boolean, validatorIdOverride?: string | null): Promise<{
   success: boolean;
   blockIndex?: number;
   blockHash?: string;
@@ -129,9 +130,11 @@ async function sealBlock(txs: PendingTx[], isEmpty: boolean): Promise<{
     const sequenceHash = computeSequenceHash(prevHash, blockIndex, timestamp);
     const blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, txs.length);
 
-    // Get validator for empty blocks (required for Opsi 2)
-    let validatorId: string | null = null;
-    if (isEmpty) {
+    // Get validator for empty blocks (required for Opsi 2), unless the
+    // caller already resolved one via leader-proposal mode (see
+    // attemptSealOrPropose / leader-schedule.ts) — an override always wins.
+    let validatorId: string | null = validatorIdOverride ?? null;
+    if (!validatorId && isEmpty) {
       validatorId = await getActiveValidator();
       if (!validatorId) {
         // No active validator — skip empty block
@@ -239,6 +242,41 @@ async function sealBlock(txs: PendingTx[], isEmpty: boolean): Promise<{
   }
 }
 
+// ─── Mode-switching wrapper: internal (Vercel self-produce) vs ───
+// ─── leader-proposal (2+ active external validator nodes) ────────
+async function attemptSealOrPropose(txs: PendingTx[], isEmpty: boolean): Promise<ReturnType<typeof sealBlock>> {
+  const { blockIndex: lastIndex } = await getLastBlock();
+  const nextBlockIndex = lastIndex + 1;
+  const txHashes = txs.map(t => t.txHash);
+
+  const plan = await planBlockProduction(nextBlockIndex, txHashes, isEmpty);
+
+  if (plan.mode === 'internal') {
+    return sealBlock(txs, isEmpty);
+  }
+
+  // Leader-proposal mode: give the assigned node LEADER_WINDOW_MS to
+  // counter-sign via /api/consensus/submit-block. This holds the current
+  // invocation open while polling — acceptable at the validator counts
+  // this is designed for, same caveat as the existing in-memory mempool.
+  console.log(`[EASTCHAIN] Block #${nextBlockIndex} proposed to leader ${plan.leader.telegramId} (proposal #${plan.proposalId})`);
+  const attested = await plan.waitForAttestation();
+
+  const result = attested
+    ? await sealBlock(txs, isEmpty, plan.leader.telegramId)
+    : await sealBlock(txs, isEmpty); // fallback: self-produce, chain never stalls
+
+  if (result.success && result.blockIndex !== undefined) {
+    await finalizeProposal(plan.proposalId, attested, result.blockIndex);
+  }
+
+  if (!attested) {
+    console.log(`[EASTCHAIN] Leader ${plan.leader.telegramId} missed the window for block #${nextBlockIndex} — Vercel self-produced as fallback`);
+  }
+
+  return result;
+}
+
 // ─── Public: Add tx to mempool + start batch window ──────────────
 export async function addToMempool(tx: PendingTx): Promise<void> {
   mempool.push(tx);
@@ -265,7 +303,7 @@ export async function addToMempool(tx: PendingTx): Promise<void> {
   if (mempool.length >= MAX_TX_PER_BLOCK) {
     if (batchTimer) { clearTimeout(batchTimer); batchTimer = null; }
     const batch = mempool.splice(0, MAX_TX_PER_BLOCK);
-    await sealBlock(batch, false);
+    await attemptSealOrPropose(batch, false);
     return;
   }
 
@@ -275,7 +313,7 @@ export async function addToMempool(tx: PendingTx): Promise<void> {
       batchTimer = null;
       if (mempool.length === 0) return;
       const batch = mempool.splice(0, MAX_TX_PER_BLOCK);
-      await sealBlock(batch, false);
+      await attemptSealOrPropose(batch, false);
     }, BATCH_WINDOW_MS);
   }
 }
@@ -285,7 +323,7 @@ export function startEmptyBlockScheduler() {
   if (emptyBlockTimer) clearInterval(emptyBlockTimer);
   emptyBlockTimer = setInterval(async () => {
     if (mempool.length > 0) return; // Skip if there are pending tx
-    await sealBlock([], true);
+    await attemptSealOrPropose([], true);
   }, EMPTY_BLOCK_INTERVAL_MS);
   console.log('[EASTCHAIN] Empty block scheduler started (30 min interval, validator required)');
 }
@@ -294,5 +332,5 @@ export function stopEmptyBlockScheduler() {
   if (emptyBlockTimer) { clearInterval(emptyBlockTimer); emptyBlockTimer = null; }
 }
 
-export { sealBlock, getLastBlock };
+export { sealBlock, getLastBlock, attemptSealOrPropose };
 export type { PendingTx };

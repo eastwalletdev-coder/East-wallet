@@ -13,7 +13,10 @@ import { getCachedUser, setCachedUser, invalidateCachedUser, setNetworkStatus } 
 import { generateWalletFromTelegramId } from '@/lib/blockchain';
 import { getPublicKeyForUser } from '@/lib/keypair-service';
 import { validateTelegramData, extractVerifiedUserId } from '@/lib/telegram';
+import { verifyIdentityOrSignature } from '@/lib/auth/dual-mode-identity';
+import { buildSendEastPayload } from '@/lib/tx-payload-builders';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
+import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import { generateEastId } from '@/lib/east-id';
 import { stakeEastContract, claimMiningRewardContract, claimVestedContract } from '@/actions/contract-actions';
@@ -65,9 +68,10 @@ async function sealSingleTx(
   const merkleRoot = computeMerkleRoot([tx.txHash]);
   const sequenceHash = computeSequenceHash(prevHash, blockIndex, timestamp);
   const blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, 1);
-  // System auto-assigns the current top-ranked validator to this block —
-  // no manual validator signature needed, mirrors real blockchain behavior.
-  const validatorId = await getActiveValidator();
+  // Leader-proposal mode: if 2+ external validator nodes are verified live,
+  // credit one of them via deterministic rotation (see leader-schedule.ts).
+  // Falls back to the original top-score behavior below < 2 active nodes.
+  const validatorId = (await resolveBlockProducer(blockIndex)) ?? await getActiveValidator();
 
   // Create block
   await ledgerClient.query(`
@@ -246,8 +250,14 @@ export async function registerOrUpdateUser(
 // gas-metered in EAST, signed + nonce-protected, recorded in
 // ledger.contract_calls in addition to the usual block/transaction.
 // Business logic itself lives in lib/contracts/mining-contract.ts.
-export async function claimMiningReward(tgId: string, initData?: string) {
-  const res = await claimMiningRewardContract(tgId, initData);
+export async function claimMiningReward(
+  tgId: string,
+  initData?: string,
+  verifiedHeaders?: number,
+  signature?: string,
+  selfCustodyPubkey?: string
+) {
+  const res = await claimMiningRewardContract(tgId, initData, verifiedHeaders, signature, selfCustodyPubkey);
   if (!res.success) return { success: false, error: res.error, remainingSeconds: (res as any).remainingSeconds };
   return {
     success: true,
@@ -262,35 +272,52 @@ export async function claimMiningReward(tgId: string, initData?: string) {
 }
 
 // ─── Send EAST ────────────────────────────────────────────────────
-export async function sendEast(senderTgId: string, recipientAddress: string, amount: number, initData?: string) {
-  if (IS_PRODUCTION) {
-    if (!initData || !validateTelegramData(initData)) return { success: false, error: 'IDENTITY_VIOLATION' };
-
-    // Cross-check: senderTgId must match the verified identity inside initData
-    // (prevents spoofing senderTgId while using your own valid initData)
-    const verifiedId = extractVerifiedUserId(initData);
-    if (!verifiedId || verifiedId !== senderTgId) {
-      return { success: false, error: 'IDENTITY_MISMATCH' };
-    }
-  }
+export async function sendEast(
+  senderTgId: string,
+  recipientAddress: string,
+  amount: number,
+  initData?: string,
+  signature?: string,
+  selfCustodyPubkey?: string
+) {
   if (amount <= 0) return { success: false, error: 'INVALID_AMOUNT' };
 
   const identityClient = await identityPool.connect();
   const ledgerClient = await ledgerPool.connect();
 
   try {
+    // ── Identity verification: Telegram OR signature ──────────────
+    const senderRes = await identityClient.query(
+      'SELECT * FROM identity.users WHERE telegram_id = $1 FOR UPDATE',
+      [senderTgId]
+    );
+    if (!senderRes.rows.length) return { success: false, error: 'SENDER_NOT_FOUND' };
+    const sender = senderRes.rows[0];
+
+    // Build signature payload if signature-mode is being used
+    let signaturePayload: string | undefined;
+    if (signature) {
+      signaturePayload = buildSendEastPayload(senderTgId, recipientAddress, amount);
+    }
+
+    const authResult = await verifyIdentityOrSignature(
+      senderTgId,
+      initData,
+      selfCustodyPubkey || sender.self_custody_pubkey,
+      signature,
+      signaturePayload,
+      IS_PRODUCTION
+    );
+    if (!authResult.success) return { success: false, error: authResult.error };
+
     await identityClient.query('BEGIN');
     await ledgerClient.query('BEGIN');
 
-    const senderRes = await identityClient.query(
-      'SELECT * FROM identity.users WHERE telegram_id = $1 FOR UPDATE', [senderTgId]
-    );
-    if (!senderRes.rows.length) throw new Error('SENDER_NOT_FOUND');
-    const sender = senderRes.rows[0];
     if (Number(sender.balance) < amount) throw new Error('INSUFFICIENT_BALANCE');
 
     const recipientRes = await identityClient.query(
-      'SELECT * FROM identity.users WHERE wallet_address = $1 FOR UPDATE', [recipientAddress.toLowerCase()]
+      'SELECT * FROM identity.users WHERE wallet_address = $1 FOR UPDATE',
+      [recipientAddress.toLowerCase()]
     );
     if (!recipientRes.rows.length) throw new Error('RECIPIENT_NOT_FOUND');
     const recipient = recipientRes.rows[0];
@@ -344,9 +371,15 @@ export async function sendEast(senderTgId: string, recipientAddress: string, amo
 // lib/contracts/staking-contract.ts. Return shape kept identical to the
 // pre-engine version (proofHash/lockedUntil/blockIndex/blockHash) so the
 // existing EastPass UI needs no changes.
-export async function stakeEast(tgId: string, amount: number, initData?: string) {
+export async function stakeEast(
+  tgId: string,
+  amount: number,
+  initData?: string,
+  signature?: string,
+  selfCustodyPubkey?: string
+) {
   if (amount <= 0) return { success: false, error: 'INVALID_AMOUNT' };
-  const res = await stakeEastContract(tgId, amount, initData);
+  const res = await stakeEastContract(tgId, amount, initData, signature, selfCustodyPubkey);
   if (!res.success) return { success: false, error: res.error };
   return {
     success: true,

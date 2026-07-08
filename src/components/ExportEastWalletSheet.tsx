@@ -90,9 +90,9 @@ export function ExportEastWalletSheet({ telegramId, initData, children }: Export
       setStage('revealed');
     } else if (result.error === 'RATE_LIMITED') {
       const secs = result.remainingSeconds || 0;
-      setError(`Terlalu sering. Coba lagi dalam ${Math.ceil(secs / 60)} menit.`);
+      setError(`Too many attempts. Try again in ${Math.ceil(secs / 60)} min.`);
     } else {
-      setError('Gagal mengambil kunci. Coba lagi.');
+      setError('Failed to retrieve keys. Please try again.');
     }
   };
 
@@ -112,7 +112,7 @@ export function ExportEastWalletSheet({ telegramId, initData, children }: Export
             Export EAST Wallet
           </SheetTitle>
           <SheetDescription className="text-[10px]">
-            Seed phrase & private key untuk akun EAST kamu (Telegram ID: {telegramId})
+            Seed phrase & private key for your EAST account (Telegram ID: {telegramId})
           </SheetDescription>
         </SheetHeader>
 
@@ -122,20 +122,20 @@ export function ExportEastWalletSheet({ telegramId, initData, children }: Export
               <div className="p-4 bg-red-500/5 border border-red-500/20 rounded-2xl space-y-2">
                 <div className="flex items-center gap-2 text-red-400">
                   <ShieldAlert className="w-4 h-4" />
-                  <p className="text-[11px] font-bold uppercase tracking-wider">Jangan bagikan ke siapa pun</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wider">Never share this with anyone</p>
                 </div>
                 <p className="text-[11px] text-white/60 leading-relaxed">
-                  Siapa pun yang punya seed phrase atau private key ini bisa mengambil alih seluruh saldo EAST kamu.
-                  Tim EASTCHAIN — termasuk admin — tidak akan pernah memintanya.
+                  Anyone with this seed phrase or private key can take full control of your EAST balance.
+                  The EASTCHAIN team — including admins — will never ask for it.
                 </p>
               </div>
               <div className="p-4 bg-white/[0.03] rounded-2xl border border-white/5 space-y-2">
                 <p className="text-[11px] text-white/60 leading-relaxed">
-                  Tulis / foto dan simpan di tempat aman offline. Kalau perangkat kamu hilang, ini satu-satunya cara memulihkan akun.
+                  Write it down or take a photo and store it somewhere safe offline. If you lose your device, this is the only way to recover your account.
                 </p>
               </div>
               <Button className="w-full h-12 rounded-xl bg-primary text-white font-bold text-xs uppercase" onClick={() => setStage('confirm')}>
-                Saya Mengerti, Lanjutkan
+                Understood, Continue
               </Button>
             </div>
           )}
@@ -143,7 +143,7 @@ export function ExportEastWalletSheet({ telegramId, initData, children }: Export
           {stage === 'confirm' && (
             <div className="space-y-4">
               <p className="text-[11px] text-white/60 text-center">
-                Ketik <span className="font-mono font-bold text-white">{CONFIRM_PHRASE}</span> untuk konfirmasi
+                Type <span className="font-mono font-bold text-white">{CONFIRM_PHRASE}</span> to confirm
               </p>
               <Input
                 value={confirmText}
@@ -155,7 +155,7 @@ export function ExportEastWalletSheet({ telegramId, initData, children }: Export
               {error && <p className="text-[10px] text-red-400 text-center">{error}</p>}
               <div className="flex gap-2">
                 <Button variant="ghost" className="flex-1 h-11 rounded-xl text-[10px] uppercase" onClick={() => setStage('warning')}>
-                  Kembali
+                  Back
                 </Button>
                 <Button
                   className="flex-1 h-11 rounded-xl bg-primary text-white text-[10px] uppercase font-bold gap-2"
@@ -174,7 +174,7 @@ export function ExportEastWalletSheet({ telegramId, initData, children }: Export
               {/* Mnemonic */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between px-1">
-                  <p className="text-[10px] font-black uppercase tracking-widest text-white/40">Seed Phrase (24 kata)</p>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-white/40">Seed Phrase (24 words)</p>
                   <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setShowMnemonic(v => !v)}>
                     {showMnemonic ? <EyeOff className="w-4 h-4 text-white/40" /> : <Eye className="w-4 h-4 text-white/40" />}
                   </Button>
@@ -190,13 +190,13 @@ export function ExportEastWalletSheet({ telegramId, initData, children }: Export
                   </div>
                 ) : (
                   <div className="h-20 bg-white/[0.03] rounded-2xl flex items-center justify-center border border-dashed border-white/10 cursor-pointer" onClick={() => setShowMnemonic(true)}>
-                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Tap untuk tampilkan</p>
+                    <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Tap to reveal</p>
                   </div>
                 )}
                 {showMnemonic && (
                   <Button variant="outline" className="w-full h-10 rounded-xl border-primary/20 text-primary text-[10px] uppercase font-bold gap-2" onClick={async () => {
                     await navigator.clipboard.writeText(wallet.mnemonic);
-                    toast({ title: 'Seed phrase disalin' });
+                    toast({ title: 'Seed phrase copied' });
                   }}>
                     <Copy className="w-3.5 h-3.5" /> Copy Seed Phrase
                   </Button>
@@ -222,7 +222,7 @@ export function ExportEastWalletSheet({ telegramId, initData, children }: Export
               </div>
 
               <Button variant="ghost" className="w-full h-10 text-[10px] uppercase text-white/40" onClick={() => handleOpenChange(false)}>
-                Selesai & Tutup
+                Done & Close
               </Button>
             </div>
           )}

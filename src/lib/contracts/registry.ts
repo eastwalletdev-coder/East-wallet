@@ -32,7 +32,7 @@ export const CONTRACT_ABI: Record<string, Record<string, string[]>> = {
     claimVested: [],
   },
   [CONTRACTS.MINING]: {
-    claimMiningReward: [],
+    claimMiningReward: ['verifiedHeaders'],
   },
   [CONTRACTS.VALIDATOR]: {
     vote: ['roundId', 'vote'],

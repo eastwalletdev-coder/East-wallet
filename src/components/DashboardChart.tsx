@@ -3,7 +3,7 @@
 
 import { Line, LineChart, ResponsiveContainer } from "recharts"
 
-// Data diatur ke nol untuk mencerminkan dompet baru yang bersih tanpa riwayat saldo
+// Data is set to zero to reflect a fresh wallet with no balance history
 const data = [
   { value: 0 },
   { value: 0 },

@@ -264,3 +264,44 @@ export async function migrateSchemaV2() {
     client.release();
   }
 }
+
+/**
+ * Migration v3 — block proposals for leader-proposal mode.
+ *
+ * Vercel keeps assembling and hashing every block itself (that part is NOT
+ * decentralized by this migration — see leader-schedule.ts for the honest
+ * scope of what changes). What changes is WHO gets credited/authorized as
+ * the block's producer once 2+ external validator nodes are active:
+ * instead of always self-producing, Vercel creates a proposal assigning the
+ * slot to the elected leader, waits up to a short deadline for that node to
+ * countersign, and only falls back to self-producing if the deadline passes
+ * unclaimed — chosen deliberately so the chain never stalls on one offline
+ * node.
+ */
+export async function migrateLedgerV3() {
+  const client = await ledgerPool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ledger.block_proposals (
+        id               SERIAL PRIMARY KEY,
+        block_index      INT NOT NULL,
+        assigned_telegram_id VARCHAR(50) NOT NULL,
+        assigned_pubkey  VARCHAR(128) NOT NULL,
+        tx_hashes        JSONB NOT NULL DEFAULT '[]',
+        is_empty         BOOLEAN NOT NULL DEFAULT FALSE,
+        deadline_at      TIMESTAMPTZ NOT NULL,
+        status           VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | submitted | fallback_sealed | expired
+        sealed_block_index INT DEFAULT NULL,
+        created_at       TIMESTAMPTZ DEFAULT NOW(),
+        resolved_at      TIMESTAMPTZ
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_block_proposals_status ON ledger.block_proposals(status);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_block_proposals_deadline ON ledger.block_proposals(deadline_at);`);
+    console.log('[EASTCHAIN] Ledger schema migration v3 completed (block_proposals table)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Ledger migration v3 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}

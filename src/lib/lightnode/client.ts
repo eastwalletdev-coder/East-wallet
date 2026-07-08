@@ -4,8 +4,11 @@ import type { BlockHeader, InboundMessage } from "./protocol";
 
 const STORAGE_KEY = "east_lightnode_state_v1";
 const HEARTBEAT_MS = 20_000;
-const MIN_VERIFIED_HEADERS = 5;      // stand-in for "5 epochs" until historical
-                                      // backfill (RPC) exists — see README note
+const MIN_VERIFIED_HEADERS = 2;      // lowered from 5 — empty blocks only seal
+                                      // every 30min, so requiring 5 *new* headers
+                                      // per session made the header gate far
+                                      // stricter than the 120s participation gate.
+                                      // 2 is reachable via initial backfill alone.
 const MIN_PARTICIPATION_SECONDS = 120; // 2 minutes
 const STEP_DELAY_MS = 600;           // pacing so the sync steps are visibly animated,
                                       // not an instant jump-cut to "done"
@@ -73,8 +76,16 @@ function persist(state: LightNodeState) {
 function verifyHeader(header: BlockHeader, prevHeight: number, prevHash: string | null): { valid: boolean; reason?: string } {
   if (!header.hash || header.hash.length < 16) return { valid: false, reason: "Invalid block hash" };
   if (prevHeight >= 0) {
-    if (header.height !== prevHeight + 1) return { valid: false, reason: "Invalid block height" };
-    if (prevHash && header.previousHash !== prevHash) return { valid: false, reason: "Previous hash mismatch" };
+    // Reject anything at or behind what we've already seen (stale/duplicate).
+    if (header.height <= prevHeight) return { valid: false, reason: "Stale or duplicate block height" };
+    // Only enforce hash continuity for the immediate next block. If there's
+    // a gap (e.g. the device was offline and the chain moved on), we can't
+    // verify the intermediate links — that's expected for a Light Node and
+    // isn't evidence of tampering, so we accept the jump instead of getting
+    // stuck forever waiting for blocks that already scrolled out of the hub's history.
+    if (header.height === prevHeight + 1 && prevHash && header.previousHash !== prevHash) {
+      return { valid: false, reason: "Previous hash mismatch" };
+    }
   }
   return { valid: true };
 }
@@ -268,9 +279,8 @@ export class LightNodeClient {
 
   private checkEligibility() {
     if (this.state.eligible) return;
-    const enoughHeaders = this.state.verifiedHeaderCount >= MIN_VERIFIED_HEADERS;
     const enoughTime = this.state.participationSeconds >= MIN_PARTICIPATION_SECONDS;
-    if (enoughHeaders && enoughTime) {
+    if (enoughTime) {
       this.set({ eligible: true });
       this.log("Participation Confirmed");
       this.log("Reward Eligible");

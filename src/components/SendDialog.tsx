@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Send, Loader2, ScanLine, CheckCircle2, AlertTriangle } from 'lucide-react';
+import { Send, Loader2, ScanLine, CheckCircle2, AlertTriangle, ChevronLeft, Copy, Check, ShieldCheck } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTelegram } from '@/hooks/use-telegram';
 import { sendEast } from '@/actions/mining-actions';
@@ -23,8 +23,46 @@ interface SendDialogProps {
   selectedToken?: Token | null;
 }
 
+type Step = 'form' | 'review' | 'result';
+
 function isValidSolanaAddress(address: string): boolean {
   try { new PublicKey(address); return true; } catch { return false; }
+}
+
+function truncate(addr: string, head = 6, tail = 4): string {
+  if (!addr || addr.length <= head + tail + 3) return addr;
+  return `${addr.slice(0, head)}...${addr.slice(-tail)}`;
+}
+
+/** Small inline "copy this text" button — used for both the review step's
+ *  address row and the result step's tx hash. */
+function CopyButton({ text, className = '' }: { text: string; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const el = document.createElement('textarea');
+      el.value = text;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={handleCopy}
+      className={`h-7 px-2 gap-1 rounded-lg border-primary/30 text-primary text-[10px] font-bold uppercase hover:bg-primary/10 ${className}`}
+    >
+      {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+      {copied ? 'Copied' : 'Copy'}
+    </Button>
+  );
 }
 
 export function SendDialog({ open, onOpenChange, startWithScanner = false, selectedToken }: SendDialogProps) {
@@ -32,6 +70,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
   const { userId, initData, refreshUser } = useTelegram();
   const { mnemonic, isLocked } = useWallet();
   const { currentRPC } = useRPC();
+  const [step, setStep] = useState<Step>('form');
   const [address, setAddress] = useState('');
   const [amount, setAmount] = useState('');
   const [sending, setSending] = useState(false);
@@ -39,18 +78,22 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
   const [txHash, setTxHash] = useState<string | null>(null);
   const [feeEstimate, setFeeEstimate] = useState<FeeEstimate | null>(null);
   const [estimating, setEstimating] = useState(false);
+  const [gasFeeEast, setGasFeeEast] = useState('0');
 
   useEffect(() => {
     if (open) {
+      setStep('form');
       setScanMode(startWithScanner);
       setTxHash(null);
       setAddress('');
       setAmount('');
       setFeeEstimate(null);
+      setGasFeeEast('0');
     }
   }, [open, startWithScanner]);
 
   const tokenLabel = selectedToken ? selectedToken.symbol : 'EAST';
+  const networkLabel = selectedToken ? selectedToken.chain : 'EASTCHAIN';
   const availableBalance = selectedToken ? `${selectedToken.balance} ${selectedToken.symbol}` : null;
   const isEastToken = !selectedToken || selectedToken.symbol === 'EAST';
   const isSolanaChain = selectedToken?.chain === 'Solana';
@@ -85,7 +128,9 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
     return () => clearTimeout(timer);
   }, [address, amount, mnemonic, currentRPC?.url, isEastToken, isSolanaChain, selectedToken]);
 
-  const handleSend = async () => {
+  // Form step's button just validates + moves to the review/approve screen —
+  // no network call happens here yet.
+  const handleContinueToReview = () => {
     const amt = parseFloat(amount);
     if (!address.trim() || isNaN(amt) || amt <= 0) {
       toast({ variant: 'destructive', title: 'Invalid input', description: 'Enter a valid address and amount.' });
@@ -103,7 +148,12 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
       });
       return;
     }
+    setStep('review');
+  };
 
+  // Review step's "Approve" button — this is where the actual send happens.
+  const handleApprove = async () => {
+    const amt = parseFloat(amount);
     setSending(true);
     try {
       if (isEastToken) {
@@ -111,12 +161,12 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
           toast({ variant: 'destructive', title: 'Not authenticated', description: 'Telegram session not found.' });
           return;
         }
-        const result = await sendEast(userId, address.trim(), amt, initData);
+        const result = await sendEast(userId, address.trim(), amt, initData, undefined, undefined, parseFloat(gasFeeEast) || 0);
         if (result.success) {
           setTxHash(result.txHash || null);
-          toast({ title: 'Transfer Queued', description: `${amt} EAST to ${address.slice(0, 8)}...${address.slice(-6)} — confirming...` });
+          setStep('result');
+          toast({ title: 'Transfer Queued', description: `${amt} EAST to ${truncate(address)} — confirming...` });
           refreshUser();
-          setTimeout(() => onOpenChange(false), 1800);
         } else {
           const errMap: Record<string, string> = {
             INSUFFICIENT_BALANCE: 'Insufficient balance.',
@@ -127,6 +177,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
             SENDER_NOT_FOUND: 'Sender account not found.',
           };
           toast({ variant: 'destructive', title: 'Transfer Failed', description: errMap[result.error || ''] || result.error || 'Unknown error' });
+          setStep('form');
         }
         return;
       }
@@ -134,10 +185,12 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
       // ── Real multi-chain send (non-EAST) ──────────────────────────
       if (isLocked || !mnemonic) {
         toast({ variant: 'destructive', title: 'Wallet locked', description: 'Unlock your multi-chain wallet first.' });
+        setStep('form');
         return;
       }
       if (!currentRPC?.url) {
         toast({ variant: 'destructive', title: 'No RPC connected', description: 'Wait for a live RPC endpoint to connect, then try again.' });
+        setStep('form');
         return;
       }
 
@@ -153,17 +206,25 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
 
       if (result.success) {
         setTxHash(result.txHash);
+        setStep('result');
         toast({ title: 'Transaction Confirmed', description: `${amt} ${tokenLabel} sent — 1 confirmation.` });
-        setTimeout(() => onOpenChange(false), 1800);
       } else {
         toast({ variant: 'destructive', title: 'Transfer Failed', description: result.error });
+        setStep('form');
       }
     } catch (e: any) {
       toast({ variant: 'destructive', title: 'Transfer Failed', description: e?.message || 'Unknown error' });
+      setStep('form');
     } finally {
       setSending(false);
     }
   };
+
+  const feeDisplay = isEastToken
+    ? (parseFloat(gasFeeEast) > 0 ? `${gasFeeEast} EAST (priority)` : 'Free (standard)')
+    : feeEstimate?.success
+      ? `~${parseFloat(feeEstimate.fee).toFixed(6)} ${feeEstimate.feeSymbol}`
+      : '—';
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -173,115 +234,240 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
         </Button>
       </DialogTrigger>
       <DialogContent className="bg-background border-primary/20 rounded-[2rem] max-w-[380px]">
-        <DialogHeader>
-          <DialogTitle className="font-headline uppercase">
-            Send {selectedToken ? selectedToken.symbol : ''}
-          </DialogTitle>
-        </DialogHeader>
 
-        <div className="space-y-4 py-4">
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <Label className="text-[10px] uppercase font-black text-muted-foreground">Recipient Address</Label>
+        {step === 'form' && (
+          <>
+            <DialogHeader>
+              <DialogTitle className="font-headline uppercase">
+                Send {selectedToken ? selectedToken.symbol : ''}
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label className="text-[10px] uppercase font-black text-muted-foreground">Recipient Address</Label>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 text-[9px] gap-1 text-primary font-bold uppercase"
+                    onClick={() => setScanMode(v => !v)}
+                  >
+                    <ScanLine className="w-3 h-3" />
+                    {scanMode ? 'Type' : 'Scan QR'}
+                  </Button>
+                </div>
+                {scanMode ? (
+                  <div className="h-36 bg-secondary/30 rounded-xl border border-primary/10 flex flex-col items-center justify-center gap-2 text-muted-foreground">
+                    <ScanLine className="w-8 h-8 text-primary/40" />
+                    <p className="text-[10px] uppercase font-bold">Camera scanning not available in browser</p>
+                    <Button variant="ghost" size="sm" className="text-[9px] text-primary" onClick={() => setScanMode(false)}>Enter manually</Button>
+                  </div>
+                ) : (
+                  <Input
+                    placeholder={isSolanaChain ? 'Solana address...' : '0x...'}
+                    value={address}
+                    onChange={e => setAddress(e.target.value)}
+                    className="bg-secondary/30 border-primary/10 font-mono text-sm rounded-xl h-12"
+                  />
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-[10px] uppercase font-black text-muted-foreground">Amount</Label>
+                <Input
+                  type="number"
+                  placeholder="0.00"
+                  value={amount}
+                  onChange={e => setAmount(e.target.value)}
+                  className="bg-secondary/30 border-primary/10 font-mono text-sm rounded-xl h-12"
+                />
+                {availableBalance && (
+                  <div className="flex items-center justify-between px-1">
+                    <p className="text-[10px] text-muted-foreground">Available: {availableBalance}</p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-5 text-[9px] text-primary font-bold uppercase px-1"
+                      onClick={() => setAmount(selectedToken?.balance || '')}
+                    >
+                      Max
+                    </Button>
+                  </div>
+                )}
+              </div>
+
+              {isEastToken && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-[10px] uppercase font-black text-muted-foreground">Priority Fee</Label>
+                    <span className="text-[9px] text-muted-foreground">Higher fee = confirmed sooner</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { label: 'Standard', value: '0' },
+                      { label: 'Priority', value: '1' },
+                      { label: 'Express', value: '5' },
+                    ].map(tier => (
+                      <Button
+                        key={tier.label}
+                        type="button"
+                        variant="outline"
+                        onClick={() => setGasFeeEast(tier.value)}
+                        className={`h-11 rounded-xl text-[10px] font-bold uppercase flex-col gap-0.5 ${
+                          gasFeeEast === tier.value
+                            ? 'bg-primary/20 border-primary text-primary'
+                            : 'bg-secondary/30 border-primary/10 text-muted-foreground'
+                        }`}
+                      >
+                        <span>{tier.label}</span>
+                        <span className="font-mono text-[9px] opacity-70">{tier.value} EAST</span>
+                      </Button>
+                    ))}
+                  </div>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    placeholder="Custom fee (EAST)"
+                    value={gasFeeEast}
+                    onChange={e => setGasFeeEast(e.target.value)}
+                    className="bg-secondary/30 border-primary/10 font-mono text-xs rounded-xl h-9"
+                  />
+                </div>
+              )}
+
+              {!isEastToken && (estimating || feeEstimate) && (
+                <div className={`rounded-xl border p-3 text-[10px] space-y-1 ${
+                  feeEstimate?.success === false || (feeEstimate?.success && !feeEstimate.sufficientForFee)
+                    ? 'bg-red-500/10 border-red-500/20 text-red-400'
+                    : 'bg-secondary/30 border-primary/10 text-muted-foreground'
+                }`}>
+                  {estimating ? (
+                    <div className="flex items-center gap-2">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Estimating network fee...
+                    </div>
+                  ) : feeEstimate?.success ? (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="uppercase font-bold">Network Fee</span>
+                        <span className="font-mono">~{parseFloat(feeEstimate.fee).toFixed(6)} {feeEstimate.feeSymbol}</span>
+                      </div>
+                      {!feeEstimate.sufficientForFee && (
+                        <div className="flex items-center gap-1.5 pt-1">
+                          <AlertTriangle className="w-3 h-3 shrink-0" />
+                          <span>Insufficient {feeEstimate.feeSymbol} to cover gas (have {parseFloat(feeEstimate.nativeBalance).toFixed(6)})</span>
+                        </div>
+                      )}
+                    </>
+                  ) : feeEstimate && !feeEstimate.success ? (
+                    <div className="flex items-center gap-1.5">
+                      <AlertTriangle className="w-3 h-3 shrink-0" /> Couldn't estimate fee: {feeEstimate.error}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+
+            <Button
+              onClick={handleContinueToReview}
+              disabled={
+                !address || !amount || scanMode ||
+                (!isEastToken && (estimating || (feeEstimate?.success && !feeEstimate.sufficientForFee)))
+              }
+              className="w-full h-12 rounded-2xl bg-primary font-black uppercase tracking-widest"
+            >
+              Review Transfer
+            </Button>
+          </>
+        )}
+
+        {step === 'review' && (
+          <div className="-m-6 p-6 bg-[#0a0a12] rounded-[2rem] space-y-5">
+            <div className="flex items-start justify-between">
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-6 text-[9px] gap-1 text-primary font-bold uppercase"
-                onClick={() => setScanMode(v => !v)}
+                onClick={() => setStep('form')}
+                className="h-8 w-8 p-0 rounded-full text-white/50 hover:text-white hover:bg-white/10 -ml-2"
               >
-                <ScanLine className="w-3 h-3" />
-                {scanMode ? 'Type' : 'Scan QR'}
+                <ChevronLeft className="w-4 h-4" />
               </Button>
             </div>
-            {scanMode ? (
-              <div className="h-36 bg-secondary/30 rounded-xl border border-primary/10 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                <ScanLine className="w-8 h-8 text-primary/40" />
-                <p className="text-[10px] uppercase font-bold">Camera scanning not available in browser</p>
-                <Button variant="ghost" size="sm" className="text-[9px] text-primary" onClick={() => setScanMode(false)}>Enter manually</Button>
-              </div>
-            ) : (
-              <Input
-                placeholder={isSolanaChain ? 'Solana address...' : '0x...'}
-                value={address}
-                onChange={e => setAddress(e.target.value)}
-                className="bg-secondary/30 border-primary/10 font-mono text-sm rounded-xl h-12"
-              />
-            )}
-          </div>
 
-          <div className="space-y-2">
-            <Label className="text-[10px] uppercase font-black text-muted-foreground">Amount</Label>
-            <Input
-              type="number"
-              placeholder="0.00"
-              value={amount}
-              onChange={e => setAmount(e.target.value)}
-              className="bg-secondary/30 border-primary/10 font-mono text-sm rounded-xl h-12"
-            />
-            {availableBalance && (
-              <div className="flex items-center justify-between px-1">
-                <p className="text-[10px] text-muted-foreground">Available: {availableBalance}</p>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-5 text-[9px] text-primary font-bold uppercase px-1"
-                  onClick={() => setAmount(selectedToken?.balance || '')}
-                >
-                  Max
-                </Button>
-              </div>
-            )}
-          </div>
-
-          {!isEastToken && (estimating || feeEstimate) && (
-            <div className={`rounded-xl border p-3 text-[10px] space-y-1 ${
-              feeEstimate?.success === false || (feeEstimate?.success && !feeEstimate.sufficientForFee)
-                ? 'bg-red-500/10 border-red-500/20 text-red-400'
-                : 'bg-secondary/30 border-primary/10 text-muted-foreground'
-            }`}>
-              {estimating ? (
-                <div className="flex items-center gap-2">
-                  <Loader2 className="w-3 h-3 animate-spin" /> Estimating network fee...
-                </div>
-              ) : feeEstimate?.success ? (
-                <>
-                  <div className="flex items-center justify-between">
-                    <span className="uppercase font-bold">Network Fee</span>
-                    <span className="font-mono">~{parseFloat(feeEstimate.fee).toFixed(6)} {feeEstimate.feeSymbol}</span>
-                  </div>
-                  {!feeEstimate.sufficientForFee && (
-                    <div className="flex items-center gap-1.5 pt-1">
-                      <AlertTriangle className="w-3 h-3 shrink-0" />
-                      <span>Insufficient {feeEstimate.feeSymbol} to cover gas (have {parseFloat(feeEstimate.nativeBalance).toFixed(6)})</span>
-                    </div>
-                  )}
-                </>
-              ) : feeEstimate && !feeEstimate.success ? (
-                <div className="flex items-center gap-1.5">
-                  <AlertTriangle className="w-3 h-3 shrink-0" /> Couldn't estimate fee: {feeEstimate.error}
-                </div>
-              ) : null}
+            <div className="text-center space-y-2 px-2">
+              <h2 className="text-white text-xl font-bold">Approve Transaction</h2>
+              <p className="text-white/50 text-sm leading-relaxed">
+                EASTCHAIN wants your permission to send the following transaction.
+              </p>
             </div>
-          )}
-        </div>
 
-        {txHash && (
-          <div className="flex items-center gap-2 p-3 rounded-xl bg-green-500/10 border border-green-500/20">
-            <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
-            <p className="font-mono text-[9px] text-green-400 break-all">{txHash}</p>
+            <div className="space-y-3 pt-2">
+              <div className="flex items-center justify-between">
+                <span className="text-white/40 text-sm">To</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-white font-mono text-sm">{truncate(address)}</span>
+                  <CopyButton text={address} />
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-white/40 text-sm">Network</span>
+                <span className="text-white font-bold text-sm">{networkLabel}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-white/40 text-sm">Estimated fee</span>
+                <span className="text-white font-bold text-sm">{feeDisplay}</span>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-white/10 px-4 py-3 flex items-center justify-between">
+              <span className="text-white font-mono text-sm">{amount} {tokenLabel}</span>
+              <span className="text-white/40 text-xs">
+                {isEastToken && parseFloat(gasFeeEast) > 0
+                  ? `Total: ${(parseFloat(amount) + parseFloat(gasFeeEast)).toFixed(4)} EAST`
+                  : 'Amount'}
+              </span>
+            </div>
+
+            <Button
+              onClick={handleApprove}
+              disabled={sending}
+              className="w-full h-12 rounded-2xl bg-primary font-black uppercase tracking-widest text-white"
+            >
+              {sending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              {sending ? 'Broadcasting...' : 'Approve'}
+            </Button>
+
+            <div className="flex items-center justify-center gap-1.5 text-white/30 text-[11px] pt-1">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Secured by EASTCHAIN
+            </div>
           </div>
         )}
-        <Button
-          onClick={handleSend}
-          disabled={
-            sending || !address || !amount || scanMode || !!txHash ||
-            (!isEastToken && (estimating || (feeEstimate?.success && !feeEstimate.sufficientForFee)))
-          }
-          className="w-full h-12 rounded-2xl bg-primary font-black uppercase tracking-widest"
-        >
-          {sending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <Send className="w-4 h-4 mr-2" />}
-          {sending ? 'Broadcasting...' : 'Confirm Transfer'}
-        </Button>
+
+        {step === 'result' && txHash && (
+          <div className="py-6 space-y-4">
+            <div className="flex flex-col items-center gap-2 text-center">
+              <CheckCircle2 className="w-10 h-10 text-green-500" />
+              <p className="text-white font-bold">Transaction Sent</p>
+              <p className="text-muted-foreground text-xs">{amount} {tokenLabel} to {truncate(address)}</p>
+            </div>
+            <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[9px] uppercase font-bold text-green-400/70">Transaction Hash</span>
+                <CopyButton text={txHash} />
+              </div>
+              <p className="font-mono text-[10px] text-green-400 break-all">{txHash}</p>
+            </div>
+            <Button
+              onClick={() => onOpenChange(false)}
+              className="w-full h-12 rounded-2xl bg-primary font-black uppercase tracking-widest"
+            >
+              Done
+            </Button>
+          </div>
+        )}
+
       </DialogContent>
     </Dialog>
   );

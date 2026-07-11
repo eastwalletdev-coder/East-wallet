@@ -1,7 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react";
-import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Activity, RefreshCcw, Archive, ShieldCheck, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, Radio, ChevronDown, X } from "lucide-react";
+import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Check, Activity, RefreshCcw, Archive, ShieldCheck, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, Radio, ChevronDown, X, Loader2 } from "lucide-react";
 import { LightNodePanel } from "@/components/LightNodePanel";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { TradingTerminal } from "@/components/p2p/TradingTerminal";
@@ -16,13 +16,41 @@ import { ReceiveDialog } from "@/components/ReceiveDialog";
 import { SendDialog } from "@/components/SendDialog";
 import { SignatureDialog } from "@/components/SignatureDialog";
 import { AuditTrailSheet } from "@/components/AuditTrailSheet";
-import { getEastTransactions, type Transaction } from "@/lib/transaction-service";
+import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
 import { MINING_REWARD } from "@/lib/blockchain";
 import { cn } from "@/lib/utils";
 import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
 
 const MIN_VERIFIED_HEADERS = 2;
 const MIN_PARTICIPATION_SECONDS = 120;
+
+/** Small inline copy-to-clipboard button for tx hashes in the activity log. */
+function CopyTxButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async (e: { stopPropagation: () => void }) => {
+    e.stopPropagation(); // don't collapse the row when copying
+    try { await navigator.clipboard.writeText(text); }
+    catch {
+      const el = document.createElement('textarea');
+      el.value = text;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      className="flex items-center gap-1 px-2 py-0.5 rounded-md border border-primary/30 text-primary text-[9px] font-bold uppercase shrink-0 ml-2 hover:bg-primary/10 transition-colors"
+    >
+      {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+      {copied ? 'Copied' : 'Copy'}
+    </button>
+  );
+}
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
@@ -40,9 +68,11 @@ export default function Home() {
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [countdown, setCountdown] = useState(0); // remaining seconds
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [pendingTransactions, setPendingTransactions] = useState<PendingTransaction[]>([]);
+  const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   const [txLoading, setTxLoading] = useState(true);
   const [sigOpen, setSigOpen] = useState(false);
-  const [activityCollapsed, setActivityCollapsed] = useState(false);
+  const [activityCollapsed, setActivityCollapsed] = useState(true);
   const [lightNodeMode, setLightNodeMode] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
@@ -100,17 +130,23 @@ export default function Home() {
     async function fetchTx() {
       setTxLoading(true);
       try {
-        const data = await getEastTransactions(walletAddress);
-        if (!cancelled) setTransactions(data);
+        const [confirmed, pending] = await Promise.all([
+          getEastTransactions(walletAddress),
+          getPendingEastTransactions(walletAddress),
+        ]);
+        if (!cancelled) { setTransactions(confirmed); setPendingTransactions(pending); }
       } catch {
       } finally {
         if (!cancelled) setTxLoading(false);
       }
     }
     fetchTx();
-    const interval = setInterval(fetchTx, 30_000);
+    // Pending tx can seal within seconds (gas-priority mempool + QStash
+    // backstop, see block-engine.ts) — poll faster than the confirmed-only
+    // 30s interval so a "pending" badge doesn't linger looking stale.
+    const interval = setInterval(fetchTx, pendingTransactions.length > 0 ? 5_000 : 30_000);
     return () => { cancelled = true; clearInterval(interval); };
-  }, [walletAddress]);
+  }, [walletAddress, pendingTransactions.length]);
 
   useEffect(() => {
     const client = getLightNodeClient();
@@ -449,7 +485,15 @@ export default function Home() {
           onClick={() => setActivityCollapsed(!activityCollapsed)}
           className="flex items-center justify-between w-full px-1 mt-1"
         >
-          <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30">Recent Activity</p>
+          <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30">
+            Recent Activity
+            {pendingTransactions.length > 0 && (
+              <span className="ml-2 inline-flex items-center gap-1 text-amber-400 normal-case tracking-normal font-bold">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                {pendingTransactions.length} pending
+              </span>
+            )}
+          </p>
           <ChevronDown className={cn(
             "w-3.5 h-3.5 text-white/30 transition-transform",
             activityCollapsed ? "-rotate-90" : "rotate-0"
@@ -458,45 +502,109 @@ export default function Home() {
         {!activityCollapsed && (
           <Card className="bg-card/40 border-white/5 w-full rounded-2xl">
             <CardContent className="p-2">
-              {txLoading ? (
+              {txLoading && transactions.length === 0 && pendingTransactions.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground text-center py-6">Loading transactions...</p>
-              ) : transactions.length === 0 ? (
+              ) : transactions.length === 0 && pendingTransactions.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground text-center py-6">No transactions yet.</p>
               ) : (
-                <div className="divide-y divide-white/5 max-h-[340px] overflow-y-auto">
-                  {transactions.map((tx) => (
-                    <div key={tx.id} className="flex items-center justify-between py-2.5 px-1.5">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <div className={cn(
-                          "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
-                          tx.type === 'send' ? "bg-red-500/10" : tx.type === 'stake' ? "bg-amber-500/10" : "bg-green-500/10"
-                        )}>
-                          {tx.type === 'send' ? (
-                            <ArrowUpRight className="w-4 h-4 text-red-400" />
-                          ) : tx.type === 'stake' ? (
-                            <Lock className="w-4 h-4 text-amber-400" />
-                          ) : (
-                            <ArrowDownLeft className="w-4 h-4 text-green-400" />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <p className="text-xs font-bold capitalize truncate">{tx.type}</p>
-                          <p className="text-[9px] text-muted-foreground font-mono truncate max-w-[140px]">
-                            {tx.address ? `${tx.address.slice(0, 8)}...${tx.address.slice(-6)}` : ''}
-                          </p>
-                        </div>
+                <div className="divide-y divide-white/5 max-h-[400px] overflow-y-auto">
+                  {pendingTransactions.map((tx) => {
+                    const isOpen = expandedTxId === tx.txHash;
+                    return (
+                      <div key={tx.txHash} className="px-1.5">
+                        <button
+                          onClick={() => setExpandedTxId(isOpen ? null : tx.txHash)}
+                          className="w-full flex items-center justify-between py-2.5 text-left"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-amber-500/10">
+                              <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold capitalize truncate flex items-center gap-1.5">
+                                {tx.type}
+                                <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-black uppercase tracking-wider">Pending</span>
+                              </p>
+                              <p className="text-[9px] text-muted-foreground font-mono truncate max-w-[140px]">
+                                {tx.address ? `${tx.address.slice(0, 8)}...${tx.address.slice(-6)}` : ''}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className={cn("text-xs font-code font-bold", tx.amount.startsWith('-') ? "text-red-400" : "text-green-400")}>
+                              {tx.amount} <span className="text-[9px] text-muted-foreground">EAST</span>
+                            </p>
+                            <p className="text-[9px] text-amber-400/70">
+                              {tx.queuePosition === 1 ? 'Next in line' : `#${tx.queuePosition} in queue`}
+                            </p>
+                          </div>
+                        </button>
+                        {isOpen && (
+                          <div className="pb-3 px-1 space-y-1.5 -mt-1">
+                            <div className="flex items-center justify-between bg-white/[0.03] rounded-lg px-2.5 py-2">
+                              <span className="text-[9px] text-muted-foreground font-mono truncate">{tx.txHash}</span>
+                              <CopyTxButton text={tx.txHash} />
+                            </div>
+                            <p className="text-[9px] text-muted-foreground px-0.5">
+                              Submitted {tx.submittedAt} · Gas fee {tx.gasFee > 0 ? `${tx.gasFee} EAST` : 'none'} · waiting to be sealed into a block
+                            </p>
+                          </div>
+                        )}
                       </div>
-                      <div className="text-right shrink-0">
-                        <p className={cn(
-                          "text-xs font-code font-bold",
-                          tx.amount.startsWith('-') ? "text-red-400" : "text-green-400"
-                        )}>
-                          {tx.amount} <span className="text-[9px] text-muted-foreground">{tx.token}</span>
-                        </p>
-                        <p className="text-[9px] text-muted-foreground">{tx.date}</p>
+                    );
+                  })}
+                  {transactions.map((tx) => {
+                    const isOpen = expandedTxId === tx.txHash;
+                    return (
+                      <div key={tx.id} className="px-1.5">
+                        <button
+                          onClick={() => setExpandedTxId(isOpen ? null : tx.txHash)}
+                          className="w-full flex items-center justify-between py-2.5 text-left"
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className={cn(
+                              "h-8 w-8 rounded-full flex items-center justify-center shrink-0",
+                              tx.type === 'send' ? "bg-red-500/10" : tx.type === 'stake' ? "bg-amber-500/10" : "bg-green-500/10"
+                            )}>
+                              {tx.type === 'send' ? (
+                                <ArrowUpRight className="w-4 h-4 text-red-400" />
+                              ) : tx.type === 'stake' ? (
+                                <Lock className="w-4 h-4 text-amber-400" />
+                              ) : (
+                                <ArrowDownLeft className="w-4 h-4 text-green-400" />
+                              )}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold capitalize truncate">{tx.type}</p>
+                              <p className="text-[9px] text-muted-foreground font-mono truncate max-w-[140px]">
+                                {tx.address ? `${tx.address.slice(0, 8)}...${tx.address.slice(-6)}` : ''}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className={cn(
+                              "text-xs font-code font-bold",
+                              tx.amount.startsWith('-') ? "text-red-400" : "text-green-400"
+                            )}>
+                              {tx.amount} <span className="text-[9px] text-muted-foreground">{tx.token}</span>
+                            </p>
+                            <p className="text-[9px] text-muted-foreground">{tx.date}</p>
+                          </div>
+                        </button>
+                        {isOpen && (
+                          <div className="pb-3 px-1 space-y-1.5 -mt-1">
+                            <div className="flex items-center justify-between bg-white/[0.03] rounded-lg px-2.5 py-2">
+                              <span className="text-[9px] text-muted-foreground font-mono truncate">{tx.txHash}</span>
+                              <CopyTxButton text={tx.txHash} />
+                            </div>
+                            <p className="text-[9px] text-muted-foreground px-0.5">
+                              Status: <span className="text-green-400 capitalize">{tx.status}</span>
+                            </p>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>

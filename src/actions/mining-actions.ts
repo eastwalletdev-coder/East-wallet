@@ -358,6 +358,8 @@ export async function sendEast(
       txType: 'TRANSFER',
       senderId: senderTgId,
       recipientId: recipient.telegram_id,
+      senderAddress: sender.wallet_address,
+      recipientAddress: recipient.wallet_address,
       amount,
       gasFee,
       payload: {},

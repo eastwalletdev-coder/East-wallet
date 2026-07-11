@@ -356,7 +356,7 @@ export async function queueTransaction(row: MempoolRow): Promise<void> {
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
       ON CONFLICT (tx_hash) DO NOTHING
     `, [
-      row.txHash, row.txType, '', '',
+      row.txHash, row.txType, row.senderAddress, row.recipientAddress,
       row.senderId, row.recipientId, row.amount, row.gasFee,
       JSON.stringify(row.payload || {})
     ]);
@@ -386,7 +386,7 @@ export async function sealPendingBatch(): Promise<{ sealed: boolean; blockIndex?
   let rows: any[];
   try {
     rows = (await client.query(
-      `SELECT tx_hash, tx_type, sender_id, recipient_id, amount, gas_fee, payload, submitted_at
+      `SELECT tx_hash, tx_type, sender_id, recipient_id, sender_address, recipient_address, amount, gas_fee, payload, submitted_at
        FROM ledger.mempool WHERE status = 'pending'
        ORDER BY gas_fee DESC, submitted_at ASC LIMIT $1`,
       [MAX_TX_PER_BLOCK]
@@ -410,6 +410,7 @@ export async function sealPendingBatch(): Promise<{ sealed: boolean; blockIndex?
   const txs: PendingTx[] = rows.map((r) => {
     const row: MempoolRow = {
       txHash: r.tx_hash, txType: r.tx_type, senderId: r.sender_id, recipientId: r.recipient_id,
+      senderAddress: r.sender_address || '', recipientAddress: r.recipient_address || '',
       amount: Number(r.amount), gasFee: Number(r.gas_fee), payload: r.payload || {},
     };
     const handlers = getDispatchHandlers(r.tx_type);

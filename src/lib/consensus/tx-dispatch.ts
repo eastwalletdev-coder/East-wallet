@@ -30,6 +30,8 @@ export interface MempoolRow {
   txType: string;
   senderId: string;
   recipientId: string;
+  senderAddress: string;
+  recipientAddress: string;
   amount: number;
   gasFee: number;
   payload: Record<string, any>;

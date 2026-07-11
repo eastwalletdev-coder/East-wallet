@@ -6,7 +6,7 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     const { initIdentitySchema, migrateIdentityV2, migrateIdentityV3, migrateIdentityV4, migrateIdentityV5, migrateIdentityV6, migrateIdentityV7, backfillKeypairs } = await import('@/lib/db/identity');
-    const { initLedgerSchema, migrateSchemaV2, migrateContractSchema } = await import('@/lib/db/ledger');
+    const { initLedgerSchema, migrateSchemaV2, migrateLedgerV3, migrateLedgerV4, migrateLedgerV5, migrateContractSchema } = await import('@/lib/db/ledger');
     const { runEpoch } = await import('@/lib/poc-engine');
 
     // Everything below touches NeonDB. If the DB is briefly unreachable on
@@ -20,6 +20,9 @@ export async function register() {
       await initLedgerSchema();
       await migrateIdentityV2();
       await migrateSchemaV2();
+      await migrateLedgerV3();
+      await migrateLedgerV4();
+      await migrateLedgerV5();
       await migrateIdentityV3();
       await migrateIdentityV4();
       await migrateIdentityV5();

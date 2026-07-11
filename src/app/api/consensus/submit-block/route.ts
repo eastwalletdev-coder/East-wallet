@@ -7,47 +7,56 @@
 // external node to call this endpoint, because holding a DB transaction
 // open for a live handshake would freeze the user's request.
 //
-// This endpoint exists for the OTHER path: block-engine.ts's batch
-// mempool + empty-block scheduler, which — if ever wired into real
-// traffic — opens a short attestation window per proposal (see
-// leader-schedule.ts's planBlockProduction/attemptSealOrPropose). An
-// external node calls this to counter-sign that window before it expires.
-// It does not seal anything itself; it only marks the proposal as
-// attested so the waiting instance can credit that node when it seals.
+// This endpoint is for the OTHER path: block-engine.ts's batch mempool +
+// empty-block scheduler. The node assigned as leader (see GET
+// /api/consensus/my-proposal) actually COMPUTES the block itself
+// (merkleRoot, sequenceHash, blockHash from prevHash + the tx_hashes it
+// was given) and submits the result here. Vercel independently
+// recomputes every value from ITS OWN trusted copy of prevHash/tx_hashes
+// and only accepts if everything matches exactly — see
+// leader-schedule.ts's validateAndAcceptProduction() for the full check
+// list (prevHash, merkleRoot, sequenceHash, blockHash, timestamp bounds,
+// signature). Any mismatch is rejected with a specific reason and
+// logged; the slot then falls back to Vercel self-producing so the
+// chain never stalls on a broken or dishonest node.
 import { NextRequest, NextResponse } from 'next/server';
-import { verifySignature } from '@/lib/keypair-service';
-import {
-  getProposalForAttestation,
-  attestProposal,
-  buildAttestationMessage,
-} from '@/lib/consensus/leader-schedule';
+import { validateAndAcceptProduction } from '@/lib/consensus/leader-schedule';
 
 export async function POST(req: NextRequest) {
   try {
-    const { proposalId, telegramId, signature } = await req.json();
-    if (!proposalId || !telegramId || !signature) {
+    const {
+      proposalId,
+      telegramId,
+      prevHash,
+      merkleRoot,
+      sequenceHash,
+      blockHash,
+      timestampMs,
+      signature,
+    } = await req.json();
+
+    if (
+      !proposalId || !telegramId || !prevHash || !merkleRoot ||
+      !sequenceHash || !blockHash || !timestampMs || !signature
+    ) {
       return NextResponse.json({ success: false, error: 'MISSING_FIELDS' }, { status: 400 });
     }
 
-    const proposal = await getProposalForAttestation(Number(proposalId));
-    if (!proposal) {
-      return NextResponse.json({ success: false, error: 'PROPOSAL_NOT_FOUND' }, { status: 404 });
-    }
-    if (proposal.assignedTelegramId !== telegramId) {
-      return NextResponse.json({ success: false, error: 'NOT_THE_ASSIGNED_LEADER' }, { status: 403 });
-    }
-    if (Date.now() > proposal.deadlineAt.getTime()) {
-      return NextResponse.json({ success: false, error: 'DEADLINE_PASSED' }, { status: 409 });
-    }
+    const result = await validateAndAcceptProduction({
+      proposalId: Number(proposalId),
+      telegramId: String(telegramId),
+      claimedPrevHash: String(prevHash),
+      merkleRoot: String(merkleRoot),
+      sequenceHash: String(sequenceHash),
+      blockHash: String(blockHash),
+      timestampMs: Number(timestampMs),
+      signature: String(signature),
+    });
 
-    const message = buildAttestationMessage(Number(proposalId), proposal.blockIndex);
-    const validSignature = await verifySignature(proposal.assignedPubkey, message, signature);
-    if (!validSignature) {
-      return NextResponse.json({ success: false, error: 'INVALID_SIGNATURE' }, { status: 401 });
+    if (!result.accepted) {
+      return NextResponse.json({ success: false, error: result.reason }, { status: result.status });
     }
-
-    const result = await attestProposal(Number(proposalId));
-    return NextResponse.json(result, { status: result.success ? 200 : 409 });
+    return NextResponse.json({ success: true });
   } catch (err: any) {
     console.error('[EASTCHAIN] submit-block error:', err);
     return NextResponse.json({ success: false, error: 'INTERNAL_ERROR' }, { status: 500 });

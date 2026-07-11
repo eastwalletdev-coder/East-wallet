@@ -1,5 +1,6 @@
 "use client"
 
+import nacl from "tweetnacl";
 import type { BlockHeader, InboundMessage } from "./protocol";
 
 const STORAGE_KEY = "east_lightnode_state_v1";
@@ -12,6 +13,15 @@ const MIN_VERIFIED_HEADERS = 2;      // lowered from 5 — empty blocks only sea
 const MIN_PARTICIPATION_SECONDS = 120; // 2 minutes
 const STEP_DELAY_MS = 600;           // pacing so the sync steps are visibly animated,
                                       // not an instant jump-cut to "done"
+
+// Railway's WS hub only keeps a small in-memory ring buffer of recent
+// headers for backfill (~20) — it's a lightweight relay, not a database.
+// If our gap is bigger than that, Railway alone can't fill it (see
+// verifyHeader's "accept the jump" comment below). Beyond this threshold,
+// fetch the missing range from the permanent R2 archive first — see
+// r2-client.ts (server write side) and catchUpFromArchive() below.
+const RAILWAY_BACKFILL_LIMIT = 20;
+const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from R2
 
 export type SyncPhase = "idle" | "connecting" | "downloading" | "validating" | "live";
 
@@ -87,7 +97,40 @@ function verifyHeader(header: BlockHeader, prevHeight: number, prevHash: string 
       return { valid: false, reason: "Previous hash mismatch" };
     }
   }
+
+  // Signature check: proves this header actually came from Vercel's
+  // sealBlock() — not a leaked R2 write credential or a compromised
+  // Railway relay serving a self-consistent but fake chain. Only enforced
+  // when a public key is configured AND the header carries a signature,
+  // so history archived before this feature shipped still loads (logged,
+  // not silently accepted as equally trustworthy).
+  const chainPubKeyHex = process.env.NEXT_PUBLIC_CHAIN_SIGNING_PUBLIC_KEY;
+  if (chainPubKeyHex) {
+    if (!header.signature) {
+      console.warn(`[LightNode] Block #${header.height} has no signature — accepted, but not cryptographically verified (pre-signing history?)`);
+    } else if (!verifyChainSignature(chainPubKeyHex, header.height, header.hash, header.signature)) {
+      return { valid: false, reason: "Invalid chain signature — possible tampering" };
+    }
+  }
+
   return { valid: true };
+}
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(Math.floor(hex.length / 2));
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return bytes;
+}
+
+function verifyChainSignature(publicKeyHex: string, height: number, blockHash: string, signatureHex: string): boolean {
+  try {
+    const publicKey = hexToBytes(publicKeyHex);
+    const signature = hexToBytes(signatureHex);
+    const message = new TextEncoder().encode(`EASTCHAIN_BLOCK|${height}|${blockHash}`);
+    return nacl.sign.detached.verify(message, signature, publicKey);
+  } catch {
+    return false;
+  }
 }
 
 type Listener = (state: LightNodeState) => void;
@@ -154,9 +197,20 @@ export class LightNodeClient {
           if (msg.latestHeight >= 0) {
             this.log(`Network tip is block #${msg.latestHeight}`);
           }
-          this.ws?.send(JSON.stringify({
-            type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
-          }));
+          {
+            const gap = msg.latestHeight - this.state.currentHeight;
+            const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL;
+            if (gap > RAILWAY_BACKFILL_LIMIT + 1 && archiveUrl) {
+              // Gap bigger than Railway's ring buffer can cover — pull the
+              // older portion from the permanent R2 archive first, then
+              // let Railway's normal backfill handle just the recent tail.
+              this.catchUpFromArchive(archiveUrl, msg.latestHeight);
+            } else {
+              this.ws?.send(JSON.stringify({
+                type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
+              }));
+            }
+          }
           break;
 
         case "block:backfill":
@@ -241,6 +295,69 @@ export class LightNodeClient {
     this.log("Local Ledger Updated");
     this.set({ syncPhase: "live" });
     this.checkEligibility();
+  }
+
+  // Pulls headers for [currentHeight+1 .. latestHeight-RAILWAY_BACKFILL_LIMIT]
+  // from the permanent R2 archive (one small immutable object per height,
+  // see r2-client.ts), verifies each via the exact same hash-chain check
+  // used for Railway's own backfill, then requests the final short tail
+  // from Railway to reach the live tip. If the archive is unreachable or
+  // any fetch fails, falls back to Railway's normal (possibly-truncated)
+  // backfill rather than getting stuck.
+  private async catchUpFromArchive(archiveBaseUrl: string, latestHeight: number) {
+    const targetHeight = latestHeight - RAILWAY_BACKFILL_LIMIT;
+    const fromHeight = this.state.currentHeight + 1;
+    const totalToFetch = targetHeight - fromHeight + 1;
+
+    if (totalToFetch <= 0) {
+      this.ws?.send(JSON.stringify({ type: "sync_request", nodeId: this.state.nodeId, fromHeight }));
+      return;
+    }
+
+    this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — fetching archive from R2…`);
+    this.set({ syncPhase: "downloading", syncProgress: { current: 0, total: totalToFetch } });
+
+    const heights: number[] = [];
+    for (let h = fromHeight; h <= targetHeight; h++) heights.push(h);
+
+    let fetchedCount = 0;
+    for (let i = 0; i < heights.length; i += ARCHIVE_CONCURRENCY) {
+      const batch = heights.slice(i, i + ARCHIVE_CONCURRENCY);
+      const results = await Promise.all(
+        batch.map(async (h) => {
+          try {
+            const res = await fetch(`${archiveBaseUrl.replace(/\/$/, "")}/blocks/${h}.json`);
+            if (!res.ok) return { h, header: null };
+            return { h, header: await res.json() };
+          } catch {
+            return { h, header: null };
+          }
+        })
+      );
+
+      for (const { h, header } of results) {
+        if (!header) {
+          // Missing/unreachable object — stop trusting the archive from
+          // here on and let Railway's normal (possibly partial) backfill
+          // take over for whatever remains. Not treated as tampering.
+          this.log(`Archive missing block #${h} — falling back to hub backfill for the rest`);
+          this.ws?.send(JSON.stringify({
+            type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
+          }));
+          return;
+        }
+        this.set({ syncPhase: "validating" });
+        this.applyHeader(header, true);
+        fetchedCount++;
+        this.set({ syncProgress: { current: fetchedCount, total: totalToFetch }, syncPhase: "downloading" });
+      }
+    }
+
+    this.log(`Archive catch-up complete — ${fetchedCount} block(s) verified from R2`);
+    // Now ask Railway for just the recent tail to reach the true live tip.
+    this.ws?.send(JSON.stringify({
+      type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
+    }));
   }
 
   private startHeartbeat() {

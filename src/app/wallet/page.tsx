@@ -55,7 +55,7 @@ export default function WalletPage() {
 
 function WalletPageContent() {
   const { accounts, mnemonic, createWallet, isLoading } = useWallet();
-  const { selectedChain, setSelectedChain } = useRPC();
+  const { selectedChain, setSelectedChain, currentRPC } = useRPC();
   const [tokens, setTokens] = useState<Token[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -78,14 +78,14 @@ function WalletPageContent() {
     
     setTokensLoading(true);
     try {
-      const detectedTokens = await scanTokensForAddress(activeAccount.address, selectedChain);
+      const detectedTokens = await scanTokensForAddress(activeAccount.address, selectedChain, currentRPC?.url);
       setTokens(detectedTokens);
     } catch (error) {
       console.error("Auto-detection failed", error);
     } finally {
       setTokensLoading(false);
     }
-  }, [activeAccount?.address, selectedChain]);
+  }, [activeAccount?.address, selectedChain, currentRPC?.url]);
 
   useEffect(() => {
     if (mnemonic && activeAccount?.address) {
@@ -361,10 +361,18 @@ function WalletPageContent() {
                 {filteredTokens.map((token) => (
                   <div 
                     key={token.symbol} 
-                    onClick={() => !isManageMode && setSelectedToken(token)}
+                    onClick={() => {
+                      if (isManageMode) return;
+                      if (token.comingSoon) {
+                        toast({ title: 'Coming Soon', description: `${token.chain} support is on the roadmap — EAST is fully live today.` });
+                        return;
+                      }
+                      setSelectedToken(token);
+                    }}
                     className={cn(
                       "glass p-4 rounded-2xl flex items-center justify-between group cursor-pointer hover:bg-white/5 transition-all border-white/5",
-                      hiddenTokens.includes(token.symbol) && "opacity-40 grayscale-[0.5]"
+                      hiddenTokens.includes(token.symbol) && "opacity-40 grayscale-[0.5]",
+                      token.comingSoon && "opacity-70"
                     )}
                   >
                     <div className="flex items-center gap-3">
@@ -386,11 +394,13 @@ function WalletPageContent() {
                       <div>
                         <div className="flex items-center gap-1.5">
                           <h3 className="font-bold text-sm">{token.name}</h3>
-                          {parseFloat(token.change.replace('+', '')) > 20 && (
+                          {token.comingSoon ? (
+                            <Badge className="h-3 px-1.5 text-[6px] bg-muted-foreground/20 text-muted-foreground border-none uppercase font-bold">Coming Soon</Badge>
+                          ) : parseFloat(token.change.replace('+', '')) > 20 && (
                             <Badge className="h-3 px-1 text-[6px] bg-accent/20 text-accent border-none uppercase font-bold">Trending</Badge>
                           )}
                         </div>
-                        <p className="text-[10px] text-muted-foreground font-mono">{token.balance} {token.symbol}</p>
+                        <p className="text-[10px] text-muted-foreground font-mono">{token.comingSoon ? 'Not yet available' : `${token.balance} ${token.symbol}`}</p>
                       </div>
                     </div>
                     

@@ -43,3 +43,25 @@ export function requireFounderAuth(req: NextRequest): AdminAuthResult {
 
   return { ok: false, status: 401, error: 'UNAUTHORIZED' };
 }
+
+/**
+ * Stricter variant for maximally destructive actions (currently just
+ * genesis-reset) — NO x-cron-secret/ADMIN_SECRET fallback. These actions
+ * should never be triggered by a machine/cron anyway, so accepting the
+ * same shared secret that gates routine cron jobs would mean a single
+ * ADMIN_SECRET leak = both "run migrations" AND "wipe the entire chain".
+ * Requires a real Telegram-authenticated founder session every time.
+ */
+export function requireFounderSessionOnly(req: NextRequest): AdminAuthResult {
+  const cookieToken = req.cookies.get(ADMIN_SESSION_COOKIE)?.value;
+  const session = verifyAdminSessionToken(cookieToken);
+  if (session && FOUNDER_IDS.includes(session.telegramId)) {
+    return { ok: true, telegramId: session.telegramId };
+  }
+
+  if (!IS_PRODUCTION) {
+    return { ok: true }; // dev bypass still applies, for local testing
+  }
+
+  return { ok: false, status: 401, error: 'FOUNDER_SESSION_REQUIRED' };
+}

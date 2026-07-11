@@ -305,3 +305,70 @@ export async function migrateLedgerV3() {
     client.release();
   }
 }
+
+/**
+ * Migration v4: adds columns needed for REAL external block production
+ * (as opposed to v3's credit-only attestation). The external node now
+ * computes and submits blockHash/merkleRoot/sequenceHash itself; Vercel
+ * recomputes independently from the same trusted inputs (prev_hash +
+ * tx_hashes it already has) and only accepts the submission if every
+ * value matches — see leader-schedule.ts's validateAndAcceptProduction().
+ * reject_reason logs the specific mismatch for monitoring/fraud signals.
+ */
+export async function migrateLedgerV4() {
+  const client = await ledgerPool.connect();
+  try {
+    await client.query(`ALTER TABLE ledger.block_proposals ADD COLUMN IF NOT EXISTS prev_hash VARCHAR(70);`);
+    await client.query(`ALTER TABLE ledger.block_proposals ADD COLUMN IF NOT EXISTS submitted_block_hash VARCHAR(70);`);
+    await client.query(`ALTER TABLE ledger.block_proposals ADD COLUMN IF NOT EXISTS submitted_merkle_root VARCHAR(70);`);
+    await client.query(`ALTER TABLE ledger.block_proposals ADD COLUMN IF NOT EXISTS submitted_sequence_hash VARCHAR(70);`);
+    await client.query(`ALTER TABLE ledger.block_proposals ADD COLUMN IF NOT EXISTS submitted_timestamp_ms BIGINT;`);
+    await client.query(`ALTER TABLE ledger.block_proposals ADD COLUMN IF NOT EXISTS reject_reason TEXT;`);
+    console.log('[EASTCHAIN] Ledger schema migration v4 completed (real block production columns on block_proposals)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Ledger migration v4 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Migration v5: ledger.mempool — was referenced by block-engine.ts's
+ * addToMempool()/DELETE-on-seal but NEVER actually had a CREATE TABLE
+ * anywhere (a pre-existing latent bug; harmless only because nothing
+ * called addToMempool() for real traffic yet — every tx type sealed its
+ * own 1-tx-1-block directly). Now used for real gas-priority batching —
+ * see submitTransaction() in block-engine.ts.
+ */
+export async function migrateLedgerV5() {
+  const client = await ledgerPool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ledger.mempool (
+        tx_hash            VARCHAR(66) PRIMARY KEY,
+        tx_type            VARCHAR(30) NOT NULL,
+        sender_address     VARCHAR(42) NOT NULL,
+        recipient_address  VARCHAR(42) NOT NULL,
+        sender_id          VARCHAR(50) NOT NULL,
+        recipient_id       VARCHAR(50) NOT NULL,
+        amount             DOUBLE PRECISION NOT NULL,
+        gas_fee            DOUBLE PRECISION NOT NULL DEFAULT 0,
+        payload            JSONB,
+        status             VARCHAR(20) NOT NULL DEFAULT 'pending',
+        block_index        BIGINT,
+        block_hash         VARCHAR(70),
+        error               TEXT,
+        submitted_at       TIMESTAMPTZ DEFAULT NOW(),
+        sealed_at          TIMESTAMPTZ
+      );
+    `);
+    // Gas-priority ordering: highest gas_fee first, oldest-first as tiebreak
+    // (matches a real fee-market mempool — see selectBatchByGasPriority()).
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_mempool_priority ON ledger.mempool(status, gas_fee DESC, submitted_at ASC);`);
+    console.log('[EASTCHAIN] Ledger schema migration v5 completed (ledger.mempool table + gas-priority index)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Ledger migration v5 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}

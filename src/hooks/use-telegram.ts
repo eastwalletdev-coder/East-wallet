@@ -31,10 +31,6 @@ export function useTelegram() {
   const [loading, setLoading] = useState(true);
   const [balanceLoading, setBalanceLoading] = useState(true);
   const [referralLink, setReferralLink] = useState<string>('');
-  // DEBUG: surfaces the raw failure reason so it's visible in the UI on
-  // mobile without needing to dig through Vercel logs. Safe to remove once
-  // the underlying registerOrUpdateUser bug is confirmed fixed.
-  const [fetchError, setFetchError] = useState<string | null>(null);
 
   const fetchUser = useCallback(async (
     telegramId: string, username: string, initDataStr: string, startParam?: string
@@ -47,15 +43,12 @@ export function useTelegram() {
     const MAX_ATTEMPTS = 3;
     const RETRY_DELAY_MS = 900;
 
-    setFetchError(null);
-
     try {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         const result = await registerOrUpdateUser(telegramId, username, initDataStr, startParam);
         if (result.success && result.user) {
           setUser(result.user as EastUser);
           setReferralLink(result.referralLink || '');
-          setFetchError(null);
           return;
         }
 
@@ -63,14 +56,12 @@ export function useTelegram() {
         const hasAttemptsLeft = attempt < MAX_ATTEMPTS;
         if (!isTransient || !hasAttemptsLeft) {
           console.error('[EASTCHAIN] Failed to register user:', result.error);
-          setFetchError(String(result.error || 'UNKNOWN_ERROR'));
           return;
         }
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS * attempt));
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('[EASTCHAIN] Failed to register user:', err);
-      setFetchError(`EXCEPTION: ${err?.message || String(err)}`);
     } finally {
       setBalanceLoading(false);
     }
@@ -162,7 +153,6 @@ export function useTelegram() {
     loading,
     balanceLoading,
     referralLink,
-    fetchError,
     refreshUser: () => {
       if (tgUser) {
         const webApp = (window as any).Telegram?.WebApp;

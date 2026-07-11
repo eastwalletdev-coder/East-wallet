@@ -11,7 +11,7 @@ import { useTelegram } from '@/hooks/use-telegram';
 import { ExportEastWalletSheet } from '@/components/ExportEastWalletSheet';
 
 export default function ProfilePage() {
-  const { userId, user, loading, initData, fetchError } = useTelegram();
+  const { userId, user, loading, initData } = useTelegram();
   const [copied, setCopied] = useState(false);
   const [copiedRef, setCopiedRef] = useState(false);
 
@@ -76,20 +76,6 @@ export default function ProfilePage() {
           </p>
         </div>
       </div>
-
-      {/* DEBUG: shows the raw registerOrUpdateUser failure reason so it's
-          visible on-device without digging through Vercel logs. Remove this
-          block once the underlying bug is confirmed fixed. */}
-      {fetchError && (
-        <Card className="bg-red-500/10 border-red-500/30 rounded-2xl">
-          <CardContent className="p-3">
-            <p className="text-red-400 text-[10px] uppercase font-black tracking-widest mb-1">
-              Debug: Gagal Memuat Data User
-            </p>
-            <p className="text-red-300 font-mono text-[11px] break-all">{fetchError}</p>
-          </CardContent>
-        </Card>
-      )}
 
       {/* Founder card */}
       {isFounder && (

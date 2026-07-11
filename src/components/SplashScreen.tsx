@@ -81,7 +81,7 @@ export function SplashScreen() {
             </div>
             <div className="absolute inset-0 flex items-center justify-center animate-globe-spin" style={{ transformStyle: 'preserve-3d' }}>
               {[...Array(16)].map((_, i) => (
-                <div key={i} className="absolute inset-0 border-x border-primary/50 rounded-full" style={{ transform: `rotateY(${i * 11.25}deg)`, borderWidth: '1px' }} />
+                <div key={i} className="absolute inset-0 border-x border-primary/50 rounded-full" style={{ transform: `rotateY(${i * 11.25}deg)`, borderWidth: '1px', backfaceVisibility: 'hidden', WebkitBackfaceVisibility: 'hidden' }} />
               ))}
             </div>
             <div className="absolute inset-0 flex flex-col justify-around py-2 opacity-80 z-10 pointer-events-none">

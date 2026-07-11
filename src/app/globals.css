@@ -49,11 +49,6 @@
   100% { background-position: 0% 0; }
 }
 
-@keyframes rotate-beam-old {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
 @keyframes globe-spin {
   from { transform: rotateY(0deg); }
   to { transform: rotateY(360deg); }
@@ -61,14 +56,29 @@
 
 .animate-shimmer-shine {
   animation: shimmer-shine 4.3s linear infinite;
+  /* Isolate this blended layer so it composites independently of its
+     animated siblings — mix-blend-mode + animation on nearby elements is
+     a common source of flicker that only shows up on certain mobile GPUs. */
+  isolation: isolate;
+  will-change: background-position;
 }
 
 .animate-rotate-beam {
   animation: rotate-beam 12s linear infinite;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
 }
 
 .animate-globe-spin {
   animation: globe-spin 120s linear infinite;
+  /* Force this onto its own GPU compositor layer up front instead of
+     promoting it mid-animation — inconsistent 3D-transform support
+     across Android GPU drivers (Adreno/Mali/PowerVR) is the most common
+     cause of a preserve-3d animation glitching on some phones but not
+     others. translateZ(0) + backface-visibility is the standard fix. */
+  will-change: transform;
+  backface-visibility: hidden;
+  transform: translateZ(0) rotateY(0deg);
 }
 
 /* Hide scrollbars for a cleaner app experience */

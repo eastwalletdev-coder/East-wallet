@@ -323,6 +323,69 @@ export async function migrateIdentityV9() {
   }
 }
 
+/**
+ * Migration v10: identity.genesis_reset_snapshots — backup table used by
+ * POST /api/admin/genesis-reset. Every user's balance/stake is snapshotted
+ * here BEFORE the chain is wiped, then automatically restored via real
+ * on-chain GENESIS_RESTORE transactions on the new chain (see
+ * src/actions/genesis-reset-actions.ts) — never a silent UPDATE, so the
+ * restoration itself is auditable in ledger.transactions.
+ */
+export async function migrateIdentityV10() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.genesis_reset_snapshots (
+        id                    SERIAL PRIMARY KEY,
+        reset_batch_id        UUID NOT NULL,
+        telegram_id           VARCHAR(50) NOT NULL,
+        wallet_address        VARCHAR(42) NOT NULL,
+        balance               DOUBLE PRECISION NOT NULL DEFAULT 0,
+        staked_amount         DOUBLE PRECISION NOT NULL DEFAULT 0,
+        stake_locked_until    BIGINT NOT NULL DEFAULT 0,
+        total_referral_bonus  DOUBLE PRECISION NOT NULL DEFAULT 0,
+        snapshotted_at        TIMESTAMPTZ DEFAULT NOW(),
+        restored              BOOLEAN NOT NULL DEFAULT FALSE,
+        restored_at           TIMESTAMPTZ,
+        restore_tx_hash       VARCHAR(66)
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_genesis_snapshots_batch ON identity.genesis_reset_snapshots(reset_batch_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_genesis_snapshots_restored ON identity.genesis_reset_snapshots(restored);`);
+    console.log('[EASTCHAIN] Identity schema migration v10 completed (genesis_reset_snapshots)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v10 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
+ * Migration v11: identity.admin_audit_log — persistent record of
+ * destructive/sensitive admin actions (currently just genesis-reset).
+ * console.warn alone isn't enough for forensics since Vercel logs are
+ * ephemeral/rotate — this survives.
+ */
+export async function migrateIdentityV11() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.admin_audit_log (
+        id            SERIAL PRIMARY KEY,
+        action        VARCHAR(50) NOT NULL,
+        performed_by  VARCHAR(50) NOT NULL,
+        detail        JSONB,
+        performed_at  TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    console.log('[EASTCHAIN] Identity schema migration v11 completed (admin_audit_log)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v11 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
 /** How recent a heartbeat must be to count as "actually online" right now. */
 export const HEARTBEAT_FRESHNESS_SECONDS = 90;
 

@@ -133,7 +133,19 @@ async function main() {
 
   const apiUrl = (process.env.EASTCHAIN_API_URL || await ask('URL API EastChain (contoh https://app-kalian.vercel.app): ')).replace(/\/$/, '');
   const telegramId = process.env.EASTCHAIN_TELEGRAM_ID || await ask('Telegram ID Anda: ');
+
+  // Two ways to prove identity outside the Mini App: EASTCHAIN_ADMIN_SECRET
+  // (server-controller bypass — see requireVerifiedTelegramId()'s doc
+  // comment on why that's meant for the current handful-of-admins phase)
+  // OR a real, freshly-generated Telegram initData string (proper auth,
+  // no shared secret needed — but expires in ~5 minutes, so generate it
+  // right before running this). Prefer initData when you have it.
   const adminSecret = process.env.EASTCHAIN_ADMIN_SECRET || '';
+  const initData = process.env.EASTCHAIN_TELEGRAM_INIT_DATA || '';
+  if (!adminSecret && !initData) {
+    console.log('\nTidak ada EASTCHAIN_ADMIN_SECRET atau EASTCHAIN_TELEGRAM_INIT_DATA di env.');
+    console.log('initData asli (dari Mini App, berlaku ~5 menit) lebih aman — lihat /debug/init-data.');
+  }
 
   if (fs.existsSync(VAULT_PATH)) {
     console.log(`\nVault lokal sudah ada di ${VAULT_PATH}.`);
@@ -148,7 +160,7 @@ async function main() {
         console.error('Password salah atau vault korup.');
         process.exit(1);
       }
-      await registerAndApply({ apiUrl, telegramId, mnemonic, adminSecret });
+      await registerAndApply({ apiUrl, telegramId, mnemonic, adminSecret, initData });
       rl.close();
       return;
     }
@@ -183,11 +195,11 @@ async function main() {
   fs.writeFileSync(VAULT_PATH, JSON.stringify(vault, null, 2), { mode: 0o600 });
   console.log(`\nVault tersimpan di ${VAULT_PATH} (chmod 600 — cuma bisa dibaca user ini).`);
 
-  await registerAndApply({ apiUrl, telegramId, mnemonic, adminSecret });
+  await registerAndApply({ apiUrl, telegramId, mnemonic, adminSecret, initData });
   rl.close();
 }
 
-async function registerAndApply({ apiUrl, telegramId, mnemonic, adminSecret }) {
+async function registerAndApply({ apiUrl, telegramId, mnemonic, adminSecret, initData }) {
   const pubkeyHex = pubkeyHexFromMnemonic(mnemonic);
   console.log(`\nPublic key Anda: ${pubkeyHex}`);
 
@@ -197,7 +209,7 @@ async function registerAndApply({ apiUrl, telegramId, mnemonic, adminSecret }) {
   const claimSig = signMessage(mnemonic, claimMsg);
 
   const regRes = await postJson(`${apiUrl}/api/self-custody/register`, {
-    telegramId, pubkeyHex, signatureHex: claimSig, adminSecret,
+    telegramId, pubkeyHex, signatureHex: claimSig, adminSecret, initData,
   }, adminSecret);
   if (!regRes.success) {
     console.error(`Gagal registrasi self-custody: ${regRes.error}`);
@@ -211,7 +223,7 @@ async function registerAndApply({ apiUrl, telegramId, mnemonic, adminSecret }) {
   const validatorSig = signMessage(mnemonic, validatorMsg);
 
   const applyRes = await postJson(`${apiUrl}/api/self-custody/apply-validator`, {
-    telegramId, pubkeyHex, signatureHex: validatorSig, adminSecret,
+    telegramId, pubkeyHex, signatureHex: validatorSig, adminSecret, initData,
   }, adminSecret);
   if (!applyRes.success) {
     console.error(`Gagal mengajukan validator: ${applyRes.error}`);

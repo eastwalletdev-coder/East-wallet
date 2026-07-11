@@ -2,8 +2,8 @@
 // node_type/last_heartbeat_at to identity.validators) and migrateLedgerV3
 // (creates ledger.block_proposals). Idempotent, safe to call repeatedly.
 import { NextRequest, NextResponse } from 'next/server';
-import { migrateIdentityV9 } from '@/lib/db/identity';
-import { migrateLedgerV3 } from '@/lib/db/ledger';
+import { migrateIdentityV9, migrateIdentityV10, migrateIdentityV11 } from '@/lib/db/identity';
+import { migrateLedgerV3, migrateLedgerV4, migrateLedgerV5 } from '@/lib/db/ledger';
 import { requireFounderAuth } from '@/lib/admin-auth';
 
 export async function POST(req: NextRequest) {
@@ -12,10 +12,14 @@ export async function POST(req: NextRequest) {
 
   try {
     await migrateIdentityV9();
+    await migrateIdentityV10();
+    await migrateIdentityV11();
     await migrateLedgerV3();
+    await migrateLedgerV4();
+    await migrateLedgerV5();
     return NextResponse.json({
       success: true,
-      message: 'Migration applied: identity.validators.node_type/last_heartbeat_at + ledger.block_proposals are ready.',
+      message: 'Migration applied: identity.validators columns, identity.genesis_reset_snapshots, ledger.block_proposals (v3+v4), and ledger.mempool (v5) are ready.',
     });
   } catch (err: any) {
     console.error('[EASTCHAIN] migrate-leader-schedule trigger error:', err);

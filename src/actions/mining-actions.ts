@@ -15,7 +15,7 @@ import { getPublicKeyForUser } from '@/lib/keypair-service';
 import { validateTelegramData, extractVerifiedUserId } from '@/lib/telegram';
 import { verifyIdentityOrSignature } from '@/lib/auth/dual-mode-identity';
 import { buildSendEastPayload } from '@/lib/tx-payload-builders';
-import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
+import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator, queueTransaction, getTransactionStatus } from '@/lib/block-engine';
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import { generateEastId } from '@/lib/east-id';
@@ -272,29 +272,43 @@ export async function claimMiningReward(
 }
 
 // ─── Send EAST ────────────────────────────────────────────────────
+// ─── Send EAST (async, gas-priority mempool) ───────────────────────
+// No longer 1-tx-1-block: this submits into the shared gas-priority
+// mempool (see submitTransaction()/selectPriorityBatch() in block-engine.ts)
+// and returns immediately with status 'pending' — the actual block seals
+// within BATCH_WINDOW_MS (or sooner if the mempool fills), highest
+// gasFee first. Poll getTransactionStatus(txHash) for confirmation.
+//
+// Balance timing: sender's (amount + gasFee) is debited IMMEDIATELY at
+// submission — this locks the funds so the same balance can't be spent
+// twice across multiple pending tx sitting in the mempool. Recipient is
+// credited only once the block actually seals (commitFn below). If
+// sealing ultimately fails, rollbackFn refunds the sender.
 export async function sendEast(
   senderTgId: string,
   recipientAddress: string,
   amount: number,
   initData?: string,
   signature?: string,
-  selfCustodyPubkey?: string
+  selfCustodyPubkey?: string,
+  gasFee: number = 0
 ) {
   if (amount <= 0) return { success: false, error: 'INVALID_AMOUNT' };
+  if (gasFee < 0) return { success: false, error: 'INVALID_GAS_FEE' };
 
   const identityClient = await identityPool.connect();
-  const ledgerClient = await ledgerPool.connect();
 
   try {
+    await identityClient.query('BEGIN');
+
     // ── Identity verification: Telegram OR signature ──────────────
     const senderRes = await identityClient.query(
       'SELECT * FROM identity.users WHERE telegram_id = $1 FOR UPDATE',
       [senderTgId]
     );
-    if (!senderRes.rows.length) return { success: false, error: 'SENDER_NOT_FOUND' };
+    if (!senderRes.rows.length) { await identityClient.query('ROLLBACK'); return { success: false, error: 'SENDER_NOT_FOUND' }; }
     const sender = senderRes.rows[0];
 
-    // Build signature payload if signature-mode is being used
     let signaturePayload: string | undefined;
     if (signature) {
       signaturePayload = buildSendEastPayload(senderTgId, recipientAddress, amount);
@@ -308,61 +322,59 @@ export async function sendEast(
       signaturePayload,
       IS_PRODUCTION
     );
-    if (!authResult.success) return { success: false, error: authResult.error };
+    if (!authResult.success) { await identityClient.query('ROLLBACK'); return { success: false, error: authResult.error }; }
 
-    await identityClient.query('BEGIN');
-    await ledgerClient.query('BEGIN');
-
-    if (Number(sender.balance) < amount) throw new Error('INSUFFICIENT_BALANCE');
+    const totalDebit = amount + gasFee;
+    if (Number(sender.balance) < totalDebit) { await identityClient.query('ROLLBACK'); return { success: false, error: 'INSUFFICIENT_BALANCE' }; }
 
     const recipientRes = await identityClient.query(
-      'SELECT * FROM identity.users WHERE wallet_address = $1 FOR UPDATE',
+      'SELECT telegram_id, wallet_address FROM identity.users WHERE wallet_address = $1 FOR UPDATE',
       [recipientAddress.toLowerCase()]
     );
-    if (!recipientRes.rows.length) throw new Error('RECIPIENT_NOT_FOUND');
+    if (!recipientRes.rows.length) { await identityClient.query('ROLLBACK'); return { success: false, error: 'RECIPIENT_NOT_FOUND' }; }
     const recipient = recipientRes.rows[0];
-    if (recipient.telegram_id === senderTgId) throw new Error('CANNOT_SEND_TO_SELF');
+    if (recipient.telegram_id === senderTgId) { await identityClient.query('ROLLBACK'); return { success: false, error: 'CANNOT_SEND_TO_SELF' }; }
 
     const txHash = generateTxHash('transfer', senderTgId);
 
-    // Block first
-    const { blockIndex, blockHash } = await sealSingleTx(ledgerClient, {
+    // Lock funds NOW — debited immediately, before the block ever seals.
+    // Still inside the SAME transaction as the FOR UPDATE reads above, so
+    // a concurrent sendEast for this sender is blocked until this commits.
+    await identityClient.query(
+      'UPDATE identity.users SET balance = balance - $1, updated_at = NOW() WHERE telegram_id = $2',
+      [totalDebit, senderTgId]
+    );
+    await identityClient.query('COMMIT');
+    await invalidateCachedUser(senderTgId);
+
+    // queueTransaction (not submitTransaction) — writes the durable
+    // ledger.mempool row only. Crediting the recipient / refunding the
+    // sender on failure is derived from that row by tx-dispatch.ts's
+    // TRANSFER handler, not from a closure held in this request's memory —
+    // see queueTransaction()'s doc comment in block-engine.ts for why that
+    // distinction is the fix for a critical fund-limbo bug.
+    await queueTransaction({
       txHash,
       txType: 'TRANSFER',
-      senderAddress: sender.wallet_address,
-      recipientAddress,
       senderId: senderTgId,
       recipientId: recipient.telegram_id,
       amount,
-      gasFee: 0,
+      gasFee,
+      payload: {},
     });
 
-    await ledgerClient.query('COMMIT');
-
-    // Balances after block confirmed
-    await identityClient.query(
-      'UPDATE identity.users SET balance = balance - $1, updated_at = NOW() WHERE telegram_id = $2',
-      [amount, senderTgId]
-    );
-    await identityClient.query(
-      'UPDATE identity.users SET balance = balance + $1, updated_at = NOW() WHERE telegram_id = $2',
-      [amount, recipient.telegram_id]
-    );
-
-    await identityClient.query('COMMIT');
-    await Promise.all([
-      invalidateCachedUser(senderTgId),
-      invalidateCachedUser(recipient.telegram_id),
-    ]);
-    return { success: true, txHash, blockIndex, blockHash };
+    return { success: true, txHash, status: 'pending' as const };
   } catch (err: any) {
     await identityClient.query('ROLLBACK').catch(() => {});
-    await ledgerClient.query('ROLLBACK').catch(() => {});
     return { success: false, error: err.message };
   } finally {
     identityClient.release();
-    ledgerClient.release();
   }
+}
+
+// ─── Check transaction status (poll after sendEast) ────────────────
+export async function getTxStatus(txHash: string) {
+  return getTransactionStatus(txHash);
 }
 
 // ─── Stake EAST ───────────────────────────────────────────────────

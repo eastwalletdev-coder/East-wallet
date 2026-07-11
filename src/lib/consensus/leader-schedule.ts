@@ -1,44 +1,42 @@
 /**
  * EASTCHAIN — Leader schedule / block proposals
  * ─────────────────────────────────────────────────────────────────────
- * HONEST SCOPE — read this before wiring it in further:
- * Vercel still assembles every block, computes its hash/merkle root, and
- * writes it to ledger.blocks — that part is NOT decentralized here. What
- * this module changes is WHO gets credited/authorized as a block's
- * producer once there are enough real external validator nodes running:
+ * Once 2+ external validator nodes are genuinely live, Vercel assigns the
+ * next block slot to a deterministically-picked leader and gives it a
+ * short window to actually COMPUTE and submit the block (merkleRoot,
+ * sequenceHash, blockHash) rather than just counter-signing a fixed
+ * string. Vercel independently recomputes every value from its own
+ * trusted inputs (prev_hash + tx_hashes it already has) and ONLY accepts
+ * the submission if every value matches exactly — any mismatch (wrong
+ * prevHash, wrong blockHash, bad signature, timestamp out of bounds) is
+ * rejected with a specific reason and logged, and the slot falls back to
+ * Vercel self-producing so the chain never stalls.
  *
- *   < 2 active external nodes  → Vercel self-produces, exactly like today
- *                                 (block-engine.ts's existing behavior).
- *   >= 2 active external nodes → Vercel picks a leader deterministically,
- *                                 opens a short window for that node to
- *                                 counter-sign ("attest") the proposal,
- *                                 and credits them as validator_id if they
- *                                 do. If the deadline passes unclaimed,
- *                                 Vercel falls back to self-producing that
- *                                 slot — the chain must never stall on one
- *                                 offline node (this fallback behavior was
- *                                 a deliberate choice, not a default).
+ * What is still NOT decentralized: applying the block's side effects
+ * (balance updates via commitFn/rollbackFn) — those closures only exist
+ * in the Vercel instance holding the original transactions, so sealBlock()
+ * in block-engine.ts is still the one writing to the DB. What changes
+ * here is that when a leader submission is accepted, sealBlock() uses
+ * the EXTERNALLY-COMPUTED (but Vercel-verified) blockHash/merkleRoot/
+ * sequenceHash/timestamp — not values Vercel invented itself.
  *
  * "Active external node" = identity.validators row with node_type='external'
  * AND a heartbeat inside HEARTBEAT_FRESHNESS_SECONDS AND a registered
  * self-custody pubkey. See identity.ts for the underlying columns/queries.
- *
- * Cross-request coordination note: because sealing a block needs the
- * in-memory PendingTx closures (commitFn/rollbackFn) that only exist in
- * the Vercel function instance that received those transactions, the
- * external node's /api/consensus/submit-block call does NOT seal the
- * block itself — it just marks the proposal 'submitted' in the DB. The
- * ORIGINAL instance (already polling, see attemptSealOrPropose below)
- * is the one that notices this and performs the actual seal, crediting
- * the leader. This mirrors the existing in-memory mempool's own
- * same-warm-instance assumption — a known limitation of this
- * architecture at small scale, not something newly introduced here.
  */
 
 import { ledgerPool } from '@/lib/db/ledger';
 import { getActiveExternalValidators } from '@/lib/db/identity';
+import { verifySignature } from '@/lib/keypair-service';
+import {
+  computeMerkleRoot,
+  computeSequenceHash,
+  computeBlockHash,
+  buildProductionMessage,
+  MAX_PRODUCTION_CLOCK_SKEW_MS,
+} from '@/lib/consensus/block-math';
 
-export const LEADER_WINDOW_MS = 15_000; // how long a leader has to attest
+export const LEADER_WINDOW_MS = 15_000; // how long a leader has to produce + submit
 const POLL_INTERVAL_MS = 2_000;
 
 export type LeaderAssignment = {
@@ -46,11 +44,17 @@ export type LeaderAssignment = {
   pubkeyHex: string;
 };
 
+export type ValidatedProduction = {
+  blockHash: string;
+  merkleRoot: string;
+  sequenceHash: string;
+  timestampMs: number;
+};
+
 /**
  * Deterministic round-robin: same block index always picks the same
  * leader given the same active-validator set, so any node could recompute
- * this independently rather than trusting Vercel's word for it (they still
- * have to trust the mempool contents/hash for now — see file header).
+ * this independently rather than trusting Vercel's word for it.
  */
 export function pickLeader(
   activeExternalValidators: Array<{ telegramId: string; selfCustodyPubkey: string | null }>,
@@ -69,25 +73,12 @@ export async function isLeaderProposalModeActive(): Promise<boolean> {
   return active.length >= 2;
 }
 
-export function buildAttestationMessage(proposalId: number, blockIndex: number): string {
-  return `BLOCK_ATTEST|${proposalId}|${blockIndex}`;
-}
-
 /**
  * Lightweight, NON-blocking producer resolution for the real, live
- * direct-seal path (mining-actions.ts and the 3 contract files each have
- * their own inline sealSingleTx — see block-engine.ts's header comment
- * for why the mempool/proposal/attestation machinery above does NOT sit
- * on that path). Every real tx seals its own block immediately, inside
- * an already-open DB transaction — a 15s attestation wait there would
- * freeze the user's request and risk exhausting the connection pool.
- *
- * So for this path there is no live handshake: if 2+ external nodes are
- * verified live (heartbeat), Vercel deterministically credits one of them
- * as validator_id via the same round-robin as pickLeader(), with zero
- * added latency beyond one indexed query. Below 2 active nodes, returns
- * null and the caller falls back to the existing getActiveValidator()
- * (top PoC score) behavior — unchanged from before.
+ * direct-seal path (mining-actions.ts and the contract files). See
+ * block-engine.ts's header comment for why the proposal/production
+ * machinery below does NOT sit on that path — holding a DB transaction
+ * open for a 15s handshake would freeze the user's request.
  */
 export async function resolveBlockProducer(blockIndex: number): Promise<string | null> {
   const activeExternal = await getActiveExternalValidators();
@@ -98,6 +89,7 @@ export async function resolveBlockProducer(blockIndex: number): Promise<string |
 
 async function createProposal(
   blockIndex: number,
+  prevHash: string,
   txHashes: string[],
   isEmpty: boolean,
   leader: LeaderAssignment
@@ -107,12 +99,44 @@ async function createProposal(
     const deadline = new Date(Date.now() + LEADER_WINDOW_MS);
     const res = await client.query(
       `INSERT INTO ledger.block_proposals
-         (block_index, assigned_telegram_id, assigned_pubkey, tx_hashes, is_empty, deadline_at, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'pending')
+         (block_index, assigned_telegram_id, assigned_pubkey, tx_hashes, is_empty, deadline_at, status, prev_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)
        RETURNING id`,
-      [blockIndex, leader.telegramId, leader.pubkeyHex, JSON.stringify(txHashes), isEmpty, deadline]
+      [blockIndex, leader.telegramId, leader.pubkeyHex, JSON.stringify(txHashes), isEmpty, deadline, prevHash]
     );
     return res.rows[0].id;
+  } finally {
+    client.release();
+  }
+}
+
+async function getProposalRow(proposalId: number): Promise<{
+  assignedTelegramId: string;
+  assignedPubkey: string;
+  blockIndex: number;
+  prevHash: string;
+  txHashes: string[];
+  status: string;
+  deadlineAt: Date;
+} | null> {
+  const client = await ledgerPool.connect();
+  try {
+    const res = await client.query(
+      `SELECT assigned_telegram_id, assigned_pubkey, block_index, prev_hash, tx_hashes, status, deadline_at
+       FROM ledger.block_proposals WHERE id = $1`,
+      [proposalId]
+    );
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      assignedTelegramId: r.assigned_telegram_id,
+      assignedPubkey: r.assigned_pubkey,
+      blockIndex: r.block_index,
+      prevHash: r.prev_hash,
+      txHashes: Array.isArray(r.tx_hashes) ? r.tx_hashes : JSON.parse(r.tx_hashes || '[]'),
+      status: r.status,
+      deadlineAt: new Date(r.deadline_at),
+    };
   } finally {
     client.release();
   }
@@ -151,11 +175,13 @@ async function markProposalResolved(proposalId: number, resolution: 'submitted' 
  *  - { mode: 'internal' } — caller should seal immediately, exactly as before.
  *  - { mode: 'leader', leader, proposalId, waitForAttestation } — caller
  *    should await waitForAttestation() which resolves to true (leader
- *    attested in time — seal crediting them) or false (deadline passed —
- *    seal as fallback, exactly as internal mode).
+ *    produced + Vercel verified a valid block in time) or false (deadline
+ *    passed, or every submission attempt failed verification) — either
+ *    way, false means seal as fallback, exactly as internal mode.
  */
 export async function planBlockProduction(
   blockIndex: number,
+  prevHash: string,
   txHashes: string[],
   isEmpty: boolean
 ): Promise<
@@ -173,7 +199,7 @@ export async function planBlockProduction(
     return { mode: 'internal' };
   }
 
-  const proposalId = await createProposal(blockIndex, txHashes, isEmpty, leader);
+  const proposalId = await createProposal(blockIndex, prevHash, txHashes, isEmpty, leader);
 
   const waitForAttestation = async (): Promise<boolean> => {
     const deadline = Date.now() + LEADER_WINDOW_MS;
@@ -194,51 +220,188 @@ export async function finalizeProposal(proposalId: number, attested: boolean, se
 }
 
 /**
- * Called by /api/consensus/submit-block AFTER it has already verified the
- * signature and confirmed telegramId matches the proposal's assigned
- * leader. Does not seal anything — see file header for why.
+ * Fetches the current validated block hashes for an already-'submitted'
+ * proposal, so block-engine.ts's sealBlock() can use the externally
+ * computed values instead of inventing its own.
  */
-export async function attestProposal(proposalId: number): Promise<{ success: boolean; error?: string }> {
-  const current = await getProposalStatus(proposalId);
-  if (!current) return { success: false, error: 'PROPOSAL_NOT_FOUND' };
-  if (current.status !== 'pending') return { success: false, error: `PROPOSAL_ALREADY_${current.status.toUpperCase()}` };
-  if (Date.now() > current.deadlineAt.getTime()) return { success: false, error: 'DEADLINE_PASSED' };
-
+export async function getValidatedProduction(proposalId: number): Promise<ValidatedProduction | null> {
   const client = await ledgerPool.connect();
   try {
-    await client.query(
-      `UPDATE ledger.block_proposals SET status = 'submitted' WHERE id = $1 AND status = 'pending'`,
+    const res = await client.query(
+      `SELECT submitted_block_hash, submitted_merkle_root, submitted_sequence_hash, submitted_timestamp_ms
+       FROM ledger.block_proposals WHERE id = $1 AND status = 'submitted'`,
       [proposalId]
     );
-    return { success: true };
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    if (!r.submitted_block_hash || !r.submitted_merkle_root || !r.submitted_sequence_hash || !r.submitted_timestamp_ms) {
+      return null;
+    }
+    return {
+      blockHash: r.submitted_block_hash,
+      merkleRoot: r.submitted_merkle_root,
+      sequenceHash: r.submitted_sequence_hash,
+      timestampMs: Number(r.submitted_timestamp_ms),
+    };
   } finally {
     client.release();
   }
 }
 
-export async function getProposalForAttestation(proposalId: number): Promise<{
-  assignedTelegramId: string;
-  assignedPubkey: string;
+/**
+ * Called by GET /api/consensus/my-proposal — lets an external node poll
+ * "is it my turn right now?" and fetch the exact template it needs to
+ * compute the block (prevHash, blockIndex, txHashes, deadline).
+ */
+export async function getPendingProposalForValidator(telegramId: string): Promise<{
+  proposalId: number;
   blockIndex: number;
-  status: string;
+  prevHash: string;
+  txHashes: string[];
+  isEmpty: boolean;
   deadlineAt: Date;
 } | null> {
   const client = await ledgerPool.connect();
   try {
     const res = await client.query(
-      `SELECT assigned_telegram_id, assigned_pubkey, block_index, status, deadline_at
-       FROM ledger.block_proposals WHERE id = $1`,
-      [proposalId]
+      `SELECT id, block_index, prev_hash, tx_hashes, is_empty, deadline_at
+       FROM ledger.block_proposals
+       WHERE assigned_telegram_id = $1 AND status = 'pending' AND deadline_at > NOW()
+       ORDER BY id DESC LIMIT 1`,
+      [telegramId]
     );
     if (res.rows.length === 0) return null;
     const r = res.rows[0];
     return {
-      assignedTelegramId: r.assigned_telegram_id,
-      assignedPubkey: r.assigned_pubkey,
+      proposalId: r.id,
       blockIndex: r.block_index,
-      status: r.status,
+      prevHash: r.prev_hash,
+      txHashes: Array.isArray(r.tx_hashes) ? r.tx_hashes : JSON.parse(r.tx_hashes || '[]'),
+      isEmpty: r.is_empty,
       deadlineAt: new Date(r.deadline_at),
     };
+  } finally {
+    client.release();
+  }
+}
+
+export type ProductionSubmission = {
+  proposalId: number;
+  telegramId: string;
+  claimedPrevHash: string;
+  merkleRoot: string;
+  sequenceHash: string;
+  blockHash: string;
+  timestampMs: number;
+  signature: string;
+};
+
+export type ProductionValidationResult =
+  | { accepted: true }
+  | { accepted: false; reason: string; status: number };
+
+/**
+ * Called by POST /api/consensus/submit-block. Recomputes every hash from
+ * Vercel's own trusted inputs (never the client's claimed values) and
+ * compares field-by-field against what the node submitted. Any mismatch
+ * is a rejection with a specific, logged reason — this is the actual
+ * fraud-detection surface: a node that didn't build on the real chain
+ * tip, fabricated tx_hashes, or backdated its timestamp gets caught here
+ * before anything is written to ledger.blocks.
+ */
+export async function validateAndAcceptProduction(
+  submission: ProductionSubmission
+): Promise<ProductionValidationResult> {
+  const proposal = await getProposalRow(submission.proposalId);
+  if (!proposal) return { accepted: false, reason: 'PROPOSAL_NOT_FOUND', status: 404 };
+  if (proposal.assignedTelegramId !== submission.telegramId) {
+    return { accepted: false, reason: 'NOT_THE_ASSIGNED_LEADER', status: 403 };
+  }
+  if (proposal.status !== 'pending') {
+    return { accepted: false, reason: `PROPOSAL_ALREADY_${proposal.status.toUpperCase()}`, status: 409 };
+  }
+  if (Date.now() > proposal.deadlineAt.getTime()) {
+    return { accepted: false, reason: 'DEADLINE_PASSED', status: 409 };
+  }
+
+  // 1. prevHash — catches a node building on a stale or fabricated tip.
+  if (submission.claimedPrevHash !== proposal.prevHash) {
+    await logRejection(submission.proposalId, 'PREV_HASH_MISMATCH');
+    return { accepted: false, reason: 'PREV_HASH_MISMATCH', status: 422 };
+  }
+
+  // 2. timestamp bounds — catches backdating/future-dating.
+  if (Math.abs(submission.timestampMs - Date.now()) > MAX_PRODUCTION_CLOCK_SKEW_MS) {
+    await logRejection(submission.proposalId, 'TIMESTAMP_OUT_OF_RANGE');
+    return { accepted: false, reason: 'TIMESTAMP_OUT_OF_RANGE', status: 422 };
+  }
+
+  // 3. Recompute merkleRoot from Vercel's OWN copy of tx_hashes — never
+  // trust the client's claimed merkleRoot on its own.
+  const recomputedMerkleRoot = computeMerkleRoot(proposal.txHashes);
+  if (submission.merkleRoot !== recomputedMerkleRoot) {
+    await logRejection(submission.proposalId, 'MERKLE_ROOT_MISMATCH');
+    return { accepted: false, reason: 'MERKLE_ROOT_MISMATCH', status: 422 };
+  }
+
+  // 4. Recompute sequenceHash + blockHash from trusted prevHash/blockIndex
+  // + the just-verified merkleRoot + the submitted (now bounds-checked) timestamp.
+  const recomputedSequenceHash = computeSequenceHash(proposal.prevHash, proposal.blockIndex, submission.timestampMs);
+  if (submission.sequenceHash !== recomputedSequenceHash) {
+    await logRejection(submission.proposalId, 'SEQUENCE_HASH_MISMATCH');
+    return { accepted: false, reason: 'SEQUENCE_HASH_MISMATCH', status: 422 };
+  }
+
+  const recomputedBlockHash = computeBlockHash(
+    proposal.prevHash, proposal.blockIndex, recomputedMerkleRoot, submission.timestampMs, proposal.txHashes.length
+  );
+  if (submission.blockHash !== recomputedBlockHash) {
+    await logRejection(submission.proposalId, 'BLOCK_HASH_MISMATCH');
+    return { accepted: false, reason: 'BLOCK_HASH_MISMATCH', status: 422 };
+  }
+
+  // 5. Signature — proves the assigned validator's key actually produced
+  // this exact (now-verified) blockHash, not just any string.
+  const message = buildProductionMessage(submission.proposalId, proposal.blockIndex, recomputedBlockHash);
+  const validSignature = await verifySignature(proposal.assignedPubkey, message, submission.signature);
+  if (!validSignature) {
+    await logRejection(submission.proposalId, 'INVALID_SIGNATURE');
+    return { accepted: false, reason: 'INVALID_SIGNATURE', status: 401 };
+  }
+
+  // All checks passed — accept atomically (guards against a double-submit race).
+  const client = await ledgerPool.connect();
+  try {
+    const res = await client.query(
+      `UPDATE ledger.block_proposals
+       SET status = 'submitted',
+           submitted_block_hash = $1,
+           submitted_merkle_root = $2,
+           submitted_sequence_hash = $3,
+           submitted_timestamp_ms = $4
+       WHERE id = $5 AND status = 'pending'
+       RETURNING id`,
+      [recomputedBlockHash, recomputedMerkleRoot, recomputedSequenceHash, submission.timestampMs, submission.proposalId]
+    );
+    if (res.rows.length === 0) {
+      return { accepted: false, reason: 'PROPOSAL_ALREADY_RESOLVED', status: 409 };
+    }
+    return { accepted: true };
+  } finally {
+    client.release();
+  }
+}
+
+async function logRejection(proposalId: number, reason: string) {
+  console.warn(`[EASTCHAIN] Block proposal #${proposalId} REJECTED: ${reason} — possible fraudulent/broken producer node.`);
+  const client = await ledgerPool.connect();
+  try {
+    await client.query(
+      `UPDATE ledger.block_proposals SET reject_reason = $1 WHERE id = $2 AND status = 'pending'`,
+      [reason, proposalId]
+    );
+  } catch {
+    // best-effort logging only — never let this mask the real rejection result
   } finally {
     client.release();
   }

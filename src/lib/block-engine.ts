@@ -3,11 +3,14 @@
  * Handles batch window (5s), VSH, empty blocks (30min if validator online)
  * Block-first atomic pattern: block created before balance updates
  */
-import { createHash } from 'crypto';
 import { ledgerPool } from './db/ledger';
 import { identityPool } from './db/identity';
 import { publishBlockToRailway } from './lightnode-publisher';
-import { planBlockProduction, finalizeProposal } from './consensus/leader-schedule';
+import { archiveBlockToR2 } from './archive/r2-client';
+import { signChainHeader } from './consensus/chain-signing';
+import { getDispatchHandlers, type MempoolRow } from './consensus/tx-dispatch';
+import { planBlockProduction, finalizeProposal, getValidatedProduction } from './consensus/leader-schedule';
+import { computeSequenceHash, computeBlockHash, computeMerkleRoot } from './consensus/block-math';
 
 const BATCH_WINDOW_MS = 5_000;       // 5 seconds batch window
 const MAX_TX_PER_BLOCK = 10;         // max tx per block
@@ -33,45 +36,6 @@ let mempool: PendingTx[] = [];
 let batchTimer: ReturnType<typeof setTimeout> | null = null;
 let emptyBlockTimer: ReturnType<typeof setInterval> | null = null;
 let isProcessing = false;
-
-// ─── VSH: Verifiable Sequence Hash ───────────────────────────────
-export function computeSequenceHash(
-  prevBlockHash: string,
-  blockIndex: number,
-  timestampMs: number
-): string {
-  const payload = `${prevBlockHash}|${blockIndex}|${timestampMs}`;
-  return '0x' + createHash('sha256').update(payload).digest('hex');
-}
-
-// ─── Block Hash ───────────────────────────────────────────────────
-export function computeBlockHash(
-  prevHash: string,
-  blockIndex: number,
-  merkleRoot: string,
-  timestampMs: number,
-  txCount: number
-): string {
-  const payload = `${prevHash}|${blockIndex}|${merkleRoot}|${timestampMs}|${txCount}`;
-  return '0x' + createHash('sha256').update(payload).digest('hex');
-}
-
-// ─── Merkle Root ──────────────────────────────────────────────────
-export function computeMerkleRoot(txHashes: string[]): string {
-  if (txHashes.length === 0) return '0x' + '0'.repeat(64);
-  if (txHashes.length === 1) return txHashes[0];
-  let layer = [...txHashes];
-  while (layer.length > 1) {
-    const next: string[] = [];
-    for (let i = 0; i < layer.length; i += 2) {
-      const left = layer[i];
-      const right = layer[i + 1] || layer[i];
-      next.push('0x' + createHash('sha256').update(left + right).digest('hex'));
-    }
-    layer = next;
-  }
-  return layer[0];
-}
 
 // ─── Get last block info ──────────────────────────────────────────
 async function getLastBlock(): Promise<{ blockIndex: number; blockHash: string }> {
@@ -104,7 +68,12 @@ export async function getActiveValidator(): Promise<string | null> {
 }
 
 // ─── Core: Seal a block ──────────────────────────────────────────
-async function sealBlock(txs: PendingTx[], isEmpty: boolean, validatorIdOverride?: string | null): Promise<{
+async function sealBlock(
+  txs: PendingTx[],
+  isEmpty: boolean,
+  validatorIdOverride?: string | null,
+  producedBlockOverride?: { blockHash: string; merkleRoot: string; sequenceHash: string; timestampMs: number } | null
+): Promise<{
   success: boolean;
   blockIndex?: number;
   blockHash?: string;
@@ -123,12 +92,37 @@ async function sealBlock(txs: PendingTx[], isEmpty: boolean, validatorIdOverride
 
     const { blockIndex: lastIndex, blockHash: prevHash } = await getLastBlock();
     const blockIndex = lastIndex + 1;
-    const timestamp = Date.now();
 
     const txHashes = txs.map(t => t.txHash);
-    const merkleRoot = computeMerkleRoot(txHashes);
-    const sequenceHash = computeSequenceHash(prevHash, blockIndex, timestamp);
-    const blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, txs.length);
+    const freshMerkleRoot = computeMerkleRoot(txHashes);
+
+    // If a leader's production was already verified in leader-schedule.ts
+    // (see validateAndAcceptProduction), use THOSE values — that's the
+    // whole point of letting the external node produce the block. We
+    // still re-verify here as a final belt-and-suspenders check: if the
+    // chain tip somehow moved between verification and sealing (it
+    // shouldn't, sealBlock is single-flight via isProcessing), fall back
+    // to computing fresh rather than writing a now-inconsistent block.
+    let timestamp: number;
+    let merkleRoot: string;
+    let sequenceHash: string;
+    let blockHash: string;
+
+    const stillConsistent = producedBlockOverride && freshMerkleRoot === producedBlockOverride.merkleRoot;
+    if (stillConsistent) {
+      timestamp = producedBlockOverride!.timestampMs;
+      merkleRoot = producedBlockOverride!.merkleRoot;
+      sequenceHash = producedBlockOverride!.sequenceHash;
+      blockHash = producedBlockOverride!.blockHash;
+    } else {
+      if (producedBlockOverride) {
+        console.warn(`[EASTCHAIN] Block #${blockIndex}: producedBlockOverride no longer consistent with current chain tip — sealing fresh instead.`);
+      }
+      timestamp = Date.now();
+      merkleRoot = freshMerkleRoot;
+      sequenceHash = computeSequenceHash(prevHash, blockIndex, timestamp);
+      blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, txs.length);
+    }
 
     // Get validator for empty blocks (required for Opsi 2), unless the
     // caller already resolved one via leader-proposal mode (see
@@ -157,10 +151,13 @@ async function sealBlock(txs: PendingTx[], isEmpty: boolean, validatorIdOverride
       isEmpty, validatorId
     ]);
 
-    publishBlockToRailway({
+    const publishedHeader = {
       height: blockIndex, hash: blockHash, previousHash: prevHash, merkleRoot,
       validator: validatorId, timestamp, epoch: Math.floor(timestamp / 86_400_000),
-    });
+      signature: signChainHeader(blockIndex, blockHash), // null if CHAIN_SIGNING_PRIVATE_KEY unset
+    };
+    publishBlockToRailway(publishedHeader);
+    archiveBlockToR2(publishedHeader); // fire-and-forget, non-fatal — see r2-client.ts
 
     // 2. Insert all transactions
     for (const tx of txs) {
@@ -245,36 +242,50 @@ async function sealBlock(txs: PendingTx[], isEmpty: boolean, validatorIdOverride
 // ─── Mode-switching wrapper: internal (Vercel self-produce) vs ───
 // ─── leader-proposal (2+ active external validator nodes) ────────
 async function attemptSealOrPropose(txs: PendingTx[], isEmpty: boolean): Promise<ReturnType<typeof sealBlock>> {
-  const { blockIndex: lastIndex } = await getLastBlock();
+  const { blockIndex: lastIndex, blockHash: prevHash } = await getLastBlock();
   const nextBlockIndex = lastIndex + 1;
   const txHashes = txs.map(t => t.txHash);
 
-  const plan = await planBlockProduction(nextBlockIndex, txHashes, isEmpty);
+  const plan = await planBlockProduction(nextBlockIndex, prevHash, txHashes, isEmpty);
 
   if (plan.mode === 'internal') {
     return sealBlock(txs, isEmpty);
   }
 
   // Leader-proposal mode: give the assigned node LEADER_WINDOW_MS to
-  // counter-sign via /api/consensus/submit-block. This holds the current
-  // invocation open while polling — acceptable at the validator counts
-  // this is designed for, same caveat as the existing in-memory mempool.
+  // actually COMPUTE the block (merkleRoot/sequenceHash/blockHash) and
+  // submit it via /api/consensus/submit-block, where Vercel independently
+  // recomputes and verifies every value before accepting. This holds the
+  // current invocation open while polling — acceptable at the validator
+  // counts this is designed for, same caveat as the existing in-memory mempool.
   console.log(`[EASTCHAIN] Block #${nextBlockIndex} proposed to leader ${plan.leader.telegramId} (proposal #${plan.proposalId})`);
   const attested = await plan.waitForAttestation();
 
-  const result = attested
-    ? await sealBlock(txs, isEmpty, plan.leader.telegramId)
+  const producedBlock = attested ? await getValidatedProduction(plan.proposalId) : null;
+
+  const result = producedBlock
+    ? await sealBlock(txs, isEmpty, plan.leader.telegramId, producedBlock)
     : await sealBlock(txs, isEmpty); // fallback: self-produce, chain never stalls
 
   if (result.success && result.blockIndex !== undefined) {
-    await finalizeProposal(plan.proposalId, attested, result.blockIndex);
+    await finalizeProposal(plan.proposalId, !!producedBlock, result.blockIndex);
   }
 
-  if (!attested) {
-    console.log(`[EASTCHAIN] Leader ${plan.leader.telegramId} missed the window for block #${nextBlockIndex} — Vercel self-produced as fallback`);
+  if (!producedBlock) {
+    console.log(`[EASTCHAIN] Leader ${plan.leader.telegramId} missed the window (or failed verification) for block #${nextBlockIndex} — Vercel self-produced as fallback`);
   }
 
   return result;
+}
+
+// ─── Priority batch selection: highest gas_fee first ──────────────
+// This is the actual "fee market" — a tx paying more gas jumps ahead of
+// ones that arrived earlier but paid less. Array.prototype.sort is stable
+// in all modern JS engines, so equal-fee tx keep their arrival order as
+// the tiebreak (oldest-first), matching the ledger.mempool index too.
+function selectPriorityBatch(): PendingTx[] {
+  mempool.sort((a, b) => b.gasFee - a.gasFee);
+  return mempool.splice(0, MAX_TX_PER_BLOCK);
 }
 
 // ─── Public: Add tx to mempool + start batch window ──────────────
@@ -299,10 +310,10 @@ export async function addToMempool(tx: PendingTx): Promise<void> {
     client.release();
   }
 
-  // If mempool full (10 tx) — seal immediately
+  // If mempool full (10 tx) — seal immediately, highest gas_fee first
   if (mempool.length >= MAX_TX_PER_BLOCK) {
     if (batchTimer) { clearTimeout(batchTimer); batchTimer = null; }
-    const batch = mempool.splice(0, MAX_TX_PER_BLOCK);
+    const batch = selectPriorityBatch();
     await attemptSealOrPropose(batch, false);
     return;
   }
@@ -312,10 +323,118 @@ export async function addToMempool(tx: PendingTx): Promise<void> {
     batchTimer = setTimeout(async () => {
       batchTimer = null;
       if (mempool.length === 0) return;
-      const batch = mempool.splice(0, MAX_TX_PER_BLOCK);
+      const batch = selectPriorityBatch();
       await attemptSealOrPropose(batch, false);
     }, BATCH_WINDOW_MS);
   }
+}
+
+// submitTransaction is an alias of addToMempool — same function, clearer
+// name for new call sites (see sendEast() in mining-actions.ts for the
+// reference implementation: debit sender at submission time, credit
+// recipient via commitFn once the batch actually seals).
+export const submitTransaction = addToMempool;
+
+// ─── Reliable queueing (fixes the critical instance-recycle bug) ──
+// addToMempool()/submitTransaction() above hold commitFn/rollbackFn as
+// in-memory closures triggered by a bare setTimeout — if the Vercel
+// instance is frozen/recycled before that timer fires, those closures
+// are lost: funds already debited at submission never get credited OR
+// refunded. queueTransaction() below only writes the durable DB row
+// (no closures, no timer) and sealPendingBatch() reconstructs the
+// commit/rollback behavior from that row via tx-dispatch.ts's registry —
+// safe to call from ANY process, including a QStash-triggered cron
+// (see /api/mempool/process), which is what actually guarantees this
+// tx gets processed even if the original request's instance is long gone.
+export async function queueTransaction(row: MempoolRow): Promise<void> {
+  const client = await ledgerPool.connect();
+  try {
+    await client.query(`
+      INSERT INTO ledger.mempool
+        (tx_hash, tx_type, sender_address, recipient_address,
+         sender_id, recipient_id, amount, gas_fee, payload)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      ON CONFLICT (tx_hash) DO NOTHING
+    `, [
+      row.txHash, row.txType, '', '',
+      row.senderId, row.recipientId, row.amount, row.gasFee,
+      JSON.stringify(row.payload || {})
+    ]);
+  } finally {
+    client.release();
+  }
+
+  // Best-effort fast path: try to seal right away if it's safe to do so.
+  // Purely an optimization — if this instance dies before sealPendingBatch()
+  // finishes, the row is still 'pending' in the DB and the QStash cron
+  // will pick it up on its next run. Correctness never depends on this succeeding.
+  sealPendingBatch().catch((err) => {
+    console.error('[EASTCHAIN] Opportunistic sealPendingBatch failed (non-fatal, QStash cron will retry):', err);
+  });
+}
+
+const STALE_PENDING_MS = 2 * 60 * 1000; // flag anything stuck >2 min for visibility
+
+/**
+ * Pulls up to MAX_TX_PER_BLOCK pending rows from ledger.mempool (highest
+ * gas_fee first), reconstructs PendingTx objects via tx-dispatch.ts's
+ * registry, and seals them. Safe to call from anywhere — this is what
+ * makes sealing reliable regardless of which process/instance triggers it.
+ */
+export async function sealPendingBatch(): Promise<{ sealed: boolean; blockIndex?: number; count?: number }> {
+  const client = await ledgerPool.connect();
+  let rows: any[];
+  try {
+    rows = (await client.query(
+      `SELECT tx_hash, tx_type, sender_id, recipient_id, amount, gas_fee, payload, submitted_at
+       FROM ledger.mempool WHERE status = 'pending'
+       ORDER BY gas_fee DESC, submitted_at ASC LIMIT $1`,
+      [MAX_TX_PER_BLOCK]
+    )).rows;
+  } finally {
+    client.release();
+  }
+
+  if (rows.length === 0) return { sealed: false };
+
+  // Visibility for CRITICAL fix #1's remaining edge case: if a dispatch
+  // handler itself is missing/erroring repeatedly, rows would still go
+  // stale — this at least surfaces it in logs rather than failing silently.
+  for (const r of rows) {
+    const ageMs = Date.now() - new Date(r.submitted_at).getTime();
+    if (ageMs > STALE_PENDING_MS) {
+      console.warn(`[EASTCHAIN] Mempool tx ${r.tx_hash} (${r.tx_type}) has been pending for ${Math.round(ageMs / 1000)}s — investigate if this recurs`);
+    }
+  }
+
+  const txs: PendingTx[] = rows.map((r) => {
+    const row: MempoolRow = {
+      txHash: r.tx_hash, txType: r.tx_type, senderId: r.sender_id, recipientId: r.recipient_id,
+      amount: Number(r.amount), gasFee: Number(r.gas_fee), payload: r.payload || {},
+    };
+    const handlers = getDispatchHandlers(r.tx_type);
+    return {
+      txHash: r.tx_hash, txType: r.tx_type,
+      senderAddress: '', recipientAddress: '',
+      senderId: r.sender_id, recipientId: r.recipient_id,
+      amount: Number(r.amount), gasFee: Number(r.gas_fee), payload: r.payload,
+      commitFn: async () => {
+        if (!handlers) { console.error(`[EASTCHAIN] No dispatch handler registered for tx_type=${r.tx_type} — skipping commit for ${r.tx_hash}`); return; }
+        await handlers.commit(row);
+      },
+      rollbackFn: async () => {
+        if (!handlers) { console.error(`[EASTCHAIN] No dispatch handler registered for tx_type=${r.tx_type} — skipping rollback for ${r.tx_hash}`); return; }
+        await handlers.rollback(row);
+      },
+    };
+  });
+
+  const result = await attemptSealOrPropose(txs, false);
+  if (!result.success) {
+    console.error(`[EASTCHAIN] sealPendingBatch: batch of ${txs.length} failed to seal:`, result.error);
+    return { sealed: false };
+  }
+  return { sealed: true, blockIndex: result.blockIndex, count: txs.length };
 }
 
 // ─── Empty block scheduler (30 min, validator required) ──────────
@@ -332,5 +451,53 @@ export function stopEmptyBlockScheduler() {
   if (emptyBlockTimer) { clearInterval(emptyBlockTimer); emptyBlockTimer = null; }
 }
 
+export type TxStatusResult =
+  | { found: true; status: 'confirmed'; blockIndex: number; txType: string; amount: number }
+  | { found: true; status: 'pending'; txType: string; amount: number; gasFee: number; queuePosition: number }
+  | { found: false };
+
+/**
+ * Polled by the client after submitTransaction() returns a pending txHash
+ * (see sendEast() in mining-actions.ts). Checks the durable confirmed
+ * record first, then the pending mempool row, so a status check right at
+ * the seal boundary can't report "not found" for a tx that just confirmed.
+ */
+export async function getTransactionStatus(txHash: string): Promise<TxStatusResult> {
+  const client = await ledgerPool.connect();
+  try {
+    const confirmed = await client.query(
+      `SELECT block_index, tx_type, amount FROM ledger.transactions WHERE tx_hash = $1`,
+      [txHash]
+    );
+    if (confirmed.rows.length > 0) {
+      const r = confirmed.rows[0];
+      return { found: true, status: 'confirmed', blockIndex: r.block_index, txType: r.tx_type, amount: Number(r.amount) };
+    }
+
+    const pending = await client.query(
+      `SELECT tx_type, amount, gas_fee,
+              (SELECT COUNT(*) FROM ledger.mempool m2
+               WHERE m2.status = 'pending' AND m2.gas_fee > m1.gas_fee) AS higher_priority_count
+       FROM ledger.mempool m1 WHERE tx_hash = $1 AND status = 'pending'`,
+      [txHash]
+    );
+    if (pending.rows.length > 0) {
+      const r = pending.rows[0];
+      return {
+        found: true, status: 'pending', txType: r.tx_type, amount: Number(r.amount),
+        gasFee: Number(r.gas_fee), queuePosition: Number(r.higher_priority_count) + 1,
+      };
+    }
+
+    return { found: false };
+  } finally {
+    client.release();
+  }
+}
+
 export { sealBlock, getLastBlock, attemptSealOrPropose };
 export type { PendingTx };
+// Re-exported for backward compatibility — the actual implementations now
+// live in ./consensus/block-math.ts (shared with leader-schedule.ts's
+// verification logic). Prefer importing from there directly in new code.
+export { computeSequenceHash, computeBlockHash, computeMerkleRoot } from './consensus/block-math';

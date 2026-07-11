@@ -84,7 +84,7 @@ type WalletContextType = {
   isLoading: boolean;
   isLocked: boolean;
   hasPassword: boolean;
-  createWallet: (password: string) => Promise<void>;
+  createWallet: (password: string, existingMnemonic?: string) => Promise<void>;
   importWallet: (phrase: string, password: string) => Promise<boolean>;
   logout: () => void;
   unlock: (password: string) => Promise<boolean>;
@@ -124,10 +124,14 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(false);
   }, []);
 
-  const createWallet = async (password: string) => {
+  const createWallet = async (password: string, existingMnemonic?: string) => {
     try {
       setIsLoading(true);
-      const newMnemonic = await generateMnemonic();
+      // If a mnemonic was already generated & shown to the user for backup
+      // (e.g. from CreateWalletDialog's generate/backup step), use that exact
+      // one — generating a NEW random one here would silently mismatch the
+      // phrase the user just backed up against what's actually in the vault.
+      const newMnemonic = existingMnemonic || await generateMnemonic();
       const encrypted = await encryptMnemonic(newMnemonic, password);
       localStorage.setItem('east_vault', encrypted);
       setMnemonic(newMnemonic);

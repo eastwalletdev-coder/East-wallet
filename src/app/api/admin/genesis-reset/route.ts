@@ -43,9 +43,9 @@ export async function POST(req: NextRequest) {
     ).catch((err) => console.error('[EASTCHAIN] Failed to write admin_audit_log (non-fatal):', err));
 
     if (!result.success) {
-      return NextResponse.json({ success: false, ...result }, { status: 500 });
+      return NextResponse.json(result, { status: 500 });
     }
-    return NextResponse.json({ success: true, ...result });
+    return NextResponse.json(result);
   } catch (err: any) {
     console.error('[EASTCHAIN] genesis-reset route error:', err);
     return NextResponse.json({ success: false, error: 'INTERNAL_ERROR' }, { status: 500 });

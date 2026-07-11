@@ -62,6 +62,28 @@ export function deriveAllAccounts(mnemonic: string) {
 }
 
 /**
+ * Derives the EVM address + public key from a mnemonic — no RPC/network
+ * needed, pure local derivation. Same path as deriveAllAccounts()/
+ * getEvmSigner(), so the address always matches what's shown in the Wallet tab.
+ */
+export function getEvmIdentity(mnemonic: string): { address: string; publicKey: string } {
+  const mnemonicObj = Mnemonic.fromPhrase(mnemonic.trim());
+  const hdWallet = HDNodeWallet.fromMnemonic(mnemonicObj, "m/44'/60'/0'/0/0");
+  return { address: hdWallet.address, publicKey: hdWallet.publicKey };
+}
+
+/**
+ * Signs a plain-text payload with EIP-191 personal_sign — the exact scheme
+ * verifyEvmOwnership() in evm-signature.ts expects (ethers.verifyMessage is
+ * the matching verification counterpart to HDNodeWallet.signMessage).
+ */
+export async function signEvmMessage(mnemonic: string, payload: string): Promise<string> {
+  const mnemonicObj = Mnemonic.fromPhrase(mnemonic.trim());
+  const hdWallet = HDNodeWallet.fromMnemonic(mnemonicObj, "m/44'/60'/0'/0/0");
+  return hdWallet.signMessage(payload);
+}
+
+/**
  * Returns a live ethers.Wallet (signer) connected to the given RPC —
  * used to actually sign + broadcast EVM transactions. Same derivation
  * path as deriveAllAccounts(), so the address matches exactly.

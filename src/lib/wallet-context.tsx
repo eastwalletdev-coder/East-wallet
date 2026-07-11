@@ -55,6 +55,20 @@ async function decryptMnemonic(encrypted: string, password: string): Promise<str
   return dec.decode(plain);
 }
 
+/**
+ * Standalone helper (outside the WalletProvider/useWallet hook) that reads the
+ * local encrypted vault from localStorage and decrypts it with the given
+ * password — returns the raw mnemonic. Unlike unlock(), this does NOT touch
+ * any React state; it's meant for one-off reads (e.g. re-confirming the
+ * mnemonic during a self-custody upgrade flow). Throws if there's no vault
+ * or the password is wrong.
+ */
+export async function decryptVaultMnemonic(password: string): Promise<string> {
+  const encrypted = localStorage.getItem('east_vault');
+  if (!encrypted) throw new Error('No local wallet vault found on this device.');
+  return decryptMnemonic(encrypted, password);
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type Account = {

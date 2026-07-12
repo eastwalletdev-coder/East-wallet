@@ -129,20 +129,7 @@ export default function WhitepaperPage() {
         </div>
       </Section>
 
-      <Section title="7. Tokenomics">
-        <p className="text-white font-bold mb-2">Fixed Maximum Supply: 1,000,000,000 EAST</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
-          <Row label="Mining Rewards Pool" value="650,000,000 EAST" />
-          <Row label="Liquidity Pool" value="100,000,000 EAST" />
-          <Row label="Treasury" value="100,000,000 EAST" />
-          <Row label="Founder (Vesting)" value="50,000,000 EAST" />
-          <Row label="Marketing" value="50,000,000 EAST" />
-          <Row label="Team" value="50,000,000 EAST" />
-        </div>
-        <p>All minting is enforced server-side via supply bucket validation. No token can be minted beyond its allocated cap.</p>
-      </Section>
-
-      <Section title="8. Referral Protocol">
+      <Section title="7. Referral Protocol">
         <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
           <Row label="Bonus per referral" value="1 EAST" />
           <Row label="Trigger" value="4 claims by referred user" />
@@ -151,7 +138,7 @@ export default function WhitepaperPage() {
         </div>
       </Section>
 
-      <Section title="9. Roadmap">
+      <Section title="8. Roadmap">
         <p className="text-white/50 text-[10px] uppercase font-bold mb-1">✓ Achieved</p>
         <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mb-3">
           <p className="text-white/70 text-sm">→ Hybrid dual-layer ledger (SHA-256 chaining, Anchor Protocol)</p>

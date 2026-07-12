@@ -37,6 +37,10 @@ import { AIScout } from "@/components/AIScout";
 import { ContractAnalyzer } from "@/components/ContractAnalyzer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { DropdownMenu as ShadDropdownMenu, DropdownMenuContent as ShadDropdownMenuContent, DropdownMenuItem as ShadDropdownMenuItem, DropdownMenuTrigger as ShadDropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { WalletConnectHandler } from "@/components/WalletConnectHandler";
+import { WalletConnectRequestHandler } from "@/components/WalletConnectRequestHandler";
+import { QrCameraScanner } from "@/components/QrCameraScanner";
 import Image from "next/image";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -55,7 +59,7 @@ export default function WalletPage() {
 
 function WalletPageContent() {
   const { accounts, mnemonic, createWallet, isLoading } = useWallet();
-  const { selectedChain, setSelectedChain, currentRPC } = useRPC();
+  const { selectedChain, setSelectedChain, currentRPC, nodes } = useRPC();
   const [tokens, setTokens] = useState<Token[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -72,6 +76,7 @@ function WalletPageContent() {
   const [showSetup, setShowSetup] = useState(false);
 
   const activeAccount = accounts.find(a => a.chain === selectedChain) || accounts[0];
+  const evmAccount = accounts.find(a => a.chain === 'Ethereum');
 
   const performAutoDetection = useCallback(async () => {
     if (!activeAccount?.address) return;
@@ -102,10 +107,31 @@ function WalletPageContent() {
     );
   };
 
+  const [wcUriDialogOpen, setWcUriDialogOpen] = useState(false);
+  const [wcScanMode, setWcScanMode] = useState(true);
+  const [wcUriInput, setWcUriInput] = useState('');
+  const [activeWcUri, setActiveWcUri] = useState<string | null>(null);
+
   const handleWalletConnectClick = () => {
-    setStartWithScanner(true);
-    setSendOpen(true);
+    setWcUriInput('');
+    setWcScanMode(true);
+    setWcUriDialogOpen(true);
   };
+
+  const handleWcConnect = () => {
+    const uri = wcUriInput.trim();
+    if (!uri.startsWith('wc:')) {
+      toast({ variant: 'destructive', title: 'Invalid URI', description: 'Paste a URI starting with "wc:" from the dApp\'s WalletConnect QR code.' });
+      return;
+    }
+    setWcUriDialogOpen(false);
+    setActiveWcUri(uri);
+  };
+
+  const getRpcUrlForChain = useCallback((chain: string): string | undefined => {
+    const online = nodes.find(n => n.chain === chain && n.status === 'online');
+    return (online || nodes.find(n => n.chain === chain))?.url;
+  }, [nodes]);
 
   const handleCreateWallet = () => {
     if (!setupPassword || setupPassword !== confirmPassword) {
@@ -493,6 +519,65 @@ function WalletPageContent() {
         openSend={(token) => { setSelectedToken(token); setSendOpen(true); }}
         openReceive={() => setReceiveOpen(true)}
       />
+
+      {/* WalletConnect — scan the dApp's QR directly, or paste the URI manually */}
+      <Dialog open={wcUriDialogOpen} onOpenChange={setWcUriDialogOpen}>
+        <DialogContent className="bg-background border-primary/20 rounded-[2rem] max-w-[380px]">
+          <DialogHeader>
+            <DialogTitle className="font-headline uppercase flex items-center gap-2">
+              <Link2 className="w-4 h-4 text-primary" /> Connect via WalletConnect
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            {wcScanMode ? (
+              <>
+                <QrCameraScanner
+                  filter={(text) => text.startsWith('wc:')}
+                  onScan={(uri) => { setWcUriInput(uri); setWcScanMode(false); setWcUriDialogOpen(false); setActiveWcUri(uri); }}
+                  onError={(msg) => toast({ variant: 'destructive', title: 'Camera Error', description: msg })}
+                />
+                <Button variant="ghost" size="sm" className="w-full text-[10px] text-primary" onClick={() => setWcScanMode(false)}>
+                  Paste URI manually instead
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground">
+                  On the dApp, choose "WalletConnect" and copy the URI (usually under the QR code, e.g. "Copy to clipboard"), then paste it here.
+                </p>
+                <Input
+                  placeholder="wc:a1b2c3...@2?relay-protocol=..."
+                  value={wcUriInput}
+                  onChange={(e) => setWcUriInput(e.target.value)}
+                  className="bg-secondary/30 border-primary/10 font-mono text-xs rounded-xl h-11"
+                />
+                <Button onClick={handleWcConnect} className="w-full h-11 rounded-xl bg-primary font-bold uppercase text-xs">
+                  Connect
+                </Button>
+                <Button variant="ghost" size="sm" className="w-full text-[10px] text-primary" onClick={() => setWcScanMode(true)}>
+                  Scan QR instead
+                </Button>
+              </>
+            )}
+            {!evmAccount && (
+              <p className="text-[10px] text-amber-400">Set up your Ethereum account first — WalletConnect needs an EVM address to offer the dApp.</p>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {activeWcUri && evmAccount && (
+        <WalletConnectHandler
+          uri={activeWcUri}
+          evmAddress={evmAccount.address}
+          onClose={() => setActiveWcUri(null)}
+        />
+      )}
+
+      {/* Persistent listener for requests on any already-connected session
+          (sign message / send transaction) — mounted whenever the wallet
+          is unlocked, independent of which dialog/tab is currently open. */}
+      {mnemonic && <WalletConnectRequestHandler mnemonic={mnemonic} getRpcUrlForChain={getRpcUrlForChain} />}
     </div>
   );
 }

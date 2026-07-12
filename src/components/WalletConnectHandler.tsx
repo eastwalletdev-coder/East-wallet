@@ -1,62 +1,116 @@
 
 "use client"
 
-import { useState, useEffect } from "react";
-import { 
-  Dialog, 
-  DialogContent, 
-  DialogHeader, 
+import { useState, useEffect, useRef } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
   DialogTitle,
   DialogDescription,
-  DialogFooter
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Globe, ShieldCheck, Zap, X, Check, Loader2 } from "lucide-react";
+import { Globe, ShieldCheck, X, Check, Loader2, AlertTriangle } from "lucide-react";
 import { toast } from "@/hooks/use-toast";
+import type { WalletKitTypes } from "@reown/walletkit";
+import {
+  getWalletKit,
+  pairWithUri,
+  buildNamespacesForApproval,
+  approveSessionProposal,
+  rejectSessionProposal,
+} from "@/lib/walletconnect-service";
 
 interface WalletConnectHandlerProps {
   uri: string;
+  evmAddress: string;
   onClose: () => void;
 }
 
-export function WalletConnectHandler({ uri, onClose }: WalletConnectHandlerProps) {
-  const [step, setStep] = useState<'analyzing' | 'request' | 'connected'>('analyzing');
-  const [dappInfo, setDappInfo] = useState({
-    name: "Decentralized App",
-    url: "https://dapp-service.io",
-    description: "External dApp requesting connection via WalletConnect v2",
-    icon: "https://picsum.photos/seed/dapp/64/64"
-  });
+const CHAIN_NAMES: Record<string, string> = {
+  'eip155:1': 'Ethereum',
+  'eip155:8453': 'Base',
+  'eip155:56': 'BNB Smart Chain',
+};
+
+export function WalletConnectHandler({ uri, evmAddress, onClose }: WalletConnectHandlerProps) {
+  const [step, setStep] = useState<'analyzing' | 'request' | 'connected' | 'error'>('analyzing');
+  const [errorMsg, setErrorMsg] = useState('');
+  const proposalRef = useRef<WalletKitTypes.SessionProposal | null>(null);
 
   useEffect(() => {
-    // Simulate parsing a WalletConnect v2 URI
-    const timer = setTimeout(() => {
-      setStep('request');
-      // Simulate metadata extraction (in reality this would come from the relay)
-      if (uri.includes('uniswap')) {
-        setDappInfo({
-          name: "Uniswap Interface",
-          url: "app.uniswap.org",
-          description: "Swap tokens and provide liquidity on Ethereum.",
-          icon: "https://picsum.photos/seed/uniswap/64/64"
-        });
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const kit = await getWalletKit();
+
+        const onProposal = (proposal: WalletKitTypes.SessionProposal) => {
+          if (cancelled) return;
+          proposalRef.current = proposal;
+          setStep('request');
+        };
+        kit.on('session_proposal', onProposal);
+
+        await pairWithUri(uri);
+        // If no proposal arrives within a reasonable window, the URI was
+        // likely invalid/expired — WalletConnect URIs are short-lived.
+        const timeout = setTimeout(() => {
+          if (!cancelled && !proposalRef.current) {
+            setErrorMsg('No response from the dApp — the QR/link may have expired. Try scanning a fresh one.');
+            setStep('error');
+          }
+        }, 15_000);
+
+        return () => {
+          clearTimeout(timeout);
+          kit.off('session_proposal', onProposal);
+        };
+      } catch (err: any) {
+        if (!cancelled) {
+          setErrorMsg(err?.message || 'Failed to connect to WalletConnect.');
+          setStep('error');
+        }
       }
-    }, 1500);
-    return () => clearTimeout(timer);
+    })();
+
+    return () => { cancelled = true; };
   }, [uri]);
 
-  const handleApprove = () => {
+  const handleApprove = async () => {
+    const proposal = proposalRef.current;
+    if (!proposal) return;
     setStep('analyzing');
-    setTimeout(() => {
+    try {
+      const namespaces = buildNamespacesForApproval(proposal.params, evmAddress);
+      await approveSessionProposal(proposal.id, namespaces);
       setStep('connected');
       toast({
         title: "Session Established",
-        description: `Connected to ${dappInfo.name} via WalletConnect v2.`,
+        description: `Connected to ${proposal.params.proposer.metadata.name} via WalletConnect.`,
       });
-      setTimeout(onClose, 2000);
-    }, 1500);
+      setTimeout(onClose, 1800);
+    } catch (err: any) {
+      setErrorMsg(err?.message || 'Failed to approve the session.');
+      setStep('error');
+    }
   };
+
+  const handleReject = async () => {
+    const proposal = proposalRef.current;
+    if (proposal) {
+      try { await rejectSessionProposal(proposal.id); } catch { /* best effort */ }
+    }
+    onClose();
+  };
+
+  const metadata = proposalRef.current?.params.proposer.metadata;
+  const requestedChains = proposalRef.current
+    ? [
+        ...(proposalRef.current.params.requiredNamespaces?.eip155?.chains || []),
+        ...(proposalRef.current.params.optionalNamespaces?.eip155?.chains || []),
+      ]
+    : [];
 
   return (
     <Dialog open={true} onOpenChange={onClose}>
@@ -68,33 +122,45 @@ export function WalletConnectHandler({ uri, onClose }: WalletConnectHandlerProps
 
         {step === 'analyzing' && (
           <div className="p-12 flex flex-col items-center text-center gap-6">
-            <div className="relative">
-              <div className="w-20 h-20 rounded-3xl bg-primary/10 flex items-center justify-center border border-primary/20">
-                <Loader2 className="w-10 h-10 text-primary animate-spin" />
-              </div>
-              <div className="absolute -top-2 -right-2">
-                <Zap className="w-6 h-6 text-accent animate-pulse" />
-              </div>
+            <div className="w-20 h-20 rounded-3xl bg-primary/10 flex items-center justify-center border border-primary/20">
+              <Loader2 className="w-10 h-10 text-primary animate-spin" />
             </div>
             <div className="space-y-2">
-              <h3 className="text-xl font-headline font-bold">Syncing Protocol</h3>
-              <p className="text-[10px] text-muted-foreground uppercase tracking-[0.3em] animate-pulse">Establishing v2 Relay</p>
+              <h3 className="text-xl font-headline font-bold">Connecting</h3>
+              <p className="text-[10px] text-muted-foreground uppercase tracking-[0.3em] animate-pulse">Establishing WalletConnect Session</p>
             </div>
           </div>
         )}
 
-        {step === 'request' && (
+        {step === 'error' && (
+          <div className="p-12 flex flex-col items-center text-center gap-6">
+            <div className="w-20 h-20 rounded-3xl bg-red-500/10 flex items-center justify-center border border-red-500/20">
+              <AlertTriangle className="w-10 h-10 text-red-400" />
+            </div>
+            <div className="space-y-2">
+              <h3 className="text-xl font-headline font-bold">Connection Failed</h3>
+              <p className="text-xs text-muted-foreground px-4">{errorMsg}</p>
+            </div>
+            <Button variant="outline" className="rounded-2xl" onClick={onClose}>Close</Button>
+          </div>
+        )}
+
+        {step === 'request' && metadata && (
           <div className="animate-in fade-in zoom-in-95 duration-300">
             <div className="p-8 bg-gradient-to-b from-primary/10 to-transparent border-b border-white/5">
               <div className="flex flex-col items-center text-center gap-4">
                 <div className="w-20 h-20 rounded-3xl bg-secondary overflow-hidden shadow-xl border border-white/10">
-                  <img src={dappInfo.icon} alt={dappInfo.name} className="w-full h-full object-cover" />
+                  {metadata.icons?.[0] ? (
+                    <img src={metadata.icons[0]} alt={metadata.name} className="w-full h-full object-cover" />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center"><Globe className="w-8 h-8 text-primary/40" /></div>
+                  )}
                 </div>
                 <div>
-                  <h3 className="text-2xl font-headline font-bold">{dappInfo.name}</h3>
+                  <h3 className="text-2xl font-headline font-bold">{metadata.name}</h3>
                   <div className="flex items-center justify-center gap-1.5 mt-1 text-primary">
                     <Globe className="w-3.5 h-3.5" />
-                    <span className="text-xs font-medium">{dappInfo.url}</span>
+                    <span className="text-xs font-medium">{metadata.url}</span>
                   </div>
                 </div>
               </div>
@@ -102,32 +168,28 @@ export function WalletConnectHandler({ uri, onClose }: WalletConnectHandlerProps
 
             <div className="p-6 space-y-6">
               <div className="space-y-3">
-                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Requested Permissions</p>
-                <div className="space-y-2">
-                  {[
-                    "View your wallet balance and activity",
-                    "Request approval for transactions",
-                    "Suggest new chains to add"
-                  ].map((perm, i) => (
-                    <div key={i} className="flex items-start gap-3 bg-secondary/30 p-3 rounded-xl border border-white/5">
-                      <div className="mt-1 w-3.5 h-3.5 rounded-full bg-primary/20 flex items-center justify-center">
-                        <Check className="w-2 h-2 text-primary" />
-                      </div>
-                      <span className="text-[11px] leading-tight text-foreground/80">{perm}</span>
-                    </div>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Requesting Access To</p>
+                <div className="flex flex-wrap gap-2">
+                  {requestedChains.map((chain) => (
+                    <span key={chain} className="text-[10px] px-2.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-primary font-bold">
+                      {CHAIN_NAMES[chain] || chain}
+                    </span>
                   ))}
                 </div>
+                <p className="text-[10px] text-muted-foreground font-mono px-1">
+                  {evmAddress.slice(0, 8)}...{evmAddress.slice(-6)}
+                </p>
               </div>
 
               <div className="p-4 bg-yellow-500/5 border border-yellow-500/10 rounded-2xl flex items-start gap-3">
                 <ShieldCheck className="w-4 h-4 text-yellow-500 shrink-0 mt-0.5" />
                 <p className="text-[10px] text-muted-foreground leading-relaxed">
-                  Always verify the dApp URL. Eastchain does not share your secret phrase, only your public address.
+                  Only your public address is shared. Every transaction or signature this dApp requests will still need your explicit approval, one at a time.
                 </p>
               </div>
 
               <div className="flex gap-3">
-                <Button variant="outline" className="flex-1 h-14 rounded-2xl font-bold border-white/10" onClick={onClose}>
+                <Button variant="outline" className="flex-1 h-14 rounded-2xl font-bold border-white/10" onClick={handleReject}>
                   <X className="w-4 h-4 mr-2" /> Reject
                 </Button>
                 <Button className="flex-1 h-14 rounded-2xl bg-primary text-white font-bold shadow-lg shadow-primary/20" onClick={handleApprove}>
@@ -147,7 +209,7 @@ export function WalletConnectHandler({ uri, onClose }: WalletConnectHandlerProps
             </div>
             <div className="space-y-2">
               <h3 className="text-2xl font-headline font-bold">Successfully Paired</h3>
-              <p className="text-xs text-muted-foreground">Redirecting back to your vault...</p>
+              <p className="text-xs text-muted-foreground">You can now approve requests from this dApp as they arrive.</p>
             </div>
           </div>
         )}

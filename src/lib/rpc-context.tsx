@@ -164,7 +164,7 @@ export function RPCProvider({ children }: { children: React.ReactNode }) {
       if (best) {
         setCurrentRPCState(best);
       } else {
-        // Semua node offline — minta AI carikan node baru
+        // All nodes offline — ask AI to find a new node
         findRPCWithAI(selectedChain);
       }
     }

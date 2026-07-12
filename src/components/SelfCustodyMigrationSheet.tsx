@@ -92,7 +92,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
     } else if (result.error === 'RATE_LIMITED') {
       setError(`Too many attempts. Try again in ${Math.ceil((result.remainingSeconds || 0) / 60)} min.`);
     } else {
-      setError('Gagal mengambil wallet lama. Coba lagi.');
+      setError('Failed to fetch old wallet. Try again.');
     }
   };
 
@@ -104,7 +104,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
   const handleUseImported = () => {
     setError(null);
     if (!isValidMnemonic(pastedMnemonic)) {
-      setError('Seed phrase tidak valid. Cek kembali 24 kata-nya.');
+      setError('Invalid seed phrase. Double-check the 24 words.');
       return;
     }
     setMnemonic(pastedMnemonic.trim());
@@ -114,11 +114,11 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
   const handleConfirmAndRegister = async () => {
     setError(null);
     if (password.length < 8) {
-      setError('Password minimal 8 karakter.');
+      setError('Password must be at least 8 characters.');
       return;
     }
     if (password !== passwordConfirm) {
-      setError('Konfirmasi password tidak cocok.');
+      setError('Password confirmation does not match.');
       return;
     }
 
@@ -142,14 +142,14 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
         setStage('done');
         // Wipe the mnemonic from React state now that it's safely vaulted.
         setMnemonic('');
-        toast({ title: 'Self-custody aktif', description: 'Kunci Anda sekarang tersimpan lokal di device ini.' });
+        toast({ title: 'Self-custody active', description: 'Your key is now stored locally on this device.' });
       } else {
-        setError(`Registrasi gagal: ${result.error}`);
+        setError(`Registration failed: ${result.error}`);
         setStage('set_password');
       }
     } catch (err) {
       setLoading(false);
-      setError('Terjadi kesalahan saat mengenkripsi/menandatangani. Coba lagi.');
+      setError('An error occurred while encrypting/signing. Try again.');
       setStage('set_password');
     }
   };
@@ -158,7 +158,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
     setError(null);
     setLoading(true);
     try {
-      const unlockPassword = window.prompt('Masukkan password vault lokal Anda untuk menandatangani pengajuan validator:');
+      const unlockPassword = window.prompt('Enter your local vault password to sign the validator application:');
       if (!unlockPassword) {
         setLoading(false);
         return;
@@ -172,13 +172,13 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
       setLoading(false);
       if (result.success) {
         setValidatorSubmitted(true);
-        toast({ title: 'Pengajuan terkirim', description: 'Menunggu review admin (status: pending_review).' });
+        toast({ title: 'Application submitted', description: 'Awaiting admin review (status: pending_review).' });
       } else {
-        setError(`Gagal mengajukan: ${result.error}`);
+        setError(`Failed to apply: ${result.error}`);
       }
     } catch {
       setLoading(false);
-      setError('Password salah atau vault lokal tidak ditemukan di device ini.');
+      setError('Incorrect password or no local vault found on this device.');
     }
   };
 
@@ -187,7 +187,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
       <SheetTrigger asChild>
         {children || (
           <Button variant="outline" className="h-12 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/60 text-[10px] font-black uppercase gap-2">
-            <ShieldCheck className="w-4 h-4" /> Amankan Wallet (Self-Custody)
+            <ShieldCheck className="w-4 h-4" /> Secure Wallet (Self-Custody)
           </Button>
         )}
       </SheetTrigger>
@@ -198,7 +198,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
             Self-Custody Wallet
           </SheetTitle>
           <SheetDescription className="text-[10px]">
-            Kunci privat disimpan di device ini, tidak pernah dikirim ke server
+            Private key is stored on this device, never sent to the server
           </SheetDescription>
         </SheetHeader>
 
@@ -214,19 +214,19 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
               <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl flex items-start gap-2">
                 <CheckCheck className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Sudah Self-Custody</p>
+                  <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Already Self-Custody</p>
                   <p className="text-[10px] text-white/60 mt-1 break-all font-mono">{existingPubkey}</p>
                 </div>
               </div>
               <p className="text-[10px] text-white/40 leading-relaxed px-1">
-                Kunci Anda sudah terdaftar sebagai self-custody. Untuk mengajukan diri sebagai calon validator,
-                Anda perlu membuka vault lokal di device ini (password vault, bukan password Telegram).
+                Your key is already registered as self-custody. To apply as a validator candidate,
+                you need to unlock the local vault on this device (vault password, not Telegram password).
               </p>
               <Button
                 className="w-full h-12 rounded-xl bg-primary text-white font-bold text-xs uppercase gap-2"
                 onClick={() => setStage('validator_apply')}
               >
-                <KeyRound className="w-4 h-4" /> Ajukan Jadi Validator
+                <KeyRound className="w-4 h-4" /> Apply to Become Validator
               </Button>
             </div>
           )}
@@ -236,11 +236,11 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
               <div className="p-4 bg-amber-500/5 border border-amber-500/20 rounded-2xl space-y-2">
                 <div className="flex items-center gap-2 text-amber-400">
                   <ShieldAlert className="w-4 h-4" />
-                  <p className="text-[11px] font-bold uppercase tracking-wider">Ini langkah satu arah</p>
+                  <p className="text-[11px] font-bold uppercase tracking-wider">This is a one-way step</p>
                 </div>
                 <p className="text-[11px] text-white/60 leading-relaxed">
-                  Setelah ini, kunci disimpan di device ini saja. Jika Anda kehilangan device dan tidak punya
-                  backup seed phrase, saldo tidak bisa dipulihkan lewat admin.
+                  After this, the key is stored on this device only. If you lose the device and don't have
+                  a backup seed phrase, the balance cannot be recovered through the admin.
                 </p>
               </div>
 
@@ -251,10 +251,10 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
                   onClick={handleExportOld}
                 >
                   {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
-                  Pakai Wallet Lama (Export)
+                  Use Old Wallet (Export)
                 </Button>
                 <p className="text-[9px] text-white/30 text-center px-2">
-                  Rekomendasi — address dan saldo yang sudah ada tetap sama persis
+                  Recommended — the existing address and balance stay exactly the same
                 </p>
               </div>
 
@@ -264,14 +264,14 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
                   className="w-full h-12 rounded-xl border-white/10 text-white/60 font-bold text-xs uppercase"
                   onClick={handleGenerateNew}
                 >
-                  Generate Wallet Baru
+                  Generate New Wallet
                 </Button>
                 <Button
                   variant="ghost"
                   className="w-full h-10 rounded-xl text-white/40 font-bold text-[10px] uppercase"
                   onClick={() => setStage('import_mnemonic')}
                 >
-                  Atau Import Seed Phrase Lain
+                  Or Import a Different Seed Phrase
                 </Button>
               </div>
               {error && <p className="text-[10px] text-red-400 text-center">{error}</p>}
@@ -280,7 +280,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
 
           {stage === 'import_mnemonic' && (
             <div className="space-y-4">
-              <p className="text-[11px] text-white/60 px-1">Tempel 24 kata seed phrase, dipisahkan spasi:</p>
+              <p className="text-[11px] text-white/60 px-1">Paste the 24-word seed phrase, separated by spaces:</p>
               <Textarea
                 value={pastedMnemonic}
                 onChange={(e) => setPastedMnemonic(e.target.value)}
@@ -290,10 +290,10 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
               {error && <p className="text-[10px] text-red-400 text-center">{error}</p>}
               <div className="flex gap-2">
                 <Button variant="ghost" className="flex-1 h-11 rounded-xl text-[10px] uppercase" onClick={() => setStage('choose_source')}>
-                  Kembali
+                  Back
                 </Button>
                 <Button className="flex-1 h-11 rounded-xl bg-primary text-white text-[10px] uppercase font-bold" onClick={handleUseImported}>
-                  Lanjut
+                  Continue
                 </Button>
               </div>
             </div>
@@ -302,28 +302,28 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
           {stage === 'set_password' && (
             <div className="space-y-4">
               <p className="text-[11px] text-white/60 px-1">
-                Buat password untuk mengenkripsi kunci ini di local storage device Anda. Password ini
-                tidak tersimpan di mana pun — kalau lupa, kunci tidak bisa dibuka lagi (tapi seed phrase
-                masih bisa dipakai untuk import ulang kalau Anda menyimpannya).
+                Create a password to encrypt this key in your device's local storage. This password
+                is not stored anywhere — if forgotten, the key can no longer be unlocked (but the seed
+                phrase can still be used to re-import it if you saved it).
               </p>
               <Input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="Password (min. 8 karakter)"
+                placeholder="Password (min. 8 characters)"
                 className="h-12 bg-secondary/30 rounded-xl"
               />
               <Input
                 type="password"
                 value={passwordConfirm}
                 onChange={(e) => setPasswordConfirm(e.target.value)}
-                placeholder="Ulangi password"
+                placeholder="Repeat password"
                 className="h-12 bg-secondary/30 rounded-xl"
               />
               {error && <p className="text-[10px] text-red-400 text-center">{error}</p>}
               <div className="flex gap-2">
                 <Button variant="ghost" className="flex-1 h-11 rounded-xl text-[10px] uppercase" onClick={() => setStage('choose_source')}>
-                  Kembali
+                  Back
                 </Button>
                 <Button
                   className="flex-1 h-11 rounded-xl bg-primary text-white text-[10px] uppercase font-bold gap-2"
@@ -331,7 +331,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
                   onClick={handleConfirmAndRegister}
                 >
                   {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
-                  Kunci & Daftarkan
+                  Lock & Register
                 </Button>
               </div>
             </div>
@@ -340,7 +340,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
           {stage === 'signing' && (
             <div className="flex flex-col items-center gap-3 py-10">
               <Loader2 className="w-6 h-6 animate-spin text-white/40" />
-              <p className="text-[10px] text-white/40 uppercase tracking-widest">Menandatangani & mendaftarkan...</p>
+              <p className="text-[10px] text-white/40 uppercase tracking-widest">Signing & registering...</p>
             </div>
           )}
 
@@ -349,14 +349,14 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
               <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl flex items-start gap-2">
                 <CheckCheck className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
                 <div>
-                  <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Berhasil</p>
+                  <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Success</p>
                   <p className="text-[10px] text-white/60 mt-1">
-                    Kunci Anda sekarang self-custody, tersimpan lokal di device ini.
+                    Your key is now self-custody, stored locally on this device.
                   </p>
                 </div>
               </div>
               <Button className="w-full h-12 rounded-xl bg-primary text-white font-bold text-xs uppercase" onClick={() => handleOpenChange(false)}>
-                Selesai
+                Done
               </Button>
             </div>
           )}
@@ -365,15 +365,15 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
             <div className="space-y-4">
               {validatorSubmitted ? (
                 <div className="p-4 bg-emerald-500/5 border border-emerald-500/20 rounded-2xl">
-                  <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Terkirim</p>
-                  <p className="text-[10px] text-white/60 mt-1">Status: pending_review — menunggu admin.</p>
+                  <p className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Submitted</p>
+                  <p className="text-[10px] text-white/60 mt-1">Status: pending_review — awaiting admin.</p>
                 </div>
               ) : (
                 <>
                   <p className="text-[11px] text-white/60 px-1 leading-relaxed">
-                    Ini akan meminta password vault lokal Anda untuk menandatangani pengajuan calon validator.
-                    Pengajuan masuk sebagai <span className="font-mono text-white/80">pending_review</span> dan
-                    perlu disetujui admin secara manual.
+                    This will ask for your local vault password to sign the validator candidate application.
+                    The application comes in as <span className="font-mono text-white/80">pending_review</span> and
+                    needs to be manually approved by an admin.
                   </p>
                   {error && <p className="text-[10px] text-red-400 text-center">{error}</p>}
                   <Button
@@ -382,12 +382,12 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
                     onClick={handleApplyValidator}
                   >
                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
-                    Tanda Tangani & Ajukan
+                    Sign & Submit
                   </Button>
                 </>
               )}
               <Button variant="ghost" className="w-full h-10 rounded-xl text-[10px] uppercase" onClick={() => handleOpenChange(false)}>
-                Tutup
+                Close
               </Button>
             </div>
           )}

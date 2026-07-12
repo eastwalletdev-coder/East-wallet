@@ -189,8 +189,22 @@ export default function ProfilePage() {
           <div className="flex items-center gap-3">
             <FileText className="w-5 h-5 text-primary" />
             <div>
-              <p className="text-white text-sm font-medium">Technical Whitepaper</p>
-              <p className="text-white/30 text-[10px] uppercase">Architecture & Tokenomics</p>
+              <p className="text-white text-sm font-medium">Whitepaper</p>
+              <p className="text-white/30 text-[10px] uppercase">Architecture & Consensus</p>
+            </div>
+          </div>
+          <ChevronRight className="w-4 h-4 text-white/30" />
+        </div>
+      </Link>
+
+      {/* Tokenomics link */}
+      <Link href="/tokenomics">
+        <div className="bg-white/[0.03] rounded-2xl border border-white/5 p-4 flex items-center justify-between hover:bg-primary/5 transition-colors">
+          <div className="flex items-center gap-3">
+            <FileText className="w-5 h-5 text-primary" />
+            <div>
+              <p className="text-white text-sm font-medium">Tokenomics</p>
+              <p className="text-white/30 text-[10px] uppercase">Token Allocation & Vesting</p>
             </div>
           </div>
           <ChevronRight className="w-4 h-4 text-white/30" />

@@ -15,6 +15,7 @@ import { useRPC } from '@/lib/rpc-context';
 import { sendEvmTransaction, sendSolanaTransaction, estimateEvmFee, estimateSolanaFee, type FeeEstimate } from '@/lib/send-service';
 import { isAddress } from 'ethers';
 import { PublicKey } from '@solana/web3.js';
+import { QrCameraScanner } from '@/components/QrCameraScanner';
 
 interface SendDialogProps {
   open: boolean;
@@ -258,10 +259,17 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                   </Button>
                 </div>
                 {scanMode ? (
-                  <div className="h-36 bg-secondary/30 rounded-xl border border-primary/10 flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                    <ScanLine className="w-8 h-8 text-primary/40" />
-                    <p className="text-[10px] uppercase font-bold">Camera scanning not available in browser</p>
-                    <Button variant="ghost" size="sm" className="text-[9px] text-primary" onClick={() => setScanMode(false)}>Enter manually</Button>
+                  <div className="space-y-2">
+                    <QrCameraScanner
+                      onScan={(result) => {
+                        // Accept raw addresses or EIP-681-style "ethereum:0x..." / "solana:..." URIs
+                        const cleaned = result.replace(/^(ethereum|solana|bitcoin):/i, '').split('?')[0];
+                        setAddress(cleaned);
+                        setScanMode(false);
+                      }}
+                      onError={(msg) => toast({ variant: 'destructive', title: 'Camera Error', description: msg })}
+                    />
+                    <Button variant="ghost" size="sm" className="w-full text-[9px] text-primary" onClick={() => setScanMode(false)}>Enter manually instead</Button>
                   </div>
                 ) : (
                   <Input

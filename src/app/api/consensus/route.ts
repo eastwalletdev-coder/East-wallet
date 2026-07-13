@@ -6,8 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { identityPool } from '@/lib/db/identity';
 import { getNetworkStatus } from '@/lib/db/redis';
 import { voteValidatorContract } from '@/actions/contract-actions';
-
-const QUORUM = 7;
+import { computeRequiredQuorum } from '@/lib/consensus/quorum';
 
 export async function GET() {
   const client = await identityPool.connect();
@@ -29,6 +28,7 @@ export async function GET() {
       FROM identity.validators
       WHERE is_active = TRUE
     `);
+    const activeValidators = Number(validatorsRes.rows[0]?.active_count || 0);
 
     return NextResponse.json({
       networkStatus,
@@ -37,8 +37,8 @@ export async function GET() {
         reject: Number(votesRes.rows[0]?.reject_count || 0),
         total: Number(votesRes.rows[0]?.total_votes || 0),
       },
-      activeValidators: Number(validatorsRes.rows[0]?.active_count || 0),
-      quorumNeeded: QUORUM,
+      activeValidators,
+      quorumNeeded: computeRequiredQuorum(activeValidators),
     });
   } finally {
     client.release();

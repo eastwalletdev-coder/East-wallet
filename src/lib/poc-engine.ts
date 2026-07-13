@@ -221,7 +221,7 @@ export async function getTopValidators(): Promise<any[]> {
   const client = await identityPool.connect();
   try {
     const res = await client.query(`
-      SELECT v.*, u.username
+      SELECT v.*, u.username, u.wallet_address
       FROM identity.validators v
       LEFT JOIN identity.users u ON u.telegram_id = v.telegram_id
       WHERE v.is_active = TRUE

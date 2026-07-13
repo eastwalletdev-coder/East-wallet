@@ -178,8 +178,9 @@ export default function ValidatorPage() {
                     {i + 1}
                   </div>
                   <div>
-                    <p className="text-xs font-bold text-white">{v.username || `User ${v.telegram_id}`}</p>
-                    <p className="text-[9px] text-white/30 font-code">{v.telegram_id}</p>
+                    <p className="text-xs font-bold text-white font-code">
+                      {v.wallet_address ? `${v.wallet_address.slice(0, 6)}...${v.wallet_address.slice(-4)}` : `Validator #${i + 1}`}
+                    </p>
                   </div>
                 </div>
                 <span className="text-primary text-xs font-code font-bold">{Number(v.total_score).toFixed(1)}</span>

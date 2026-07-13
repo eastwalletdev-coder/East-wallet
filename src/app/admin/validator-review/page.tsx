@@ -151,19 +151,19 @@ export default function ValidatorReviewPage() {
       <div className="max-w-md mx-auto p-6 space-y-4 text-center">
         <h1 className="text-2xl font-bold">Validator Review (Admin Only)</h1>
         <p className="text-sm text-gray-500">
-          Log in with the founder Telegram account. No password — identity
-          is verified directly by Telegram, and only telegram_id values
-          in FOUNDER_IDS are allowed in.
+          Login pakai akun Telegram founder. Tidak ada password — identitas
+          diverifikasi langsung oleh Telegram, dan hanya telegram_id yang ada
+          di FOUNDER_IDS yang diizinkan masuk.
         </p>
         {authState === 'forbidden' && (
           <p className="text-sm text-red-500 font-medium">
-            This Telegram account is not a founder — access denied.
+            Akun Telegram ini bukan founder — akses ditolak.
           </p>
         )}
         <div ref={widgetContainerRef} className="flex justify-center py-4" />
         {!BOT_USERNAME && (
           <p className="text-xs text-red-500">
-            NEXT_PUBLIC_BOT_USERNAME is not set — widget cannot load.
+            NEXT_PUBLIC_BOT_USERNAME belum di-set — widget tidak bisa dimuat.
           </p>
         )}
       </div>

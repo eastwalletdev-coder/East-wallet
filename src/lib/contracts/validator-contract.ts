@@ -6,8 +6,7 @@
  */
 import { setNetworkStatus } from '@/lib/db/redis';
 import { notifyRecoverySuccess } from '@/lib/gossip';
-
-const QUORUM = 7;
+import { computeRequiredQuorum } from '@/lib/consensus/quorum';
 
 export async function execute(
   functionName: string,
@@ -43,6 +42,7 @@ export async function execute(
     'SELECT COUNT(*) as total FROM identity.validators WHERE is_active = TRUE'
   );
   const totalValidators = Number(validatorsRes.rows[0]?.total || 0);
+  const QUORUM = computeRequiredQuorum(totalValidators);
 
   let quorumReached = false;
   if (approveCount >= QUORUM) {

@@ -23,24 +23,24 @@ export default function InitDataDebugPage() {
     <div className="max-w-md mx-auto p-6 space-y-4">
       <h1 className="text-xl font-bold">Debug: Telegram initData</h1>
       <p className="text-sm text-gray-500">
-        This is only for local setup purposes (e.g. <code>apply-validator-cli.js</code> via{' '}
-        <code>EASTCHAIN_TELEGRAM_INIT_DATA</code>). Must be opened from inside Telegram (Mini App),
-        not a regular browser — if empty, this page is likely opened outside Telegram.
+        Ini cuma untuk keperluan setup lokal (mis. <code>apply-validator-cli.js</code> lewat{' '}
+        <code>EASTCHAIN_TELEGRAM_INIT_DATA</code>). Harus dibuka dari dalam Telegram (Mini App),
+        bukan browser biasa — kalau kosong, kemungkinan halaman ini dibuka di luar Telegram.
       </p>
 
       <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
         <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
         <span>
-          This string proves your Telegram identity for the next ~5 minutes — don't
-          share it with anyone except for your own CLI setup.
+          String ini membuktikan identitas Telegram kamu untuk ~5 menit ke depan — jangan
+          share ke siapa pun selain buat setup CLI kamu sendiri.
         </span>
       </div>
 
       {loading ? (
-        <p className="text-sm text-gray-400">Loading…</p>
+        <p className="text-sm text-gray-400">Memuat…</p>
       ) : !initData ? (
         <p className="text-sm text-red-500">
-          initData is empty — open this page from inside the Telegram Mini App, not a regular browser.
+          initData kosong — buka halaman ini dari dalam Telegram Mini App, bukan browser biasa.
         </p>
       ) : (
         <>
@@ -50,7 +50,7 @@ export default function InitDataDebugPage() {
           </div>
 
           <div>
-            <p className="text-xs text-gray-500 mb-1">initData (expires in ~5 minutes)</p>
+            <p className="text-xs text-gray-500 mb-1">initData (kadaluarsa ~5 menit)</p>
             <textarea
               readOnly
               value={initData}
@@ -62,7 +62,7 @@ export default function InitDataDebugPage() {
           <Button onClick={handleCopy} className="w-full" size="sm">
             {copied ? (
               <>
-                <Check className="w-4 h-4 mr-2" /> Copied!
+                <Check className="w-4 h-4 mr-2" /> Tersalin!
               </>
             ) : (
               <>
@@ -72,7 +72,7 @@ export default function InitDataDebugPage() {
           </Button>
 
           <p className="text-xs text-gray-400">
-            Then run (within ~5 minutes):<br />
+            Lalu jalankan (dalam ~5 menit):<br />
             <code className="block mt-1 p-2 bg-gray-50 rounded break-all">
               EASTCHAIN_TELEGRAM_INIT_DATA=&quot;...&quot; node scripts/apply-validator-cli.js
             </code>

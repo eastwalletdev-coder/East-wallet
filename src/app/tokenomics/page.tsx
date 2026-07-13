@@ -43,6 +43,10 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
+function Bullet({ children }: { children: React.ReactNode }) {
+  return <p className="text-white/70 text-sm">→ {children}</p>;
+}
+
 export default function TokenomicsPage() {
   return (
     <div className="flex flex-col gap-4 px-3 py-4 pb-8">
@@ -56,71 +60,63 @@ export default function TokenomicsPage() {
         </Link>
         <div>
           <h1 className="text-primary font-extrabold uppercase tracking-widest text-base">EAST Tokenomics</h1>
-          <p className="text-white/40 text-[10px] uppercase tracking-wider">Token Allocation & Economic Model</p>
+          <p className="text-white/40 text-[10px] uppercase tracking-wider">Supply, Allocation & Vesting</p>
         </div>
       </header>
 
-      {/* Tagline */}
+      {/* Overview */}
       <Card className="bg-white/[0.03] border-white/5 rounded-2xl">
-        <CardContent className="p-4">
-          <p className="text-primary font-bold text-base mb-1">EAST — EastChain Mainnet</p>
-          <p className="text-white text-sm leading-relaxed">
-            A long-term sustainability model prioritizing ecosystem growth, decentralized participation, network security, and transparent treasury management. No additional tokens will ever be minted beyond the maximum supply of 1 billion EAST.
+        <CardContent className="p-4 space-y-2">
+          <p className="text-primary font-bold text-base mb-1">Fixed Maximum Supply</p>
+          <p className="text-white text-2xl font-black">1,000,000,000 EAST</p>
+          <p className="text-white/60 text-xs leading-relaxed">
+            No additional tokens will ever be minted beyond the maximum supply. Every allocation
+            below is enforced on-chain via supply bucket caps — see the Whitepaper's Anchor Protocol section.
           </p>
+          <div className="pt-2 space-y-1.5">
+            <Row label="Ticker" value="EAST" />
+            <Row label="Blockchain" value="EastChain Mainnet" />
+            <Row label="Consensus" value="PoC / PoS / PoA / PoR" />
+          </div>
         </CardContent>
       </Card>
 
-      {/* Sections */}
-      <Section title="1. Overview" defaultOpen>
+      <Section title="1. Token Allocation" defaultOpen>
         <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
-          <Row label="Token Name" value="East (EAST)" />
-          <Row label="Blockchain" value="EastChain Mainnet" />
-          <Row label="Total Supply" value="1,000,000,000 EAST" />
-        </div>
-        <p className="text-white font-bold mt-2 mb-1">Consensus</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5">
-          <p className="text-white/70 text-sm">→ Proof of Contribution (PoC)</p>
-          <p className="text-white/70 text-sm">→ Proof of Stake (PoS)</p>
-          <p className="text-white/70 text-sm">→ Proof of Availability (PoA)</p>
-          <p className="text-white/70 text-sm">→ Proof of Reputation (PoR)</p>
+          <Row label="Ecosystem Rewards" value="50% · 500,000,000" />
+          <Row label="Liquidity Pool" value="15% · 150,000,000" />
+          <Row label="Treasury" value="10% · 100,000,000" />
+          <Row label="Emergency Reserve" value="7% · 70,000,000" />
+          <Row label="Marketing & Growth" value="7% · 70,000,000" />
+          <Row label="Team & Development" value="6% · 60,000,000" />
+          <Row label="Founder Allocation" value="5% · 50,000,000" />
         </div>
       </Section>
 
-      <Section title="2. Token Allocation" defaultOpen>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
-          <Row label="Ecosystem Rewards (50%)" value="500,000,000 EAST" />
-          <Row label="Liquidity Pool (15%)" value="150,000,000 EAST" />
-          <Row label="Treasury (10%)" value="100,000,000 EAST" />
-          <Row label="Emergency Reserve (7%)" value="70,000,000 EAST" />
-          <Row label="Marketing & Growth (7%)" value="70,000,000 EAST" />
-          <Row label="Team & Development (6%)" value="60,000,000 EAST" />
-          <Row label="Founder Allocation (5%)" value="50,000,000 EAST" />
-        </div>
+      <Section title="2. Ecosystem Rewards (50%)">
+        <p className="text-white font-bold">500,000,000 EAST</p>
+        <p>Dedicated exclusively to long-term ecosystem incentives:</p>
+        <Bullet>Proof of Contribution (PoC) Mining</Bullet>
+        <Bullet>Validator Rewards</Bullet>
+        <Bullet>Light Node Rewards</Bullet>
+        <Bullet>Staking Rewards</Bullet>
+        <Bullet>Referral Program</Bullet>
+        <Bullet>Future Community Incentives</Bullet>
+        <p className="pt-1">
+          Not unlocked at genesis — distributed only through a predefined on-chain emission
+          schedule. Tokens enter circulation only when earned by participants.
+        </p>
       </Section>
 
-      <Section title="3. Ecosystem Rewards (50%)">
-        <p>500,000,000 EAST dedicated exclusively to long-term ecosystem incentives.</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mt-2">
-          <p className="text-white/70 text-sm">→ Proof of Contribution (PoC) Mining</p>
-          <p className="text-white/70 text-sm">→ Validator Rewards</p>
-          <p className="text-white/70 text-sm">→ Light Node Rewards</p>
-          <p className="text-white/70 text-sm">→ Staking Rewards</p>
-          <p className="text-white/70 text-sm">→ Referral Program</p>
-          <p className="text-white/70 text-sm">→ Future Community Incentives</p>
-        </div>
-        <p className="mt-2">Not unlocked at genesis. Rewards are distributed through a predefined on-chain emission schedule — tokens enter circulation only when earned by participants.</p>
-      </Section>
-
-      <Section title="4. Liquidity Pool (15%)">
-        <p>150,000,000 EAST reserved for maintaining healthy market liquidity.</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mt-2">
-          <p className="text-white/70 text-sm">→ Initial DEX Liquidity</p>
-          <p className="text-white/70 text-sm">→ Centralized Exchange Liquidity</p>
-          <p className="text-white/70 text-sm">→ Cross-chain Bridge Liquidity</p>
-          <p className="text-white/70 text-sm">→ Future Liquidity Expansion</p>
-        </div>
-        <p className="text-white font-bold mt-2 mb-1">Suggested Internal Allocation</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
+      <Section title="3. Liquidity Pool (15%)">
+        <p className="text-white font-bold">150,000,000 EAST</p>
+        <p>Reserved for maintaining healthy market liquidity:</p>
+        <Bullet>Initial DEX Liquidity</Bullet>
+        <Bullet>Centralized Exchange Liquidity</Bullet>
+        <Bullet>Cross-chain Bridge Liquidity</Bullet>
+        <Bullet>Future Liquidity Expansion</Bullet>
+        <div className="bg-white/[0.04] rounded-xl p-3 space-y-2 mt-2">
+          <p className="text-white/50 text-[10px] uppercase font-bold">Suggested Internal Split</p>
           <Row label="Initial DEX Liquidity" value="40%" />
           <Row label="CEX Market Making" value="30%" />
           <Row label="Cross-chain Liquidity" value="20%" />
@@ -128,130 +124,131 @@ export default function TokenomicsPage() {
         </div>
       </Section>
 
-      <Section title="5. Treasury (10%)">
-        <p>100,000,000 EAST — the primary operational fund of EastChain. All fundraising activities originate from this allocation.</p>
+      <Section title="4. Treasury (10%)">
+        <p className="text-white font-bold">100,000,000 EAST</p>
+        <p>The primary operational fund of EastChain. All fundraising activities originate from this allocation:</p>
+        <Bullet>Private / Strategic / Public Sale</Bullet>
+        <Bullet>Exchange Listings & Market Making</Bullet>
+        <Bullet>Infrastructure & Security Audits</Bullet>
+        <Bullet>Legal Compliance</Bullet>
+        <Bullet>Ecosystem Grants & Partnerships</Bullet>
+        <Bullet>Core Operations</Bullet>
         <div className="bg-white/[0.04] rounded-xl p-3 space-y-2 mt-2">
-          <Row label="Strategic Round" value="10,000,000 EAST" />
-          <Row label="Private Sale" value="15,000,000 EAST" />
-          <Row label="Public Sale" value="5,000,000 EAST" />
-          <Row label="Ecosystem Grants" value="20,000,000 EAST" />
-          <Row label="Infrastructure & Security" value="15,000,000 EAST" />
-          <Row label="Listings & Market Making" value="20,000,000 EAST" />
-          <Row label="Treasury Reserve" value="15,000,000 EAST" />
+          <p className="text-white/50 text-[10px] uppercase font-bold">Suggested Treasury Distribution</p>
+          <Row label="Strategic Round" value="10,000,000" />
+          <Row label="Private Sale" value="15,000,000" />
+          <Row label="Public Sale" value="5,000,000" />
+          <Row label="Ecosystem Grants" value="20,000,000" />
+          <Row label="Infrastructure & Security" value="15,000,000" />
+          <Row label="Listings & Market Making" value="20,000,000" />
+          <Row label="Treasury Reserve" value="15,000,000" />
         </div>
-        <p className="mt-2">No tokens for fundraising will ever be taken from Founder Allocation.</p>
+        <p className="pt-1 text-white font-bold">No tokens for fundraising will ever be taken from Founder Allocation.</p>
       </Section>
 
-      <Section title="6. Emergency Reserve (7%)">
-        <p>70,000,000 EAST reserved for exceptional situations:</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mt-2">
-          <p className="text-white/70 text-sm">→ Critical Security Incidents</p>
-          <p className="text-white/70 text-sm">→ Emergency Chain Recovery</p>
-          <p className="text-white/70 text-sm">→ Major Infrastructure Failures</p>
-          <p className="text-white/70 text-sm">→ Governance-approved Strategic Needs</p>
-        </div>
-        <p className="mt-2">Reserve funds remain locked unless approved through governance.</p>
+      <Section title="5. Emergency Reserve (7%)">
+        <p className="text-white font-bold">70,000,000 EAST</p>
+        <p>Reserved for exceptional situations:</p>
+        <Bullet>Critical Security Incidents</Bullet>
+        <Bullet>Emergency Chain Recovery</Bullet>
+        <Bullet>Major Infrastructure Failures</Bullet>
+        <Bullet>Governance-approved Strategic Needs</Bullet>
+        <p className="pt-1">Locked indefinitely — only governance approval can authorize emergency spending.</p>
       </Section>
 
-      <Section title="7. Marketing & Growth (7%)">
-        <p>70,000,000 EAST used to accelerate ecosystem adoption:</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mt-2">
-          <p className="text-white/70 text-sm">→ Global Marketing Campaigns</p>
-          <p className="text-white/70 text-sm">→ Trading Competitions</p>
-          <p className="text-white/70 text-sm">→ Community Incentives</p>
-          <p className="text-white/70 text-sm">→ Ambassador Program</p>
-          <p className="text-white/70 text-sm">→ Conferences</p>
-          <p className="text-white/70 text-sm">→ Developer Programs</p>
-          <p className="text-white/70 text-sm">→ Partnership Campaigns</p>
-        </div>
+      <Section title="6. Marketing & Growth (7%)">
+        <p className="text-white font-bold">70,000,000 EAST</p>
+        <p>Used to accelerate ecosystem adoption:</p>
+        <Bullet>Global Marketing Campaigns</Bullet>
+        <Bullet>Trading Competitions</Bullet>
+        <Bullet>Community Incentives</Bullet>
+        <Bullet>Ambassador Program</Bullet>
+        <Bullet>Conferences & Developer Programs</Bullet>
+        <Bullet>Partnership Campaigns</Bullet>
       </Section>
 
-      <Section title="8. Team & Development (6%)">
-        <p>60,000,000 EAST allocated to developers, engineers, designers, researchers, and future contributors.</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mt-2">
-          <p className="text-white/70 text-sm">→ Core Development</p>
-          <p className="text-white/70 text-sm">→ Wallet Development</p>
-          <p className="text-white/70 text-sm">→ Infrastructure</p>
-          <p className="text-white/70 text-sm">→ Security Research</p>
-          <p className="text-white/70 text-sm">→ Maintenance</p>
-        </div>
+      <Section title="7. Team & Development (6%)">
+        <p className="text-white font-bold">60,000,000 EAST</p>
+        <p>Allocated to developers, engineers, designers, researchers, and future contributors:</p>
+        <Bullet>Core Development</Bullet>
+        <Bullet>Wallet Development</Bullet>
+        <Bullet>Infrastructure</Bullet>
+        <Bullet>Security Research</Bullet>
+        <Bullet>Maintenance</Bullet>
       </Section>
 
-      <Section title="9. Founder Allocation (5%)">
-        <p>50,000,000 EAST representing long-term commitment to EastChain. Founder tokens are not used for fundraising and cannot be sold before vesting begins.</p>
+      <Section title="8. Founder Allocation (5%)">
+        <p className="text-white font-bold">50,000,000 EAST</p>
+        <p>Represents long-term commitment to EastChain.</p>
+        <p className="text-white font-bold">Founder tokens are never used for fundraising and cannot be sold before vesting begins.</p>
       </Section>
 
-      <Section title="10. Vesting Schedule">
-        <p className="text-white font-bold mb-1">Founder Allocation — 50,000,000 EAST</p>
+      <Section title="9. Vesting Schedule">
         <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
-          <Row label="Cliff" value="12 Months" />
-          <Row label="Vesting" value="48 Months" />
+          <p className="text-white/50 text-[10px] uppercase font-bold">Founder Allocation — 50,000,000 EAST</p>
+          <Row label="Cliff" value="12 months" />
+          <Row label="Vesting" value="48 months" />
           <Row label="Unlock Method" value="Linear Monthly" />
         </div>
-        <p className="text-white/50 text-[10px] uppercase mt-1">No tokens are unlocked during the first year.</p>
+        <p className="text-white/60 text-xs">No tokens unlock during the first year.</p>
 
-        <div className="my-2 border-t border-white/5" />
-        <p className="text-white font-bold mb-1">Team Allocation — 60,000,000 EAST</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
-          <Row label="Cliff" value="6 Months" />
-          <Row label="Vesting" value="36 Months" />
+        <div className="bg-white/[0.04] rounded-xl p-3 space-y-2 mt-2">
+          <p className="text-white/50 text-[10px] uppercase font-bold">Team Allocation — 60,000,000 EAST</p>
+          <Row label="Cliff" value="6 months" />
+          <Row label="Vesting" value="36 months" />
           <Row label="Unlock Method" value="Linear Monthly" />
         </div>
 
-        <div className="my-2 border-t border-white/5" />
-        <p className="text-white font-bold mb-1">Marketing Allocation</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
+        <div className="bg-white/[0.04] rounded-xl p-3 space-y-2 mt-2">
+          <p className="text-white/50 text-[10px] uppercase font-bold">Marketing Allocation</p>
           <Row label="Initial Unlock" value="10%" />
-          <Row label="Remaining Unlock" value="90% over 36 months" />
+          <Row label="Remaining 90%" value="Gradual over 36 months" />
         </div>
 
-        <div className="my-2 border-t border-white/5" />
-        <p><span className="text-white font-bold">Treasury</span> — governed by multi-signature governance; funds released only per approved operational requirements.</p>
-        <p><span className="text-white font-bold">Emergency Reserve</span> — locked indefinitely; only governance approval can authorize emergency spending.</p>
-        <p><span className="text-white font-bold">Liquidity</span> — unlocked according to listing requirements; unused liquidity remains locked.</p>
-        <p><span className="text-white font-bold">Ecosystem Rewards</span> — follows a controlled on-chain emission schedule; no immediate unlock at genesis, released only when earned through network participation.</p>
+        <div className="space-y-1.5 mt-2">
+          <Bullet>Treasury — governed by multi-signature governance, released only per approved operational requirements.</Bullet>
+          <Bullet>Emergency Reserve — locked indefinitely, governance approval only.</Bullet>
+          <Bullet>Liquidity — unlocked according to listing requirements; unused liquidity stays locked.</Bullet>
+          <Bullet>Ecosystem Rewards — controlled on-chain emission, no unlock at genesis, released only when earned.</Bullet>
+        </div>
       </Section>
 
-      <Section title="11. Fundraising Policy">
+      <Section title="10. Fundraising Policy">
         <p>EastChain fundraising follows a treasury-first approach. Funding rounds include:</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mt-2">
-          <p className="text-white/70 text-sm">→ Strategic Round</p>
-          <p className="text-white/70 text-sm">→ Private Sale</p>
-          <p className="text-white/70 text-sm">→ Public Sale</p>
-        </div>
-        <p className="mt-2">All sale allocations originate exclusively from the Treasury Allocation. Founder tokens will never be sold for fundraising.</p>
+        <Bullet>Strategic Round</Bullet>
+        <Bullet>Private Sale</Bullet>
+        <Bullet>Public Sale</Bullet>
+        <p className="pt-1 text-white font-bold">
+          All sale allocations originate exclusively from the Treasury Allocation. Founder tokens will never be sold for fundraising.
+        </p>
       </Section>
 
-      <Section title="12. Transaction Fee Policy">
-        <p>Every transaction on EastChain pays a network gas fee, distributed as follows:</p>
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5 mt-2">
-          <p className="text-white/70 text-sm">→ Validator Rewards</p>
-          <p className="text-white/70 text-sm">→ Network Maintenance</p>
-          <p className="text-white/70 text-sm">→ Partial Burn (optional, governance controlled)</p>
-          <p className="text-white/70 text-sm">→ Emergency Reserve Contribution</p>
-        </div>
-        <p className="mt-2">A governance-defined percentage of all collected gas fees is periodically transferred into the Emergency Reserve, creating a self-sustaining reserve fund capable of supporting EastChain during unforeseen events without requiring additional token issuance.</p>
+      <Section title="11. Transaction Fee Policy">
+        <p>Every transaction on EastChain pays a network gas fee, distributed as:</p>
+        <Bullet>Validator Rewards</Bullet>
+        <Bullet>Network Maintenance</Bullet>
+        <Bullet>Partial Burn (optional, governance controlled)</Bullet>
+        <Bullet>Emergency Reserve Contribution</Bullet>
+        <p className="pt-1">
+          A governance-defined percentage of all collected gas fees is periodically transferred
+          into the Emergency Reserve — a self-sustaining fund that supports EastChain during
+          unforeseen events without requiring additional token issuance.
+        </p>
       </Section>
 
-      <Section title="13. Economic Principles">
-        <div className="bg-white/[0.04] rounded-xl p-3 space-y-1.5">
-          <p className="text-white/70 text-sm">→ Fixed Maximum Supply</p>
-          <p className="text-white/70 text-sm">→ No Hidden Token Minting</p>
-          <p className="text-white/70 text-sm">→ Treasury-funded Development</p>
-          <p className="text-white/70 text-sm">→ Founder Tokens Never Used for Fundraising</p>
-          <p className="text-white/70 text-sm">→ Long-term Vesting for Core Contributors</p>
-          <p className="text-white/70 text-sm">→ Sustainable Ecosystem Incentives</p>
-          <p className="text-white/70 text-sm">→ Transparent Treasury Management</p>
-          <p className="text-white/70 text-sm">→ Governance-controlled Reserve</p>
-          <p className="text-white/70 text-sm">→ Network Security through PoC Incentives</p>
-          <p className="text-white/70 text-sm">→ Long-term Economic Sustainability</p>
-        </div>
+      <Section title="12. Economic Principles">
+        <Bullet>Fixed Maximum Supply</Bullet>
+        <Bullet>No Hidden Token Minting</Bullet>
+        <Bullet>Treasury-funded Development</Bullet>
+        <Bullet>Founder Tokens Never Used for Fundraising</Bullet>
+        <Bullet>Long-term Vesting for Core Contributors</Bullet>
+        <Bullet>Sustainable Ecosystem Incentives</Bullet>
+        <Bullet>Transparent Treasury Management</Bullet>
+        <Bullet>Governance-controlled Reserve</Bullet>
+        <Bullet>Network Security through PoC Incentives</Bullet>
+        <Bullet>Long-term Economic Sustainability</Bullet>
       </Section>
 
-      <div className="text-center py-4 border-t border-white/5">
-        <p className="text-primary font-bold text-xs uppercase tracking-widest">EASTCHAIN Protocol</p>
-        <p className="text-white/30 text-[10px] mt-1">Fixed Supply · Treasury-First · Transparent Allocation</p>
-      </div>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { User, Shield, Globe, Award, Settings, FileText, ChevronRight, Crown, Copy, CheckCheck, Users, KeyRound } from 'lucide-react';
+import { User, Shield, Globe, Award, Settings, FileText, ChevronRight, Crown, Copy, CheckCheck, Users, KeyRound, Coins } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -190,7 +190,7 @@ export default function ProfilePage() {
             <FileText className="w-5 h-5 text-primary" />
             <div>
               <p className="text-white text-sm font-medium">Whitepaper</p>
-              <p className="text-white/30 text-[10px] uppercase">Architecture & Consensus</p>
+              <p className="text-white/30 text-[10px] uppercase">Architecture & Protocol</p>
             </div>
           </div>
           <ChevronRight className="w-4 h-4 text-white/30" />
@@ -201,10 +201,10 @@ export default function ProfilePage() {
       <Link href="/tokenomics">
         <div className="bg-white/[0.03] rounded-2xl border border-white/5 p-4 flex items-center justify-between hover:bg-primary/5 transition-colors">
           <div className="flex items-center gap-3">
-            <FileText className="w-5 h-5 text-primary" />
+            <Coins className="w-5 h-5 text-primary" />
             <div>
               <p className="text-white text-sm font-medium">Tokenomics</p>
-              <p className="text-white/30 text-[10px] uppercase">Token Allocation & Vesting</p>
+              <p className="text-white/30 text-[10px] uppercase">Supply, Allocation & Vesting</p>
             </div>
           </div>
           <ChevronRight className="w-4 h-4 text-white/30" />

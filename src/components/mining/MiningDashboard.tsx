@@ -232,24 +232,26 @@ export function MiningDashboard() {
                 </div>
               </Button>
             )}
-            <div className="grid grid-cols-2 gap-4">
-              <Button
-                variant="outline"
-                onClick={handleManualRolling}
-                disabled={isRolling || isNodeActive || isClaiming}
-                className="h-14 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/40 text-[10px] font-black uppercase tracking-widest"
-              >
-                <Archive className="w-4 h-4 mr-2 opacity-50" />
-                Prune L2
-              </Button>
-              <Button
-                variant="outline"
-                disabled
-                className="h-14 rounded-2xl border-white/5 bg-white/5 text-white/20 text-[10px] font-black uppercase tracking-widest cursor-not-allowed"
-              >
-                Audit Chain
-              </Button>
-            </div>
+            {user?.isFounder && (
+              <div className="grid grid-cols-2 gap-4">
+                <Button
+                  variant="outline"
+                  onClick={handleManualRolling}
+                  disabled={isRolling || isNodeActive || isClaiming}
+                  className="h-14 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/40 text-[10px] font-black uppercase tracking-widest"
+                >
+                  <Archive className="w-4 h-4 mr-2 opacity-50" />
+                  Prune L2
+                </Button>
+                <Button
+                  variant="outline"
+                  disabled
+                  className="h-14 rounded-2xl border-white/5 bg-white/5 text-white/20 text-[10px] font-black uppercase tracking-widest cursor-not-allowed"
+                >
+                  Audit Chain
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>

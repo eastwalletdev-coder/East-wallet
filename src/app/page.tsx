@@ -413,17 +413,14 @@ export default function Home() {
               </Button>
             </>
           )}
-          <Button variant="outline" onClick={handlePrune} disabled={isRolling || isNodeActive}
-            className="h-12 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/40 text-[10px] font-black uppercase">
-            <Archive className="w-4 h-4 mr-2 opacity-50" />Prune L2
-          </Button>
-          {user?.isFounder ? (
-            <AuditTrailSheet telegramId={userId} initData={initData} isFounder={!!user?.isFounder} />
-          ) : (
-            <Button variant="outline" disabled
-              className="h-12 rounded-2xl border-white/5 bg-white/5 text-white/20 text-[10px] font-black uppercase cursor-not-allowed">
-              Audit Chain
-            </Button>
+          {user?.isFounder && (
+            <>
+              <Button variant="outline" onClick={handlePrune} disabled={isRolling || isNodeActive}
+                className="h-12 rounded-2xl border-white/5 bg-white/5 hover:bg-white/10 text-white/40 text-[10px] font-black uppercase">
+                <Archive className="w-4 h-4 mr-2 opacity-50" />Prune L2
+              </Button>
+              <AuditTrailSheet telegramId={userId} initData={initData} isFounder={!!user?.isFounder} />
+            </>
           )}
         </div>
         {/* end Mining Buttons */}

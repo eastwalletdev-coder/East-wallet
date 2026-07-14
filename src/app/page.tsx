@@ -173,7 +173,7 @@ export default function Home() {
       if (result.success) {
         toast({ title: "Block Verified", description: `+${result.reward} EAST mined.` });
         setCountdown(24 * 60 * 60);
-        getLightNodeClient().markClaimed(String(result.blockIndex ?? Date.now()));
+        getLightNodeClient().markClaimed(String(result.epoch ?? Date.now()));
         refreshUser();
       } else {
         toast({ variant: "destructive", title: "Rejected", description: result.error });

@@ -268,6 +268,8 @@ export async function claimMiningReward(
     reward: res.reward,
     gasFee: res.gasFee,
     callHash: res.callHash,
+    epoch: res.epoch,
+    epochsRewarded: res.epochsRewarded,
   };
 }
 

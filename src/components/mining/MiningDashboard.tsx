@@ -75,7 +75,7 @@ export function MiningDashboard() {
       const result = await claimMiningReward(userId, initData);
       if (result.success) {
         toast({ title: "Block Verified", description: `Ledger synced. Reward: +${result.reward} EAST.` });
-        getLightNodeClient().markClaimed(String(result.blockIndex ?? Date.now()));
+        getLightNodeClient().markClaimed(String(result.epoch ?? Date.now()));
         refreshUser();
       } else {
         toast({ variant: "destructive", title: "Protocol Rejected", description: result.error });

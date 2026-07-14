@@ -386,6 +386,28 @@ export async function migrateIdentityV11() {
   }
 }
 
+/**
+ * Migration v12 — epoch-based Light Node bonus.
+ *
+ * Adds identity.users.last_claim_epoch_count: the value of
+ * ledger.chain_meta.epoch_count at the time of the user's last mining
+ * claim. mining-contract.ts uses the gap between this and the CURRENT
+ * epoch_count (capped at LIGHTNODE_MAX_EPOCHS_PER_CLAIM) to compute the
+ * Light Node epoch bonus — entirely server-derived, nothing here comes
+ * from client-reported numbers.
+ */
+export async function migrateIdentityV12() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`ALTER TABLE identity.users ADD COLUMN IF NOT EXISTS last_claim_epoch_count BIGINT NOT NULL DEFAULT 0;`);
+    console.log('[EASTCHAIN] Identity schema migration v12 completed (last_claim_epoch_count column)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v12 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
 /** How recent a heartbeat must be to count as "actually online" right now. */
 export const HEARTBEAT_FRESHNESS_SECONDS = 90;
 

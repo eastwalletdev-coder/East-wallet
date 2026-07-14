@@ -170,6 +170,31 @@ export default function ValidatorReviewPage() {
     );
   }
 
+  const [migrating, setMigrating] = useState<string | null>(null);
+  const [migrationResult, setMigrationResult] = useState<{ endpoint: string; success: boolean; message: string } | null>(null);
+
+  const MIGRATIONS = [
+    { path: '/api/admin/migrate-leader-schedule', label: 'Leader Schedule + Real Production + R2/Signing' },
+    { path: '/api/admin/migrate-self-custody', label: 'Self-Custody v8' },
+    { path: '/api/admin/backfill-keypairs', label: 'Backfill Keypairs' },
+    { path: '/api/admin/migrate-lightnode-epoch', label: 'Light Node Epoch Reward (v12)' },
+    { path: '/api/admin/migrate-evm-link', label: 'EVM Link Column (v5) — secp256k1 dual-path auth' },
+  ];
+
+  const runMigration = async (path: string) => {
+    setMigrating(path);
+    setMigrationResult(null);
+    try {
+      const res = await fetch(path, { method: 'POST' }); // browser sends the session cookie automatically
+      const data = await res.json();
+      setMigrationResult({ endpoint: path, success: res.ok && data.success, message: data.message || data.error || 'Unknown response' });
+    } catch (err: any) {
+      setMigrationResult({ endpoint: path, success: false, message: err.message });
+    } finally {
+      setMigrating(null);
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto p-6 space-y-6">
       <div className="flex justify-between items-center">
@@ -193,6 +218,38 @@ export default function ValidatorReviewPage() {
             <LogOut className="w-4 h-4" />
           </Button>
         </div>
+      </div>
+
+      <div className="border rounded-lg p-4 space-y-3 bg-gray-50">
+        <h2 className="text-sm font-semibold text-gray-700">Migrations</h2>
+        <p className="text-xs text-gray-500">
+          Runs directly from this browser session — no curl/cookie copying needed.
+        </p>
+        <div className="grid gap-2">
+          {MIGRATIONS.map((m) => (
+            <Button
+              key={m.path}
+              variant="outline"
+              size="sm"
+              disabled={migrating === m.path}
+              onClick={() => runMigration(m.path)}
+              className="justify-start text-xs h-auto py-2"
+            >
+              {migrating === m.path ? (
+                <Loader2 className="w-3 h-3 mr-2 animate-spin" />
+              ) : (
+                <span className="mr-2">▶</span>
+              )}
+              {m.label}
+            </Button>
+          ))}
+        </div>
+        {migrationResult && (
+          <div className={`text-xs p-2 rounded ${migrationResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            <p className="font-mono text-[10px] opacity-70">{migrationResult.endpoint}</p>
+            <p>{migrationResult.message}</p>
+          </div>
+        )}
       </div>
 
       {loading ? (

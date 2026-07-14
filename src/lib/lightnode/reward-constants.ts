@@ -5,17 +5,22 @@
  * Tune these as adoption grows — nothing else in the codebase needs to
  * change to adjust the reward rate.
  *
- * The actual block count used for a claim is always re-derived and capped
- * server-side (see mining-contract.ts) — a device claiming more verified
- * blocks than this cap is simply capped, never trusted beyond it.
+ * NOTE: the per-block bonus (LIGHTNODE_REWARD_PER_BLOCK) has been removed.
+ * Light Node rewards are now paid per *epoch* (see mining-contract.ts),
+ * and the epoch count used for a claim is always re-derived server-side
+ * from ledger.chain_meta.epoch_count — never taken from client-reported
+ * numbers. This closes the manipulation gap the old per-block bonus had
+ * (a modified client could report an inflated verifiedHeaders count).
  */
 
-// Paid out per block the device verified during its online session,
-// on top of the flat MINING_REWARD (see blockchain.ts) for completing
-// the 120s participation window.
-export const LIGHTNODE_REWARD_PER_BLOCK = 0.5;
+// Paid out per epoch elapsed since the user's last claim, on top of the
+// flat MINING_REWARD (see blockchain.ts). Computed purely from the
+// server's own epoch counter — the client cannot influence this number.
+export const LIGHTNODE_EPOCH_BONUS = 0.1;
 
-// Hard ceiling on how many verified blocks count toward a single claim,
-// regardless of what the client reports. Prevents a modified client from
-// claiming an inflated block count.
-export const LIGHTNODE_MAX_BLOCKS_PER_CLAIM = 20;
+// Hard ceiling on how many elapsed epochs count toward a single claim.
+// If a user hasn't claimed in a very long time, they still only get
+// credit for the most recent 100 epochs — prevents unbounded payouts
+// from a long-dormant account and keeps the cap meaningful regardless
+// of how it's computed.
+export const LIGHTNODE_MAX_EPOCHS_PER_CLAIM = 100;

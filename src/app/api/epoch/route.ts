@@ -6,6 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { runEpoch, getTopValidators } from '@/lib/poc-engine';
 import { notifyNewEpoch } from '@/lib/gossip';
 import { ledgerPool } from '@/lib/db/ledger';
+import { runRollingReconciliation } from '@/lib/archive/reconcile';
 import { Receiver } from '@upstash/qstash';
 
 // Same verification pattern as /api/empty-block — actually checks the QStash
@@ -62,10 +63,28 @@ export async function POST(req: NextRequest) {
     // Gossip epoch result to validators
     await notifyNewEpoch(epochCount, validators.length);
 
+    // Ledger↔R2 archive reconciliation — piggybacks on this existing 24h
+    // trigger instead of needing its own QStash schedule. Never let a
+    // reconciliation problem take down the epoch response itself; the
+    // rolling watermark just picks up where it left off next time.
+    let reconciliation = null;
+    try {
+      reconciliation = await runRollingReconciliation();
+      if (reconciliation.discrepancies.length > 0) {
+        console.warn(
+          `[EASTCHAIN] Epoch ${epochCount}: reconciliation found ${reconciliation.discrepancies.length} discrepancy(ies) in range`,
+          reconciliation.range
+        );
+      }
+    } catch (err) {
+      console.error('[EASTCHAIN] Epoch reconciliation error (non-fatal):', err);
+    }
+
     return NextResponse.json({
       success: true,
       epoch: epochCount,
       validators: validators.length,
+      reconciliation,
     });
   } finally {
     client.release();

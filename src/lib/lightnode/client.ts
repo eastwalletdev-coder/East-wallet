@@ -23,6 +23,14 @@ const STEP_DELAY_MS = 600;           // pacing so the sync steps are visibly ani
 const RAILWAY_BACKFILL_LIMIT = 20;
 const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from R2
 
+// Blocks at or above this height MUST carry a valid signature — no more
+// "accepted but not cryptographically verified" fallback. Blocks below it
+// predate the chain-signing feature (see chain-signing.ts) and are the
+// only ones still allowed through unsigned. Set via env once the height
+// at which signing went live is known; if unset, ALL blocks require a
+// signature (safe default — nothing is silently trusted).
+const SIGNING_ENFORCED_FROM_HEIGHT = Number(process.env.NEXT_PUBLIC_SIGNING_ENFORCED_FROM_HEIGHT ?? 0);
+
 export type SyncPhase = "idle" | "connecting" | "downloading" | "validating" | "live";
 
 export interface LightNodeState {
@@ -37,7 +45,7 @@ export interface LightNodeState {
   lastClaimEpoch: string | null;
   latencyMs: number | null;
   eligible: boolean;
-  log: { time: number; message: string }[];
+  log: { time: number; message: string; level?: "info" | "warn" | "error" }[];
 }
 
 function loadState(): LightNodeState {
@@ -100,20 +108,33 @@ function verifyHeader(header: BlockHeader, prevHeight: number, prevHash: string 
 
   // Signature check: proves this header actually came from Vercel's
   // sealBlock() — not a leaked R2 write credential or a compromised
-  // Railway relay serving a self-consistent but fake chain. Only enforced
-  // when a public key is configured AND the header carries a signature,
-  // so history archived before this feature shipped still loads (logged,
-  // not silently accepted as equally trustworthy).
+  // Railway relay serving a self-consistent but fake chain.
+  //
+  // MANDATORY from SIGNING_ENFORCED_FROM_HEIGHT onward — a block in that
+  // range with no signature, or a signature that doesn't verify, is
+  // rejected outright. Only blocks BELOW that height (pre-signing history,
+  // whitelisted by height, not by trust) may still pass unsigned.
   const chainPubKeyHex = process.env.NEXT_PUBLIC_CHAIN_SIGNING_PUBLIC_KEY;
-  if (chainPubKeyHex) {
-    if (!header.signature) {
-      console.warn(`[LightNode] Block #${header.height} has no signature — accepted, but not cryptographically verified (pre-signing history?)`);
-    } else if (!verifyChainSignature(chainPubKeyHex, header.height, header.hash, header.signature)) {
-      return { valid: false, reason: "Invalid chain signature — possible tampering" };
-    }
+  const isPreSigningHistory = header.height < SIGNING_ENFORCED_FROM_HEIGHT;
+
+  if (!chainPubKeyHex) {
+    // No public key configured at all — signing can't be enforced client-side.
+    // Fail closed rather than silently accepting every block as "verified".
+    return { valid: false, reason: "Chain signing not configured — cannot verify block" };
   }
 
-  return { valid: true };
+  if (!header.signature) {
+    if (isPreSigningHistory) {
+      return { valid: true, reason: `Unsigned — accepted as pre-signing history (height < ${SIGNING_ENFORCED_FROM_HEIGHT})` };
+    }
+    return { valid: false, reason: "Missing signature — rejected (signing is mandatory at this height)" };
+  }
+
+  if (!verifyChainSignature(chainPubKeyHex, header.height, header.hash, header.signature)) {
+    return { valid: false, reason: "Invalid chain signature — possible tampering" };
+  }
+
+  return { valid: true, reason: "Signature verified" };
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -164,10 +185,19 @@ export class LightNodeClient {
     this.listeners.forEach((fn) => fn(this.state));
   }
 
-  private log(message: string) {
-    const entry = { time: Date.now(), message };
-    const log = [...this.state.log, entry].slice(-50);
+  private log(message: string, level: "info" | "warn" | "error" = "info") {
+    const entry = { time: Date.now(), message, level };
+    // 200 instead of 50 — signature rejections/backfill detail add more
+    // entries per session than before, and this is the only record of
+    // what a given node actually verified.
+    const log = [...this.state.log, entry].slice(-200);
     this.set({ log });
+    // Mirror to devtools console too, so a rejected/invalid block is
+    // visible even if the panel isn't open or history has scrolled past it.
+    const prefix = `[LightNode:${this.state.nodeId ?? "?"}]`;
+    if (level === "error") console.error(prefix, message);
+    else if (level === "warn") console.warn(prefix, message);
+    else console.log(prefix, message);
   }
 
   connect() {
@@ -228,7 +258,7 @@ export class LightNodeClient {
           break;
 
         case "error":
-          this.log(`Error: ${msg.message}`);
+          this.log(`Error: ${msg.message}`, "error");
           break;
       }
     };
@@ -241,7 +271,7 @@ export class LightNodeClient {
     };
 
     ws.onerror = () => {
-      this.log("Connection error");
+      this.log("Connection error", "error");
     };
   }
 
@@ -255,14 +285,14 @@ export class LightNodeClient {
   private applyHeader(header: any, silent: boolean = false, onDone?: () => void) {
     const result = verifyHeader(header, this.state.currentHeight, this.lastHash);
     if (!result.valid) {
-      this.log(`Header rejected: ${result.reason}`);
+      this.log(`Header REJECTED — block #${header.height} (hash ${String(header.hash).slice(0, 10)}…): ${result.reason}`, "error");
       onDone?.();
       return;
     }
     this.lastHash = header.hash;
     this.log(`Downloading block #${header.height}…`);
     this.set({ currentHeight: header.height });
-    this.log(`Header Verified — block #${header.height}`);
+    this.log(`Header Verified — block #${header.height} (${result.reason ?? "ok"})`);
     this.set({ verifiedHeaderCount: this.state.verifiedHeaderCount + 1 });
     if (!silent) this.log("Local Ledger Updated");
     this.checkEligibility();
@@ -340,7 +370,7 @@ export class LightNodeClient {
           // Missing/unreachable object — stop trusting the archive from
           // here on and let Railway's normal (possibly partial) backfill
           // take over for whatever remains. Not treated as tampering.
-          this.log(`Archive missing block #${h} — falling back to hub backfill for the rest`);
+          this.log(`Archive missing block #${h} — falling back to hub backfill for the rest`, "warn");
           this.ws?.send(JSON.stringify({
             type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
           }));

@@ -9,7 +9,7 @@ import { getTierFromStaked } from '@/lib/ledger';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { MINING_REWARD, REFERRAL_BONUS, REFERRAL_CAP, REFERRAL_CLAIM_TRIGGER } from '@/lib/blockchain';
-import { LIGHTNODE_REWARD_PER_BLOCK, LIGHTNODE_MAX_BLOCKS_PER_CLAIM } from '@/lib/lightnode/reward-constants';
+import { LIGHTNODE_EPOCH_BONUS, LIGHTNODE_MAX_EPOCHS_PER_CLAIM } from '@/lib/lightnode/reward-constants';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import crypto from 'crypto';
 
@@ -26,6 +26,16 @@ async function getLastBlock(ledgerClient: any) {
   );
   if (!res.rows.length) return { blockIndex: -1, blockHash: 'GENESIS' };
   return { blockIndex: res.rows[0].block_index, blockHash: res.rows[0].block_hash };
+}
+
+// Same counter /api/epoch/route.ts advances once per (daily) cron run.
+// This is the ONLY source of truth for "how many epochs have passed" —
+// never derived from anything the client reports.
+async function getCurrentEpochCount(ledgerClient: any): Promise<number> {
+  const res = await ledgerClient.query(
+    "SELECT value FROM ledger.chain_meta WHERE key = 'epoch_count'"
+  );
+  return res.rows.length > 0 ? parseInt(res.rows[0].value) : 0;
 }
 
 async function sealSingleTx(ledgerClient: any, tx: {
@@ -85,11 +95,16 @@ export async function execute(
 
   const tier = getTierFromStaked(Number(user.staked_amount));
 
-  // Light Node bonus: 0.5 EAST per block the device verified this session,
-  // capped server-side — never trust the client's number beyond the cap.
-  const rawVerifiedBlocks = Number(params.verifiedHeaders) || 0;
-  const verifiedBlocks = Math.max(0, Math.min(rawVerifiedBlocks, LIGHTNODE_MAX_BLOCKS_PER_CLAIM));
-  const lightNodeBonus = verifiedBlocks * LIGHTNODE_REWARD_PER_BLOCK;
+  // Light Node epoch bonus: 0.1 EAST per epoch elapsed since this user's
+  // last claim, capped at LIGHTNODE_MAX_EPOCHS_PER_CLAIM. currentEpochCount
+  // and lastClaimEpochCount are both server state — the client never
+  // supplies a number that factors into this calculation, so a modified
+  // client cannot inflate the bonus.
+  const currentEpochCount = await getCurrentEpochCount(ledgerClient);
+  const lastClaimEpochCount = Number(user.last_claim_epoch_count || 0);
+  const epochsElapsed = Math.max(0, currentEpochCount - lastClaimEpochCount);
+  const epochsToPay = Math.min(epochsElapsed, LIGHTNODE_MAX_EPOCHS_PER_CLAIM);
+  const lightNodeBonus = epochsToPay * LIGHTNODE_EPOCH_BONUS;
 
   const boostedReward = (MINING_REWARD + lightNodeBonus) * tier.boost;
 
@@ -103,8 +118,8 @@ export async function execute(
   });
 
   await identityClient.query(
-    'UPDATE identity.users SET balance = balance + $1, last_active = $2, last_mining_claim_at = $2, updated_at = NOW() WHERE telegram_id = $3',
-    [boostedReward, Date.now(), tgId]
+    'UPDATE identity.users SET balance = balance + $1, last_active = $2, last_mining_claim_at = $2, last_claim_epoch_count = $3, updated_at = NOW() WHERE telegram_id = $4',
+    [boostedReward, Date.now(), currentEpochCount, tgId]
   );
 
   // Referral bonus on 4th claim — mirrors previous claimMiningReward behaviour.
@@ -146,5 +161,11 @@ export async function execute(
     }
   }
 
-  return { success: true, data: { txHash: hash, blockIndex, blockHash, sequenceHash, reward: boostedReward, referralPaid } };
+  return {
+    success: true,
+    data: {
+      txHash: hash, blockIndex, blockHash, sequenceHash, reward: boostedReward, referralPaid,
+      epoch: currentEpochCount, epochsRewarded: epochsToPay,
+    },
+  };
 }

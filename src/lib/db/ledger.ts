@@ -372,3 +372,33 @@ export async function migrateLedgerV5() {
     client.release();
   }
 }
+
+/**
+ * Migration v6 — R2 archive reconciliation log.
+ * See src/lib/archive/reconcile.ts: every time a block's R2 copy doesn't
+ * match (or doesn't exist), a row goes here — whether or not the self-heal
+ * re-archive succeeded. This is the audit trail for that process.
+ */
+export async function migrateLedgerV6() {
+  const client = await ledgerPool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ledger.archive_discrepancies (
+        id                SERIAL PRIMARY KEY,
+        block_index       INT NOT NULL,
+        discrepancy_type  VARCHAR(20) NOT NULL, -- 'missing_in_r2' | 'hash_mismatch'
+        db_hash           VARCHAR(66) NOT NULL,
+        r2_hash           VARCHAR(66),
+        detected_at       TIMESTAMPTZ DEFAULT NOW(),
+        healed_at         TIMESTAMPTZ,
+        heal_result       VARCHAR(20) -- 'healed' | 'heal_failed'
+      );
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_archive_discrepancies_height ON ledger.archive_discrepancies(block_index);`);
+    console.log('[EASTCHAIN] Ledger schema migration v6 completed (ledger.archive_discrepancies table)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Ledger migration v6 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}

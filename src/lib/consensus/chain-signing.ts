@@ -7,53 +7,83 @@
  * leaked R2 write credential, or a compromised Railway relay, could in
  * principle serve a self-consistent but fake chain to a Light Node.
  *
- * This uses a DEDICATED Ed25519 keypair (not any user's wallet key, not
- * KEYPAIR_DERIVATION_SECRET-derived, not a validator's self-custody key)
- * to sign `EASTCHAIN_BLOCK|{height}|{blockHash}` for every sealed block.
- * The public half is embedded directly in the Light Node client bundle
- * (NEXT_PUBLIC_CHAIN_SIGNING_PUBLIC_KEY) — trusting it is equivalent to
- * trusting the app's own code, the same trust anchor any app already
- * relies on. The private half NEVER leaves Vercel's server environment —
- * not given to Railway, not given to R2, not derivable by anyone who
- * only has KEYPAIR_DERIVATION_SECRET or ADMIN_SECRET.
+ * secp256k1 / EVM-compatible: this uses a DEDICATED Ethereum-style keypair
+ * (not any user's wallet key, not KEYPAIR_DERIVATION_SECRET-derived, not a
+ * validator's self-custody key) to EIP-191 (personal_sign) sign
+ * `EASTCHAIN_BLOCK|{height}|{blockHash}` for every sealed block. Chosen
+ * over the previous Ed25519 scheme because the project is migrating to be
+ * EVM-compatible end to end — same signature format used elsewhere in the
+ * app (see evm-signature.ts's verifyEvmOwnership), same tooling (ethers),
+ * and directly reusable later if chain-signing ever moves on-chain (e.g.
+ * a multisig/contract-based validator set).
+ *
+ * The signing ADDRESS (not a raw public key) is embedded directly in the
+ * Light Node client bundle (NEXT_PUBLIC_CHAIN_SIGNING_ADDRESS) — trusting
+ * it is equivalent to trusting the app's own code, the same trust anchor
+ * any app already relies on. The private key NEVER leaves Vercel's server
+ * environment — not given to Railway, not given to R2, not derivable by
+ * anyone who only has KEYPAIR_DERIVATION_SECRET or ADMIN_SECRET.
  *
  * One-time setup: generate a keypair once (see scripts/generate-chain-signing-key.js)
  * and set:
- *   CHAIN_SIGNING_PRIVATE_KEY (server-only, Vercel env)  — the seed, hex
- *   NEXT_PUBLIC_CHAIN_SIGNING_PUBLIC_KEY (public, safe to expose) — hex
+ *   CHAIN_SIGNING_PRIVATE_KEY (server-only, Vercel env)   — 0x-prefixed 32-byte hex
+ *   NEXT_PUBLIC_CHAIN_SIGNING_ADDRESS (public, safe to expose) — 0x... EVM address
  */
-import nacl from 'tweetnacl';
+import { Wallet, hashMessage } from 'ethers';
 
-let cachedKeypair: nacl.SignKeyPair | null = null;
+let cachedWallet: Wallet | null = null;
+let warnedUnconfigured = false;
 
-function getSigningKeypair(): nacl.SignKeyPair | null {
-  const seedHex = process.env.CHAIN_SIGNING_PRIVATE_KEY;
-  if (!seedHex) return null; // not configured — signing disabled, headers ship unsigned
-  if (!cachedKeypair) {
-    const seed = new Uint8Array(Buffer.from(seedHex, 'hex'));
-    if (seed.length !== 32) {
-      console.error('[EASTCHAIN] CHAIN_SIGNING_PRIVATE_KEY must be a 32-byte hex seed — signing disabled.');
+function getSigningWallet(): Wallet | null {
+  const pk = process.env.CHAIN_SIGNING_PRIVATE_KEY;
+  if (!pk) {
+    if (!warnedUnconfigured) {
+      // Loud, once — this is easy to miss because sealBlock() never fails
+      // when this happens, it just ships unsigned headers, which every
+      // Light Node above SIGNING_ENFORCED_FROM_HEIGHT will silently reject.
+      console.warn(
+        '[EASTCHAIN] CHAIN_SIGNING_PRIVATE_KEY not set — sealed blocks are shipping WITHOUT a signature. ' +
+        'Light Nodes will reject them (see lightnode/client.ts verifyHeader). ' +
+        'Run scripts/generate-chain-signing-key.js and set CHAIN_SIGNING_PRIVATE_KEY + NEXT_PUBLIC_CHAIN_SIGNING_ADDRESS.'
+      );
+      warnedUnconfigured = true;
+    }
+    return null; // not configured — signing disabled, headers ship unsigned
+  }
+  if (!cachedWallet) {
+    try {
+      cachedWallet = new Wallet(pk);
+    } catch (err) {
+      console.error('[EASTCHAIN] CHAIN_SIGNING_PRIVATE_KEY is not a valid secp256k1 private key — signing disabled.', err);
       return null;
     }
-    cachedKeypair = nacl.sign.keyPair.fromSeed(seed);
   }
-  return cachedKeypair;
+  return cachedWallet;
 }
 
 export function buildChainSigningMessage(height: number, blockHash: string): string {
   return `EASTCHAIN_BLOCK|${height}|${blockHash}`;
 }
 
+/** The address Light Nodes should trust — derived from CHAIN_SIGNING_PRIVATE_KEY, null if unconfigured. */
+export function getChainSigningAddress(): string | null {
+  return getSigningWallet()?.address ?? null;
+}
+
 /**
- * Returns a hex signature, or null if CHAIN_SIGNING_PRIVATE_KEY isn't
- * configured — callers should treat null as "ship this header unsigned"
- * (backward compatible with the archive/relay running before this
- * feature existed), never as a hard failure that blocks sealing.
+ * Returns a hex EIP-191 signature (0x + 130 hex chars, r+s+v), or null if
+ * CHAIN_SIGNING_PRIVATE_KEY isn't configured — callers should treat null
+ * as "ship this header unsigned" (backward compatible with the
+ * archive/relay running before this feature existed), never as a hard
+ * failure that blocks sealing.
+ *
+ * Synchronous on purpose (signingKey.sign is local/offline math, no
+ * network) so callers in block-engine.ts don't need to change to `await`.
  */
 export function signChainHeader(height: number, blockHash: string): string | null {
-  const kp = getSigningKeypair();
-  if (!kp) return null;
+  const wallet = getSigningWallet();
+  if (!wallet) return null;
   const message = buildChainSigningMessage(height, blockHash);
-  const sig = nacl.sign.detached(new TextEncoder().encode(message), kp.secretKey);
-  return Buffer.from(sig).toString('hex');
+  const digest = hashMessage(message); // EIP-191 prefixed keccak256
+  return wallet.signingKey.sign(digest).serialized; // 0x-prefixed 65-byte compact sig
 }

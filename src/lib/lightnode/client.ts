@@ -1,6 +1,6 @@
 "use client"
 
-import nacl from "tweetnacl";
+import { verifyMessage } from "ethers";
 import type { BlockHeader, InboundMessage } from "./protocol";
 
 const STORAGE_KEY = "east_lightnode_state_v1";
@@ -23,12 +23,13 @@ const STEP_DELAY_MS = 600;           // pacing so the sync steps are visibly ani
 const RAILWAY_BACKFILL_LIMIT = 20;
 const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from R2
 
-// Blocks at or above this height MUST carry a valid signature — no more
-// "accepted but not cryptographically verified" fallback. Blocks below it
-// predate the chain-signing feature (see chain-signing.ts) and are the
-// only ones still allowed through unsigned. Set via env once the height
-// at which signing went live is known; if unset, ALL blocks require a
-// signature (safe default — nothing is silently trusted).
+// Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
+// EIP-191) signature — no more "accepted but not cryptographically
+// verified" fallback. Blocks below it predate the chain-signing feature
+// (see chain-signing.ts) and are the only ones still allowed through
+// unsigned. Set via env once the height at which signing went live is
+// known; if unset, ALL blocks require a signature (safe default —
+// nothing is silently trusted).
 const SIGNING_ENFORCED_FROM_HEIGHT = Number(process.env.NEXT_PUBLIC_SIGNING_ENFORCED_FROM_HEIGHT ?? 0);
 
 export type SyncPhase = "idle" | "connecting" | "downloading" | "validating" | "live";
@@ -110,16 +111,22 @@ function verifyHeader(header: BlockHeader, prevHeight: number, prevHash: string 
   // sealBlock() — not a leaked R2 write credential or a compromised
   // Railway relay serving a self-consistent but fake chain.
   //
+  // secp256k1 / EVM-style (EIP-191 personal_sign): we don't compare
+  // against a raw public key, we recover the signer ADDRESS from the
+  // signature and compare it to the trusted address — same pattern as
+  // evm-signature.ts's verifyEvmOwnership on the server side.
+  //
   // MANDATORY from SIGNING_ENFORCED_FROM_HEIGHT onward — a block in that
   // range with no signature, or a signature that doesn't verify, is
   // rejected outright. Only blocks BELOW that height (pre-signing history,
   // whitelisted by height, not by trust) may still pass unsigned.
-  const chainPubKeyHex = process.env.NEXT_PUBLIC_CHAIN_SIGNING_PUBLIC_KEY;
+  const chainSigningAddress = process.env.NEXT_PUBLIC_CHAIN_SIGNING_ADDRESS;
   const isPreSigningHistory = header.height < SIGNING_ENFORCED_FROM_HEIGHT;
 
-  if (!chainPubKeyHex) {
-    // No public key configured at all — signing can't be enforced client-side.
-    // Fail closed rather than silently accepting every block as "verified".
+  if (!chainSigningAddress) {
+    // No trusted address configured at all — signing can't be enforced
+    // client-side. Fail closed rather than silently accepting every block
+    // as "verified".
     return { valid: false, reason: "Chain signing not configured — cannot verify block" };
   }
 
@@ -130,25 +137,18 @@ function verifyHeader(header: BlockHeader, prevHeight: number, prevHash: string 
     return { valid: false, reason: "Missing signature — rejected (signing is mandatory at this height)" };
   }
 
-  if (!verifyChainSignature(chainPubKeyHex, header.height, header.hash, header.signature)) {
+  if (!verifyChainSignature(chainSigningAddress, header.height, header.hash, header.signature)) {
     return { valid: false, reason: "Invalid chain signature — possible tampering" };
   }
 
   return { valid: true, reason: "Signature verified" };
 }
 
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(Math.floor(hex.length / 2));
-  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-  return bytes;
-}
-
-function verifyChainSignature(publicKeyHex: string, height: number, blockHash: string, signatureHex: string): boolean {
+function verifyChainSignature(trustedAddress: string, height: number, blockHash: string, signatureHex: string): boolean {
   try {
-    const publicKey = hexToBytes(publicKeyHex);
-    const signature = hexToBytes(signatureHex);
-    const message = new TextEncoder().encode(`EASTCHAIN_BLOCK|${height}|${blockHash}`);
-    return nacl.sign.detached.verify(message, signature, publicKey);
+    const message = `EASTCHAIN_BLOCK|${height}|${blockHash}`;
+    const recovered = verifyMessage(message, signatureHex);
+    return recovered.toLowerCase() === trustedAddress.toLowerCase();
   } catch {
     return false;
   }

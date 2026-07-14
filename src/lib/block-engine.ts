@@ -154,7 +154,7 @@ async function sealBlock(
     const publishedHeader = {
       height: blockIndex, hash: blockHash, previousHash: prevHash, merkleRoot,
       validator: validatorId, timestamp, epoch: Math.floor(timestamp / 86_400_000),
-      signature: signChainHeader(blockIndex, blockHash), // null if CHAIN_SIGNING_PRIVATE_KEY unset
+      signature: signChainHeader(blockIndex, blockHash), // null if CHAIN_SIGNING_PRIVATE_KEY unset (secp256k1/EVM sig, see chain-signing.ts)
     };
     publishBlockToRailway(publishedHeader);
     archiveBlockToR2(publishedHeader); // fire-and-forget, non-fatal — see r2-client.ts

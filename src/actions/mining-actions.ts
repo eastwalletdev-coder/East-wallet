@@ -322,7 +322,8 @@ export async function sendEast(
       selfCustodyPubkey || sender.self_custody_pubkey,
       signature,
       signaturePayload,
-      IS_PRODUCTION
+      IS_PRODUCTION,
+      sender.wallet_type === 'self_custody_evm' ? sender.wallet_address : undefined
     );
     if (!authResult.success) { await identityClient.query('ROLLBACK'); return { success: false, error: authResult.error }; }
 

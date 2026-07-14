@@ -51,7 +51,9 @@ export default function LedgerContent() {
               <Database className="w-3 h-3 text-primary" />
               <p className="text-[10px] text-muted-foreground uppercase font-bold">Blocks</p>
             </div>
-            <p className="font-code text-lg font-bold">#{chainState?.blockCount ?? '0'}</p>
+            <p className="font-code text-lg font-bold">
+              {chainState && chainState.blockCount >= 0 ? `#${chainState.blockCount}` : chainState ? 'GENESIS' : '#0'}
+            </p>
           </CardContent>
         </Card>
         <Card className="bg-card/40 border-border/30">

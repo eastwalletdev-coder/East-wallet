@@ -13,6 +13,8 @@ import { type Token } from '@/lib/token-service';
 import { useWallet } from '@/lib/wallet-context';
 import { useRPC } from '@/lib/rpc-context';
 import { sendEvmTransaction, sendSolanaTransaction, estimateEvmFee, estimateSolanaFee, type FeeEstimate } from '@/lib/send-service';
+import { signEvmMessage } from '@/lib/wallet-service';
+import { buildSendEastPayload } from '@/lib/tx-payload-builders';
 import { isAddress } from 'ethers';
 import { PublicKey } from '@solana/web3.js';
 import { QrCameraScanner } from '@/components/QrCameraScanner';
@@ -162,7 +164,26 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
           toast({ variant: 'destructive', title: 'Not authenticated', description: 'Telegram session not found.' });
           return;
         }
-        const result = await sendEast(userId, address.trim(), amt, initData, undefined, undefined, parseFloat(gasFeeEast) || 0);
+
+        // If the user's self-custody EVM wallet is unlocked, sign the
+        // transfer with it too — see dual-mode-identity.ts's Path 2
+        // (secp256k1/EIP-191). Not required (Telegram initData alone is
+        // still sufficient), but this is what actually lets a signature
+        // reach the server instead of relying on Telegram every time —
+        // and it's the path that works if this dialog is ever opened
+        // outside Telegram (see src/app/browser/page.tsx). Purely
+        // additive: signing failure here just falls back to initData-only.
+        let signature: string | undefined;
+        if (!isLocked && mnemonic) {
+          try {
+            const payload = buildSendEastPayload(userId, address.trim(), amt);
+            signature = await signEvmMessage(mnemonic, payload);
+          } catch (err) {
+            console.error('[SendDialog] Self-custody signing failed (non-fatal, using Telegram auth):', err);
+          }
+        }
+
+        const result = await sendEast(userId, address.trim(), amt, initData, signature, undefined, parseFloat(gasFeeEast) || 0);
         if (result.success) {
           setTxHash(result.txHash || null);
           setStep('result');
@@ -448,7 +469,9 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
 
             <div className="flex items-center justify-center gap-1.5 text-white/30 text-[11px] pt-1">
               <ShieldCheck className="w-3.5 h-3.5" />
-              Secured by EASTCHAIN
+              {isEastToken && !isLocked && mnemonic
+                ? 'Secured by EASTCHAIN · self-custody signature + Telegram'
+                : 'Secured by EASTCHAIN'}
             </div>
           </div>
         )}

@@ -144,7 +144,7 @@ export async function callContract(
     try {
       const identityClient = await identityPool.connect();
       const userRes = await identityClient.query(
-        'SELECT self_custody_pubkey FROM identity.users WHERE telegram_id = $1',
+        'SELECT self_custody_pubkey, wallet_address, wallet_type FROM identity.users WHERE telegram_id = $1',
         [tgId]
       );
       identityClient.release();
@@ -165,7 +165,8 @@ export async function callContract(
       selfCustodyPubkey || userRow?.self_custody_pubkey,
       signature,
       signaturePayload,
-      true
+      true,
+      userRow?.wallet_type === 'self_custody_evm' ? userRow?.wallet_address : undefined
     );
     if (!authResult.success) return { success: false, error: authResult.error };
   }

@@ -9,7 +9,7 @@ export interface BlockHeader {
   validator: string | null;
   timestamp: number;
   epoch: number;
-  signature?: string | null; // hex Ed25519 sig over `EASTCHAIN_BLOCK|{height}|{hash}` — see chain-signing.ts
+  signature?: string | null; // 0x-prefixed secp256k1 EIP-191 sig over `EASTCHAIN_BLOCK|{height}|{hash}` — see chain-signing.ts
 }
 
 export interface HelloMessage {

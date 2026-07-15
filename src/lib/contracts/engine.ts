@@ -143,12 +143,27 @@ export async function callContract(
     let userRow;
     try {
       const identityClient = await identityPool.connect();
-      const userRes = await identityClient.query(
-        'SELECT self_custody_pubkey, wallet_address, wallet_type FROM identity.users WHERE telegram_id = $1',
-        [tgId]
-      );
-      identityClient.release();
-      userRow = userRes.rows[0] || null;
+      try {
+        const userRes = await identityClient.query(
+          'SELECT self_custody_pubkey, wallet_address, wallet_type FROM identity.users WHERE telegram_id = $1',
+          [tgId]
+        );
+        userRow = userRes.rows[0] || null;
+      } catch (columnErr) {
+        // wallet_address/wallet_type may not exist yet if migration
+        // 003_evm_self_custody.sql hasn't been applied to this DB —
+        // fall back to the base column so the whole action doesn't die.
+        // (secp256k1 self-custody auth just won't be available until
+        // the migration runs; Telegram initData / Ed25519 still work.)
+        console.warn('[engine.ts] wallet_address/wallet_type lookup failed, falling back to self_custody_pubkey only — has migration 003_evm_self_custody.sql been applied?', columnErr);
+        const fallbackRes = await identityClient.query(
+          'SELECT self_custody_pubkey FROM identity.users WHERE telegram_id = $1',
+          [tgId]
+        );
+        userRow = fallbackRes.rows[0] || null;
+      } finally {
+        identityClient.release();
+      }
     } catch (err) {
       return { success: false, error: 'DB_LOOKUP_FAILED' };
     }

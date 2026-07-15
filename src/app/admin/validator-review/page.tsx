@@ -32,6 +32,8 @@ export default function ValidatorReviewPage() {
   const [authState, setAuthState] = useState<AuthState>('checking');
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [reviewNotes, setReviewNotes] = useState('');
+  const [migrating, setMigrating] = useState<string | null>(null);
+  const [migrationResult, setMigrationResult] = useState<{ endpoint: string; success: boolean; message: string } | null>(null);
   const widgetContainerRef = useRef<HTMLDivElement>(null);
 
   const fetchCandidates = useCallback(async () => {
@@ -170,15 +172,13 @@ export default function ValidatorReviewPage() {
     );
   }
 
-  const [migrating, setMigrating] = useState<string | null>(null);
-  const [migrationResult, setMigrationResult] = useState<{ endpoint: string; success: boolean; message: string } | null>(null);
-
   const MIGRATIONS = [
     { path: '/api/admin/migrate-leader-schedule', label: 'Leader Schedule + Real Production + R2/Signing' },
     { path: '/api/admin/migrate-self-custody', label: 'Self-Custody v8' },
     { path: '/api/admin/backfill-keypairs', label: 'Backfill Keypairs' },
     { path: '/api/admin/migrate-lightnode-epoch', label: 'Light Node Epoch Reward (v12)' },
     { path: '/api/admin/migrate-evm-link', label: 'EVM Link Column (v5) — secp256k1 dual-path auth' },
+    { path: '/api/admin/migrate-evm-self-custody', label: 'EVM Self-Custody Columns (v13) — wallet_type/evm_public_key' },
   ];
 
   const runMigration = async (path: string) => {

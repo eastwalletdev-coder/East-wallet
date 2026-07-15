@@ -606,6 +606,41 @@ export async function backfillKeypairs(onlyTelegramId?: string): Promise<{ updat
 }
 
 /**
+ * Migration v13 — EVM self-custody wallet columns (was manual-only SQL:
+ * migrations/003_evm_self_custody.sql, meant to be run by hand via psql).
+ * Wired up here the same way as every other migration so it can be
+ * triggered from /api/admin/migrate-evm-self-custody instead of requiring
+ * direct DB CLI access. Safe to run multiple times (IF NOT EXISTS guards).
+ *
+ * Adds identity.users.wallet_type ('custodial_hash' | 'self_custody_evm'),
+ * evm_public_key, evm_wallet_migrated_at — see wallet-onboarding-actions.ts
+ * for how these get set, and engine.ts / dual-mode-identity.ts for how
+ * they're used to verify secp256k1 self-custody signatures.
+ */
+export async function migrateIdentityV13() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`
+      ALTER TABLE identity.users
+        ADD COLUMN IF NOT EXISTS wallet_type VARCHAR(24) NOT NULL DEFAULT 'custodial_hash',
+        ADD COLUMN IF NOT EXISTS evm_public_key VARCHAR(132),
+        ADD COLUMN IF NOT EXISTS evm_wallet_migrated_at TIMESTAMPTZ;
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_users_evm_public_key
+        ON identity.users (evm_public_key)
+        WHERE evm_public_key IS NOT NULL;
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_users_wallet_type ON identity.users (wallet_type);`);
+    console.log('[EASTCHAIN] Identity schema migration v13 completed (wallet_type, evm_public_key, evm_wallet_migrated_at columns)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v13 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Claim message builders live in src/lib/east-claim-messages.ts — a plain
  * isomorphic module importable from client components too (needed so the
  * browser can sign the exact same string this server verifies against).

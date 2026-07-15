@@ -2,9 +2,12 @@
 
 import { verifyMessage } from "ethers";
 import type { BlockHeader, InboundMessage } from "./protocol";
+import { EAST_CHAIN_ID } from "@/lib/contracts/registry";
+import { PeerMesh } from "./webrtc-peer";
 
 const STORAGE_KEY = "east_lightnode_state_v1";
 const HEARTBEAT_MS = 20_000;
+const RELAY_STATS_INTERVAL_MS = 30_000; // how often we self-report score inputs to Railway
 const MIN_VERIFIED_HEADERS = 2;      // lowered from 5 — empty blocks only seal
                                       // every 30min, so requiring 5 *new* headers
                                       // per session made the header gate far
@@ -47,6 +50,11 @@ export interface LightNodeState {
   latencyMs: number | null;
   eligible: boolean;
   log: { time: number; message: string; level?: "info" | "warn" | "error" }[];
+  // WebRTC peer mesh — Railway is still the only introduction point; this
+  // is just which peers we've since connected to directly. See webrtc-peer.ts.
+  isRelay: boolean;               // did Railway promote US into the top-N this round?
+  relayRoster: string[];          // last known top-N relay nodeIds, from Railway
+  connectedPeerIds: string[];     // peers we currently have an OPEN DataChannel with
 }
 
 function loadState(): LightNodeState {
@@ -61,6 +69,8 @@ function loadState(): LightNodeState {
       connectionStatus: "disconnected", // never trust a persisted "connected"
       syncPhase: "idle",
       syncProgress: { current: 0, total: 0 },
+      isRelay: false,
+      connectedPeerIds: [],
     };
   } catch {
     return freshState();
@@ -82,6 +92,9 @@ function freshState(): LightNodeState {
     latencyMs: null,
     eligible: false,
     log: [],
+    isRelay: false,
+    relayRoster: [],
+    connectedPeerIds: [],
   };
 }
 
@@ -162,13 +175,32 @@ export class LightNodeClient {
   private listeners = new Set<Listener>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private participationTimer: ReturnType<typeof setInterval> | null = null;
+  private relayStatsTimer: ReturnType<typeof setInterval> | null = null;
   private lastHash: string | null = null;
   private pingSentAt = 0;
   private url: string;
+  private peerMesh: PeerMesh;
 
   constructor(url: string) {
     this.url = url;
     this.state = loadState();
+    this.peerMesh = new PeerMesh({
+      sendSignal: (msg) => this.ws?.send(JSON.stringify(msg)),
+      onPeerHeader: (peerNodeId, header) => {
+        // Same trust boundary as a Railway-sourced header — verifyHeader()
+        // inside applyHeader() doesn't know or care which transport it came
+        // from. A peer can only waste bandwidth by sending junk, never get
+        // an unverified header accepted.
+        this.applyHeader(header, true);
+      },
+      onPeerConnected: (peerNodeId) => {
+        this.log(`Peer mesh: connected to ${peerNodeId.slice(0, 8)}…`);
+        this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
+      },
+      onPeerDisconnected: (peerNodeId) => {
+        this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
+      },
+    });
   }
 
   getState(): LightNodeState { return this.state; }
@@ -211,9 +243,10 @@ export class LightNodeClient {
     ws.onopen = () => {
       this.set({ connectionStatus: "connected" });
       this.log("Connected");
-      ws.send(JSON.stringify({ type: "hello", role: "light-node", nodeId: this.state.nodeId }));
+      ws.send(JSON.stringify({ type: "hello", role: "light-node", nodeId: this.state.nodeId, chainId: EAST_CHAIN_ID }));
       this.startHeartbeat();
       this.startParticipationClock();
+      this.startRelayStats();
     };
 
     ws.onmessage = (ev) => {
@@ -260,14 +293,53 @@ export class LightNodeClient {
         case "error":
           this.log(`Error: ${msg.message}`, "error");
           break;
+
+        // ── Relay mesh signaling — Railway is the intro point only ───
+        case "relay:roster": {
+          this.set({ relayRoster: msg.relayNodeIds });
+          // Dial anyone new in the roster who isn't us and isn't already
+          // connected/connecting. Small roster (top-5) keeps this cheap.
+          msg.relayNodeIds
+            .filter((id) => id !== this.state.nodeId && !this.peerMesh.connectedPeerIds.includes(id))
+            .forEach((id) => this.peerMesh.connectTo(id).catch(() => {
+              // Common and expected — symmetric NAT on one side, peer went
+              // offline mid-dial, etc. No TURN fallback by design (see
+              // webrtc-peer.ts); this pair just keeps using Railway directly.
+              this.log(`Peer mesh: couldn't reach ${id.slice(0, 8)}… — falling back to hub`, "warn");
+            }));
+          break;
+        }
+
+        case "relay:promoted":
+          this.set({ isRelay: true });
+          this.log("Promoted to relay node by Railway (best latency/uptime tier)");
+          break;
+
+        case "relay:demoted":
+          this.set({ isRelay: false });
+          break;
+
+        case "webrtc_offer":
+          if (msg.fromNodeId) this.peerMesh.handleOffer(msg.fromNodeId, msg.sdp);
+          break;
+
+        case "webrtc_answer":
+          if (msg.fromNodeId) this.peerMesh.handleAnswer(msg.fromNodeId, msg.sdp);
+          break;
+
+        case "ice_candidate":
+          if (msg.fromNodeId) this.peerMesh.handleIceCandidate(msg.fromNodeId, msg.candidate);
+          break;
       }
     };
 
     ws.onclose = () => {
-      this.set({ connectionStatus: "disconnected" });
+      this.set({ connectionStatus: "disconnected", isRelay: false, connectedPeerIds: [] });
       this.log("Disconnected");
       this.stopHeartbeat();
       this.stopParticipationClock();
+      this.stopRelayStats();
+      this.peerMesh.disconnectAll();
     };
 
     ws.onerror = () => {
@@ -278,6 +350,7 @@ export class LightNodeClient {
   disconnect() {
     this.ws?.close();
     this.ws = null;
+    this.peerMesh.disconnectAll();
   }
 
   // Verifies + applies exactly one header, then calls onDone. Shared by
@@ -296,6 +369,7 @@ export class LightNodeClient {
     this.set({ verifiedHeaderCount: this.state.verifiedHeaderCount + 1 });
     if (!silent) this.log("Local Ledger Updated");
     this.checkEligibility();
+    this.peerMesh.broadcastHeader(header); // best-effort — reduces peers' reliance on Railway alone
     this.ws?.send(JSON.stringify({
       type: "ack", nodeId: this.state.nodeId, height: header.height, timestamp: Date.now(),
     }));
@@ -388,6 +462,25 @@ export class LightNodeClient {
     this.ws?.send(JSON.stringify({
       type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
     }));
+  }
+
+  private startRelayStats() {
+    this.stopRelayStats();
+    this.relayStatsTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+      this.ws.send(JSON.stringify({
+        type: "relay_stats",
+        nodeId: this.state.nodeId,
+        avgLatencyMs: this.state.latencyMs ?? 0,
+        participationSeconds: this.state.participationSeconds,
+        verifiedHeaderCount: this.state.verifiedHeaderCount,
+      }));
+    }, RELAY_STATS_INTERVAL_MS);
+  }
+
+  private stopRelayStats() {
+    if (this.relayStatsTimer) clearInterval(this.relayStatsTimer);
+    this.relayStatsTimer = null;
   }
 
   private startHeartbeat() {

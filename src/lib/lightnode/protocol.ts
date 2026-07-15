@@ -1,4 +1,6 @@
 // Mirrors railway-server/src/types.ts — keep both in sync when changing.
+import { EAST_CHAIN_ID } from "@/lib/contracts/registry";
+
 export type Role = "validator" | "light-node";
 
 export interface BlockHeader {
@@ -16,11 +18,13 @@ export interface HelloMessage {
   type: "hello";
   role: Role;
   nodeId: string;
+  chainId: number; // always EAST_CHAIN_ID — see registry.ts
 }
 
 export interface WelcomeMessage {
   type: "welcome";
   network: "EAST";
+  chainId: number;
   version: string;
   role: Role;
   latestHeight: number;
@@ -56,9 +60,30 @@ export interface AckMessage {
   timestamp: number;
 }
 
+// ── Relay scoring & promotion (see railway-server's recomputeRelayRoster) ──
+export interface RelayStatsMessage {
+  type: "relay_stats";
+  nodeId: string;
+  avgLatencyMs: number;
+  participationSeconds: number;
+  verifiedHeaderCount: number;
+}
+export interface RelayRosterMessage { type: "relay:roster"; relayNodeIds: string[]; }
+export interface RelayPromotedMessage { type: "relay:promoted"; }
+export interface RelayDemotedMessage { type: "relay:demoted"; }
+
+// ── WebRTC signaling passthrough — Railway forwards these blind ────────
+export interface WebrtcOfferMessage { type: "webrtc_offer"; fromNodeId?: string; toNodeId: string; sdp: string; }
+export interface WebrtcAnswerMessage { type: "webrtc_answer"; fromNodeId?: string; toNodeId: string; sdp: string; }
+export interface IceCandidateMessage { type: "ice_candidate"; fromNodeId?: string; toNodeId: string; candidate: string; }
+
 export interface PingMessage { type: "ping"; }
 export interface PongMessage { type: "pong"; time: number; }
 export interface ErrorMessage { type: "error"; message: string; }
 
 export type InboundMessage =
-  | WelcomeMessage | BlockNewMessage | BlockBackfillMessage | PongMessage | ErrorMessage;
+  | WelcomeMessage | BlockNewMessage | BlockBackfillMessage | PongMessage | ErrorMessage
+  | RelayRosterMessage | RelayPromotedMessage | RelayDemotedMessage
+  | WebrtcOfferMessage | WebrtcAnswerMessage | IceCandidateMessage;
+
+export { EAST_CHAIN_ID };

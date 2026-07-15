@@ -9,6 +9,13 @@
  * smuggling extra fields into `params` that a handler wasn't expecting.
  */
 
+// EIP-155 chain ID for EAST, reserved on ChainList/ethereum-lists ahead of
+// mainnet. NOT enforced anywhere yet — evm-signature.ts currently only does
+// personal_sign (EIP-191) ownership proofs, which don't embed a chain ID.
+// This becomes load-bearing once raw tx signing or EIP-712 typed data is
+// added; wire it in there rather than hardcoding 172026 again elsewhere.
+export const EAST_CHAIN_ID = 172026;
+
 export const CONTRACTS = {
   STAKING: '0x0000000000000000000000000000000000c001',
   VESTING: '0x0000000000000000000000000000000000c002',
@@ -17,6 +24,7 @@ export const CONTRACTS = {
 } as const;
 
 export type ContractAddress = (typeof CONTRACTS)[keyof typeof CONTRACTS];
+
 
 /**
  * function name -> exact list of required param keys (order-independent).

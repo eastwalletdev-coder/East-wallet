@@ -18,6 +18,7 @@ interface PublishHeader {
   validator: string | null;
   timestamp: number;
   epoch: number;
+  signature?: string | null; // secp256k1/EIP-191 sig from chain-signing.ts — null if CHAIN_SIGNING_PRIVATE_KEY unset
 }
 
 export async function publishBlockToRailway(header: PublishHeader): Promise<void> {

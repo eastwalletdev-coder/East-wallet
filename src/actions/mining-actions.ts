@@ -550,6 +550,38 @@ export async function getRecentBlocks(limitCount = 10) {
   }
 }
 
+// ─── Validator votes — on-chain governance log ──────────────────────
+// Reads ledger.contract_calls (the audit log every contract call already
+// writes to in lib/contracts/engine.ts step 8). Votes don't move tokens
+// so they never appear in ledger.blocks/transactions — this is the only
+// place they're queryable, which is why the explorer needs its own
+// section for them instead of piggybacking on getRecentBlocks().
+export async function getRecentValidatorVotes(limitCount = 15) {
+  const { CONTRACTS } = await import('@/lib/contracts/registry');
+  const client = await ledgerPool.connect();
+  try {
+    const res = await client.query(
+      `SELECT call_hash, caller_address, calldata, gas_fee, status, created_at
+       FROM ledger.contract_calls
+       WHERE contract_address = $1 AND function_name = 'vote'
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [CONTRACTS.VALIDATOR, limitCount]
+    );
+    return res.rows.map(r => ({
+      callHash: r.call_hash,
+      callerAddress: r.caller_address,
+      roundId: r.calldata?.roundId ?? null,
+      vote: r.calldata?.vote ?? null,
+      gasFee: Number(r.gas_fee),
+      status: r.status,
+      createdAt: r.created_at,
+    }));
+  } finally {
+    client.release();
+  }
+}
+
 export async function searchExplorer(query: string) {
   const client = await ledgerPool.connect();
   const identityClient = await identityPool.connect();

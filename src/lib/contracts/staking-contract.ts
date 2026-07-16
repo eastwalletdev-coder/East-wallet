@@ -7,6 +7,7 @@
 import { mintFromBucket } from '@/lib/db/ledger';
 import { getTierFromStaked } from '@/lib/ledger';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
+import { signChainHeader } from '@/lib/consensus/chain-signing';
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import crypto from 'crypto';
@@ -50,6 +51,7 @@ async function sealSingleTx(ledgerClient: any, tx: {
   publishBlockToRailway({
     height: blockIndex, hash: blockHash, previousHash: prevHash, merkleRoot,
     validator: validatorId, timestamp, epoch: Math.floor(timestamp / 86_400_000),
+    signature: signChainHeader(blockIndex, blockHash), // BUG FIX: this direct-seal path never signed before — every stake/unstake block was rejected by Light Nodes as "missing signature"
   });
 
   await ledgerClient.query(`

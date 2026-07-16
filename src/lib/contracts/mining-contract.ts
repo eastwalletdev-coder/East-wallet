@@ -7,6 +7,7 @@
 import { mintFromBucket } from '@/lib/db/ledger';
 import { getTierFromStaked } from '@/lib/ledger';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
+import { signChainHeader } from '@/lib/consensus/chain-signing';
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { MINING_REWARD, REFERRAL_BONUS, REFERRAL_CAP, REFERRAL_CLAIM_TRIGGER } from '@/lib/blockchain';
 import { LIGHTNODE_EPOCH_BONUS, LIGHTNODE_MAX_EPOCHS_PER_CLAIM } from '@/lib/lightnode/reward-constants';
@@ -62,6 +63,7 @@ async function sealSingleTx(ledgerClient: any, tx: {
   publishBlockToRailway({
     height: blockIndex, hash: blockHash, previousHash: prevHash, merkleRoot,
     validator: validatorId, timestamp, epoch: Math.floor(timestamp / 86_400_000),
+    signature: signChainHeader(blockIndex, blockHash), // BUG FIX: this direct-seal path never signed before — every claimMiningReward block was rejected by Light Nodes as "missing signature"
   });
 
   await ledgerClient.query(`

@@ -8,6 +8,26 @@ import { PeerMesh } from "./webrtc-peer";
 const STORAGE_KEY = "east_lightnode_state_v1";
 const HEARTBEAT_MS = 20_000;
 const RELAY_STATS_INTERVAL_MS = 30_000; // how often we self-report score inputs to Railway
+
+// Reconnect backoff — matters more now that Railway's hub can sleep after
+// 10 min with zero connections (Serverless mode). The FIRST connection
+// attempt against a sleeping hub commonly fails with a 502 while it cold
+// boots; without a retry, the node would just sit disconnected forever.
+// Backoff doubles each failure up to the cap so a genuinely-down hub
+// doesn't get hammered, but a cold-starting one (usually ready in a few
+// seconds) gets picked up quickly.
+const RECONNECT_BASE_MS = 2_000;
+const RECONNECT_MAX_MS = 30_000;
+// At thousands of concurrent light nodes, a single Railway restart/redeploy
+// drops everyone at once — without jitter, they'd all retry at the exact
+// same instant every round (2s, 4s, 8s...), hammering the hub right as
+// it's warming back up. +/-30% randomization spreads that into a burst
+// instead of a single spike.
+const RECONNECT_JITTER_RATIO = 0.3;
+function withJitter(delayMs: number): number {
+  const jitter = delayMs * RECONNECT_JITTER_RATIO;
+  return Math.round(delayMs - jitter + Math.random() * jitter * 2);
+}
 const MIN_VERIFIED_HEADERS = 2;      // lowered from 5 — empty blocks only seal
                                       // every 30min, so requiring 5 *new* headers
                                       // per session made the header gate far
@@ -176,6 +196,9 @@ export class LightNodeClient {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private participationTimer: ReturnType<typeof setInterval> | null = null;
   private relayStatsTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectDelayMs = RECONNECT_BASE_MS;
+  private manualDisconnect = false;
   private lastHash: string | null = null;
   private pingSentAt = 0;
   private url: string;
@@ -198,6 +221,7 @@ export class LightNodeClient {
         this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
       },
       onPeerDisconnected: (peerNodeId) => {
+        this.log(`Peer mesh: disconnected from ${peerNodeId.slice(0, 8)}…`);
         this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
       },
     });
@@ -234,6 +258,8 @@ export class LightNodeClient {
 
   connect() {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
+    this.manualDisconnect = false;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.set({ connectionStatus: "connecting" });
     this.log("Connecting…");
 
@@ -243,6 +269,7 @@ export class LightNodeClient {
     ws.onopen = () => {
       this.set({ connectionStatus: "connected" });
       this.log("Connected");
+      this.reconnectDelayMs = RECONNECT_BASE_MS; // hub is up — forget any backoff from earlier failed attempts
       ws.send(JSON.stringify({ type: "hello", role: "light-node", nodeId: this.state.nodeId, chainId: EAST_CHAIN_ID }));
       this.startHeartbeat();
       this.startParticipationClock();
@@ -317,6 +344,7 @@ export class LightNodeClient {
 
         case "relay:demoted":
           this.set({ isRelay: false });
+          this.log("Demoted from relay node (fell out of Railway's top tier)");
           break;
 
         case "webrtc_offer":
@@ -340,6 +368,12 @@ export class LightNodeClient {
       this.stopParticipationClock();
       this.stopRelayStats();
       this.peerMesh.disconnectAll();
+
+      if (this.manualDisconnect) return; // user closed it — don't fight that
+      const delay = withJitter(this.reconnectDelayMs);
+      this.log(`Reconnecting in ${Math.round(delay / 1000)}s…`);
+      this.reconnectTimer = setTimeout(() => this.connect(), delay);
+      this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, RECONNECT_MAX_MS);
     };
 
     ws.onerror = () => {
@@ -348,6 +382,8 @@ export class LightNodeClient {
   }
 
   disconnect() {
+    this.manualDisconnect = true;
+    if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.ws?.close();
     this.ws = null;
     this.peerMesh.disconnectAll();

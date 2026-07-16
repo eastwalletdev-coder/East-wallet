@@ -119,6 +119,24 @@ export async function migrateIdentityV2() {
       );
     `);
 
+    // SECURITY FIX: identity.vesting previously had no owner column, and
+    // vesting-contract.ts picked whichever row was most recently created —
+    // meaning ANY telegram_id currently in FOUNDER_IDS (a live, editable env
+    // var) could claim the shared founder pool to their OWN wallet, and the
+    // DB's identity.users.is_founder snapshot was never actually consulted.
+    // founder_telegram_id binds each vesting row to exactly one claimant,
+    // set ONCE on that founder's first successful claim (see vesting-contract.ts)
+    // and never changed after — so later edits to FOUNDER_IDS can't redirect
+    // an already-bound allocation to a different wallet.
+    await client.query(`
+      ALTER TABLE identity.vesting
+      ADD COLUMN IF NOT EXISTS founder_telegram_id VARCHAR(50) DEFAULT NULL;
+    `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_vesting_founder_telegram_id
+      ON identity.vesting(founder_telegram_id) WHERE founder_telegram_id IS NOT NULL;
+    `);
+
     console.log('[EASTCHAIN] Identity schema migration v2 completed');
   } catch (err) {
     console.error('[EASTCHAIN] Identity migration error (non-fatal):', err);

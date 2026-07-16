@@ -8,7 +8,7 @@ import { ShieldCheck, ShieldAlert, Loader2, Crown, CheckCircle2, XCircle, Refres
 import { useTelegram } from "@/hooks/use-telegram";
 import { useToast } from "@/hooks/use-toast";
 import { getValidators, getChainState } from "@/actions/mining-actions";
-import { voteValidatorContract } from "@/actions/contract-actions";
+import { voteValidatorContract, getMyValidatorVote } from "@/actions/contract-actions";
 import { SignatureDialog } from "@/components/SignatureDialog";
 
 // Same default the contract uses when no roundId is supplied — one round
@@ -29,12 +29,17 @@ export default function ValidatorPage() {
   const [pendingVote, setPendingVote] = useState<"approve" | "reject" | null>(null);
   const [sigOpen, setSigOpen] = useState(false);
   const [lastResult, setLastResult] = useState<any>(null);
+  const [myVote, setMyVote] = useState<{ vote: "approve" | "reject"; votedAt: string } | null>(null);
 
   const fetchData = async () => {
     try {
       const [vList, chain] = await Promise.all([getValidators(), getChainState()]);
       setValidators(vList || []);
       setNetworkStatus(chain?.status || "active");
+      if (userId) {
+        const existing = await getMyValidatorVote(userId, todayRoundId());
+        setMyVote(existing);
+      }
     } catch {
       // non-fatal — page still renders with whatever we have
     } finally {
@@ -46,7 +51,7 @@ export default function ValidatorPage() {
     fetchData();
     const interval = setInterval(fetchData, 15_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [userId]);
 
   const myEntry = validators.find(v => v.telegram_id === userId);
   const isValidator = !!myEntry;
@@ -64,6 +69,7 @@ export default function ValidatorPage() {
       const res = await voteValidatorContract(userId, todayRoundId(), pendingVote, initData);
       if (res.success) {
         setLastResult(res.data);
+        setMyVote({ vote: pendingVote, votedAt: new Date().toISOString() });
         toast({
           title: "Vote Broadcast",
           description: res.data?.quorumReached
@@ -129,6 +135,30 @@ export default function ValidatorPage() {
             <p className="text-white/30 text-xs">
               Only active validators can vote. Stake EAST via EastPass to become eligible.
             </p>
+          ) : myVote ? (
+            <div className={`rounded-xl p-3 flex items-center justify-between border ${
+              myVote.vote === "approve"
+                ? "bg-green-500/10 border-green-500/20"
+                : "bg-red-500/10 border-red-500/20"
+            }`}>
+              <div className="flex items-center gap-2">
+                {myVote.vote === "approve"
+                  ? <CheckCircle2 className="w-4 h-4 text-green-400" />
+                  : <XCircle className="w-4 h-4 text-red-400" />}
+                <span className="text-white text-xs font-bold">
+                  You voted <span className="uppercase">{myVote.vote}</span> for round {todayRoundId()}
+                </span>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={voting}
+                onClick={() => requestVote(myVote.vote === "approve" ? "reject" : "approve")}
+                className="h-7 text-[9px] uppercase font-black text-white/40 hover:text-white"
+              >
+                Change
+              </Button>
+            </div>
           ) : (
             <>
               <p className="text-white/40 text-[11px] leading-relaxed">

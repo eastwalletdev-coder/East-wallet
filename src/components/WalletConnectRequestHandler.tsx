@@ -9,6 +9,7 @@ import type { WalletKitTypes } from "@reown/walletkit";
 import { getWalletKit, respondToRequest, rejectRequest } from "@/lib/walletconnect-service";
 import { getEvmSigner } from "@/lib/wallet-service";
 import { formatEther } from "ethers";
+import { EAST_CHAIN_ID } from "@/lib/contracts/registry";
 
 interface WalletConnectRequestHandlerProps {
   mnemonic: string | null;
@@ -20,6 +21,7 @@ const CHAIN_ID_TO_NAME: Record<string, string> = {
   'eip155:1': 'Ethereum',
   'eip155:8453': 'Base',
   'eip155:56': 'BSC',
+  [`eip155:${EAST_CHAIN_ID}`]: 'EAST',
 };
 
 /**

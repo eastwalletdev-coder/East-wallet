@@ -10,6 +10,7 @@
 import { callContract } from '@/lib/contracts/engine';
 import { CONTRACTS } from '@/lib/contracts/registry';
 import { checkClaimCooldown, setClaimCooldown, invalidateCachedUser } from '@/lib/db/redis';
+import { identityPool } from '@/lib/db/identity';
 
 // ─── Staking ─────────────────────────────────────────────────────
 export async function stakeEastContract(
@@ -92,4 +93,21 @@ export async function voteValidatorContract(
   return callContract({
     tgId, initData, contractAddress: CONTRACTS.VALIDATOR, functionName: 'vote', params: { roundId, vote },
   });
+}
+
+// Read-only: does this validator already have a vote recorded for roundId?
+// Without this, the vote page couldn't tell an already-voted state apart
+// from a fresh one, so Approve/Reject kept showing even after a successful
+// vote — looked like the vote "disappeared".
+export async function getMyValidatorVote(tgId: string, roundId: string) {
+  const client = await identityPool.connect();
+  try {
+    const res = await client.query(
+      `SELECT vote, created_at FROM identity.consensus_votes WHERE round_id = $1 AND voter_id = $2 LIMIT 1`,
+      [roundId, tgId]
+    );
+    return res.rows[0] ? { vote: res.rows[0].vote, votedAt: res.rows[0].created_at } : null;
+  } finally {
+    client.release();
+  }
 }

@@ -2,25 +2,34 @@
 
 import { useEffect, useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { Hash, ShieldCheck, Lock, MessageSquare, Database, Archive, PieChart, ChevronRight } from 'lucide-react';
+import { Hash, ShieldCheck, Lock, MessageSquare, Database, Archive, PieChart, ChevronRight, CheckCircle2, XCircle, Vote } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { MAX_SUPPLY, MINING_REWARDS_CAP } from '@/lib/blockchain';
-import { getChainState, getRecentBlocks } from '@/actions/mining-actions';
+import { getChainState, getRecentBlocks, getRecentValidatorVotes } from '@/actions/mining-actions';
 import { BlockDetailSheet } from '@/components/BlockDetailSheet';
+
+function truncate(str: string, start = 8, end = 6) {
+  if (!str || str.length <= start + end) return str;
+  return `${str.slice(0, start)}...${str.slice(-end)}`;
+}
 
 export default function LedgerContent() {
   const [chainState, setChainState] = useState<any>(null);
   const [blocks, setBlocks] = useState<any[]>([]);
+  const [votes, setVotes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedBlock, setSelectedBlock] = useState<number | null>(null);
 
   useEffect(() => {
     async function fetchData() {
       try {
-        const [state, recentBlocks] = await Promise.all([getChainState(), getRecentBlocks(10)]);
+        const [state, recentBlocks, recentVotes] = await Promise.all([
+          getChainState(), getRecentBlocks(10), getRecentValidatorVotes(15),
+        ]);
         setChainState(state);
         setBlocks(recentBlocks);
+        setVotes(recentVotes || []);
       } catch {}
       finally { setLoading(false); }
     }
@@ -147,6 +156,65 @@ export default function LedgerContent() {
             <p className="text-[9px] text-muted-foreground uppercase font-bold text-center">
               Blocks before #{chainState.lastPrunedIndex + 1} archived to Cold Storage
             </p>
+          </div>
+        )}
+      </div>
+
+      {/* Validator Votes — governance calls, recorded in ledger.contract_calls.
+          These don't move tokens so they never form a block/transaction —
+          this section is their only on-chain visibility in the explorer. */}
+      <div className="space-y-2">
+        <p className="text-[9px] text-white/30 uppercase font-black px-1 flex items-center gap-1">
+          <Vote className="w-3 h-3" /> Validator Votes — On-Chain Log
+        </p>
+        {votes.length === 0 ? (
+          <Card className="bg-card/20 border-border/20">
+            <CardContent className="p-6 text-center">
+              <p className="text-white/20 text-xs">No votes recorded yet.</p>
+            </CardContent>
+          </Card>
+        ) : (
+          <div className="space-y-2">
+            {votes.map((v) => {
+              const approved = v.vote === 'approve';
+              return (
+                <Card key={v.callHash} className="bg-card/20 border-border/20">
+                  <CardContent className="px-3 py-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Badge
+                        className={`text-[8px] font-black uppercase border ${
+                          approved
+                            ? 'bg-green-500/10 text-green-400 border-green-500/20'
+                            : 'bg-red-500/10 text-red-400 border-red-500/20'
+                        }`}
+                      >
+                        {approved ? <CheckCircle2 className="w-3 h-3 mr-1" /> : <XCircle className="w-3 h-3 mr-1" />}
+                        {v.vote?.toUpperCase() ?? 'UNKNOWN'}
+                      </Badge>
+                      <span className="text-[9px] text-white/30 uppercase font-bold">Round {v.roundId}</span>
+                    </div>
+                    <div>
+                      <p className="text-[8px] text-white/30 uppercase font-black mb-0.5">TX Hash</p>
+                      <p className="font-mono text-[9px] text-primary/70 break-all">{v.callHash}</p>
+                    </div>
+                    <div>
+                      <p className="text-[8px] text-white/30 uppercase font-black mb-0.5">Voter</p>
+                      <p className="font-mono text-[9px] text-white/60 break-all">{truncate(v.callerAddress)}</p>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1 text-green-500 text-[9px] font-black uppercase">
+                        <ShieldCheck className="w-3 h-3" />{v.status}
+                      </div>
+                      <span className="text-[9px] text-white/30">
+                        {new Date(v.createdAt).toLocaleString('id-ID', {
+                          day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+                        })}
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
         )}
       </div>

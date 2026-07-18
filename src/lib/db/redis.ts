@@ -118,3 +118,37 @@ export async function invalidateCachedUser(telegramId: string): Promise<void> {
     await r.del(`user:${telegramId}`);
   } catch {}
 }
+
+// ─── Archive endpoint rate limit ──────────────────────────────────
+// Used by /api/archive/blocks/[height] (see route.ts). This endpoint used
+// to be served straight from Cloudflare R2 — free egress, no rate limit
+// needed. Now that R2 isn't used and the archive is served directly from
+// Vercel/Postgres instead, every request is a real invocation + DB query,
+// so it's worth capping per-caller volume. Generous enough for a Light
+// Node's own concurrent catch-up batch (see ARCHIVE_CONCURRENCY in
+// lightnode/client.ts), tight enough to blunt casual scraping.
+const ARCHIVE_RATE_LIMIT_PER_WINDOW = 120;
+const ARCHIVE_RATE_WINDOW_SEC = 60;
+
+export async function checkArchiveRateLimit(identifier: string): Promise<{
+  allowed: boolean;
+  remainingSeconds?: number;
+}> {
+  const r = getRedis();
+  if (!r) return { allowed: true }; // fallback: allow if Redis unavailable, same as every other cooldown above
+
+  const key = `archive_rl:${identifier}`;
+  try {
+    const count = await r.incr(key);
+    if (count === 1) {
+      await r.expire(key, ARCHIVE_RATE_WINDOW_SEC);
+    }
+    if (count > ARCHIVE_RATE_LIMIT_PER_WINDOW) {
+      const ttl = await r.ttl(key);
+      return { allowed: false, remainingSeconds: ttl > 0 ? ttl : ARCHIVE_RATE_WINDOW_SEC };
+    }
+    return { allowed: true };
+  } catch {
+    return { allowed: true }; // fail open — an archive hiccup shouldn't block a Light Node's sync
+  }
+}

@@ -6,7 +6,6 @@
 import { ledgerPool } from './db/ledger';
 import { identityPool } from './db/identity';
 import { publishBlockToRailway } from './lightnode-publisher';
-import { archiveBlockToR2 } from './archive/r2-client';
 import { signChainHeader } from './consensus/chain-signing';
 import { getDispatchHandlers, type MempoolRow } from './consensus/tx-dispatch';
 import { planBlockProduction, finalizeProposal, getValidatedProduction } from './consensus/leader-schedule';
@@ -157,7 +156,9 @@ async function sealBlock(
       signature: signChainHeader(blockIndex, blockHash), // null if CHAIN_SIGNING_PRIVATE_KEY unset (secp256k1/EVM sig, see chain-signing.ts)
     };
     publishBlockToRailway(publishedHeader);
-    archiveBlockToR2(publishedHeader); // fire-and-forget, non-fatal — see r2-client.ts
+    // No R2 write here anymore — the archive route reads straight from
+    // ledger.blocks on demand (see src/app/api/archive/blocks/[height]/route.ts),
+    // so there's nothing to archive separately at seal time.
 
     // 2. Insert all transactions
     for (const tx of txs) {

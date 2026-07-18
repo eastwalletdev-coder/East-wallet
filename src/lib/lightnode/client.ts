@@ -41,10 +41,11 @@ const STEP_DELAY_MS = 600;           // pacing so the sync steps are visibly ani
 // headers for backfill (~20) — it's a lightweight relay, not a database.
 // If our gap is bigger than that, Railway alone can't fill it (see
 // verifyHeader's "accept the jump" comment below). Beyond this threshold,
-// fetch the missing range from the permanent R2 archive first — see
-// r2-client.ts (server write side) and catchUpFromArchive() below.
+// fetch the missing range from the app's own archive API first — see
+// src/app/api/archive/blocks/[height]/route.ts (server read side, backed
+// by Postgres — R2 isn't used) and catchUpFromArchive() below.
 const RAILWAY_BACKFILL_LIMIT = 20;
-const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from R2
+const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from the archive API
 
 // Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
 // EIP-191) signature — no more "accepted but not cryptographically
@@ -289,11 +290,14 @@ export class LightNodeClient {
           }
           {
             const gap = msg.latestHeight - this.state.currentHeight;
-            const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL;
+            // NEXT_PUBLIC_ARCHIVE_BASE_URL stays supported for anyone who
+            // still fronts the archive with a custom domain, but normally
+            // this is unset and we just hit the app's own API — no R2.
+            const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
             if (gap > RAILWAY_BACKFILL_LIMIT + 1 && archiveUrl) {
               // Gap bigger than Railway's ring buffer can cover — pull the
-              // older portion from the permanent R2 archive first, then
-              // let Railway's normal backfill handle just the recent tail.
+              // older portion from the archive API first, then let
+              // Railway's normal backfill handle just the recent tail.
               this.catchUpFromArchive(archiveUrl, msg.latestHeight);
             } else {
               this.ws?.send(JSON.stringify({
@@ -438,12 +442,12 @@ export class LightNodeClient {
   }
 
   // Pulls headers for [currentHeight+1 .. latestHeight-RAILWAY_BACKFILL_LIMIT]
-  // from the permanent R2 archive (one small immutable object per height,
-  // see r2-client.ts), verifies each via the exact same hash-chain check
-  // used for Railway's own backfill, then requests the final short tail
-  // from Railway to reach the live tip. If the archive is unreachable or
-  // any fetch fails, falls back to Railway's normal (possibly-truncated)
-  // backfill rather than getting stuck.
+  // from the app's own archive API (backed by Postgres — see
+  // src/app/api/archive/blocks/[height]/route.ts), verifies each via the
+  // exact same hash-chain check used for Railway's own backfill, then
+  // requests the final short tail from Railway to reach the live tip. If
+  // the archive is unreachable or any fetch fails, falls back to
+  // Railway's normal (possibly-truncated) backfill rather than getting stuck.
   private async catchUpFromArchive(archiveBaseUrl: string, latestHeight: number) {
     const targetHeight = latestHeight - RAILWAY_BACKFILL_LIMIT;
     const fromHeight = this.state.currentHeight + 1;
@@ -454,7 +458,7 @@ export class LightNodeClient {
       return;
     }
 
-    this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — fetching archive from R2…`);
+    this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — fetching archive…`);
     this.set({ syncPhase: "downloading", syncProgress: { current: 0, total: totalToFetch } });
 
     const heights: number[] = [];
@@ -466,9 +470,12 @@ export class LightNodeClient {
       const results = await Promise.all(
         batch.map(async (h) => {
           try {
-            const res = await fetch(`${archiveBaseUrl.replace(/\/$/, "")}/blocks/${h}.json`);
+            const res = await fetch(`${archiveBaseUrl.replace(/\/$/, "")}/api/archive/blocks/${h}`);
             if (!res.ok) return { h, header: null };
-            return { h, header: await res.json() };
+            const body = await res.json();
+            if (!body?.success) return { h, header: null };
+            const { success, ...header } = body;
+            return { h, header };
           } catch {
             return { h, header: null };
           }
@@ -493,7 +500,7 @@ export class LightNodeClient {
       }
     }
 
-    this.log(`Archive catch-up complete — ${fetchedCount} block(s) verified from R2`);
+    this.log(`Archive catch-up complete — ${fetchedCount} block(s) verified from archive`);
     // Now ask Railway for just the recent tail to reach the true live tip.
     this.ws?.send(JSON.stringify({
       type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,

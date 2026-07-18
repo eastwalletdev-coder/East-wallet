@@ -5,7 +5,11 @@
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const { initIdentitySchema, migrateIdentityV2, migrateIdentityV3, migrateIdentityV4, migrateIdentityV5, migrateIdentityV6, migrateIdentityV7, backfillKeypairs } = await import('@/lib/db/identity');
+    const {
+      initIdentitySchema, migrateIdentityV2, migrateIdentityV3, migrateIdentityV4,
+      migrateIdentityV5, migrateIdentityV6, migrateIdentityV7, backfillKeypairs,
+      hasStartupChainCompleted, markStartupChainCompleted,
+    } = await import('@/lib/db/identity');
     const { initLedgerSchema, migrateSchemaV2, migrateLedgerV3, migrateLedgerV4, migrateLedgerV5, migrateLedgerV6, migrateContractSchema } = await import('@/lib/db/ledger');
     const { runEpoch } = await import('@/lib/poc-engine');
 
@@ -15,47 +19,63 @@ export async function register() {
     // serverless instance — that would take down unrelated requests
     // (e.g. /api/cooldown) that have nothing to do with schema setup.
     try {
-      // Initialize schemas
-      await initIdentitySchema();
-      await initLedgerSchema();
-      await migrateIdentityV2();
-      await migrateSchemaV2();
-      await migrateLedgerV3();
-      await migrateLedgerV4();
-      await migrateLedgerV5();
-      await migrateLedgerV6();
-      await migrateIdentityV3();
-      await migrateIdentityV4();
-      await migrateIdentityV5();
-      await migrateIdentityV6();
-      await migrateIdentityV7();
-      await migrateContractSchema();
+      // Schema init + every migrateXxx() below only need to actually run
+      // ONCE per deployment — they used to re-run this full 13+ round-trip
+      // chain on every cold start (every fresh/idle serverless instance),
+      // which was blocking requests to rarely-warm routes (e.g.
+      // /api/archive/blocks/[height]) long enough to hit Vercel's function
+      // timeout and 504. hasStartupChainCompleted()/markStartupChainCompleted()
+      // gate this behind a flag row so a warm-but-not-yet-flagged deploy
+      // still runs it exactly once, and every cold start after that skips
+      // straight past it.
+      const alreadyDone = await hasStartupChainCompleted();
 
-      // Backfill Ed25519 public keys
-      try {
-        const { updated, total } = await backfillKeypairs();
-        if (total > 0) console.log(`[EASTCHAIN] Keypair backfill — ${updated}/${total} users updated`);
-      } catch (err) {
-        console.error('[EASTCHAIN] Keypair backfill error (non-fatal):', err);
+      if (!alreadyDone) {
+        await initIdentitySchema();
+        await initLedgerSchema();
+        await migrateIdentityV2();
+        await migrateSchemaV2();
+        await migrateLedgerV3();
+        await migrateLedgerV4();
+        await migrateLedgerV5();
+        await migrateLedgerV6();
+        await migrateIdentityV3();
+        await migrateIdentityV4();
+        await migrateIdentityV5();
+        await migrateIdentityV6();
+        await migrateIdentityV7();
+        await migrateContractSchema();
+        await markStartupChainCompleted();
+        console.log('[EASTCHAIN] Startup schema chain completed — will be skipped on future cold starts');
       }
 
-      // ── Phase C: Recovery sync from @eastchainledger ────────────────────
-      try {
-        await recoverFromChannel();
-      } catch (err) {
+      // Everything below is non-critical background work — fire-and-forget
+      // (not awaited) so it never blocks THIS instance's first request,
+      // which is what turned a slow keypair backfill / channel recovery /
+      // epoch run into a request-blocking 504 before. Each already has its
+      // own non-fatal error handling.
+      backfillKeypairs()
+        .then(({ updated, total }) => {
+          if (total > 0) console.log(`[EASTCHAIN] Keypair backfill — ${updated}/${total} users updated`);
+        })
+        .catch((err) => console.error('[EASTCHAIN] Keypair backfill error (non-fatal):', err));
+
+      // Phase C: Recovery sync from @eastchainledger
+      recoverFromChannel().catch((err) => {
         console.error('[EASTCHAIN] Channel recovery sync error (non-fatal):', err);
-      }
+      });
 
       // Run first epoch on startup
-      await runEpoch();
-
-      console.log('[EASTCHAIN] Server initialized — PoC epoch scheduler active');
+      runEpoch()
+        .then(() => console.log('[EASTCHAIN] Server initialized — PoC epoch scheduler active'))
+        .catch((err) => console.error('[EASTCHAIN] Startup epoch run error (non-fatal):', err));
     } catch (err) {
-      // Schema init / migration / first-epoch failed (most likely a DB
-      // connection error). Log it loudly but let the function continue
-      // serving requests — individual routes already guard their own DB
-      // calls, so a failed startup pass here shouldn't take the whole
-      // app down. It will simply retry on the next cold start.
+      // Schema init / migration failed (most likely a DB connection
+      // error) BEFORE markStartupChainCompleted() ran — the flag was
+      // never set, so this naturally retries on the next cold start.
+      // Log it loudly but let the function continue serving requests —
+      // individual routes already guard their own DB calls, so a failed
+      // startup pass here shouldn't take the whole app down.
       console.error('[EASTCHAIN] Startup initialization failed (non-fatal, will retry next cold start):', err);
     }
 

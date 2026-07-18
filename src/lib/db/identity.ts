@@ -206,6 +206,46 @@ export async function migrateIdentityV4() {
   }
 }
 
+// ─── Startup chain guard ──────────────────────────────────────────────
+// Vercel spins up a fresh Node process per new/idle serverless instance,
+// and Next.js instrumentation's register() re-runs on every single one —
+// including for routes that rarely have a warm instance (e.g.
+// /api/archive/blocks/[height], which catchUpFromArchive() can hit with
+// several concurrent requests at once). Re-running the full schema
+// init + migration chain (13+ sequential DB round trips) on every cold
+// start was blocking those requests long enough to hit Vercel's function
+// timeout (504) before the route handler even started. This flag makes
+// that chain a true one-time-per-deployment operation instead — same
+// pattern already used by migrateIdentityV4's schema_flags check above.
+export async function hasStartupChainCompleted(): Promise<boolean> {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.schema_flags (
+        flag TEXT PRIMARY KEY,
+        applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    const { rows } = await client.query(
+      `SELECT 1 FROM identity.schema_flags WHERE flag = 'startup_chain_v1_completed'`
+    );
+    return rows.length > 0;
+  } finally {
+    client.release();
+  }
+}
+
+export async function markStartupChainCompleted(): Promise<void> {
+  const client = await identityPool.connect();
+  try {
+    await client.query(
+      `INSERT INTO identity.schema_flags (flag) VALUES ('startup_chain_v1_completed') ON CONFLICT DO NOTHING;`
+    );
+  } finally {
+    client.release();
+  }
+}
+
 // ─── Migration v5: external-wallet linking column (contract engine) ─────
 // Nullable, unused until a "link my MetaMask" flow is built. Reserved so
 // that lib/contracts/engine.ts can verify an EVM signature's recovered

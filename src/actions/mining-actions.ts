@@ -68,9 +68,9 @@ async function sealSingleTx(
   const merkleRoot = computeMerkleRoot([tx.txHash]);
   const sequenceHash = computeSequenceHash(prevHash, blockIndex, timestamp);
   const blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, 1);
-  // Leader-proposal mode: if 2+ external validator nodes are verified live,
-  // credit one of them via deterministic rotation (see leader-schedule.ts).
-  // Falls back to the original top-score behavior below < 2 active nodes.
+  // Leader-proposal mode: if 1+ external/self-custody node is verified live,
+  // credit the highest-scored one currently reachable (see leader-schedule.ts).
+  // Falls back to the original top-score behavior when nobody is active.
   const validatorId = (await resolveBlockProducer(blockIndex)) ?? await getActiveValidator();
 
   // Create block
@@ -577,6 +577,35 @@ export async function getRecentValidatorVotes(limitCount = 15) {
       status: r.status,
       createdAt: r.created_at,
     }));
+  } finally {
+    client.release();
+  }
+}
+
+// ─── Contract call stats — for the explorer's Contracts tab ───────────
+// Aggregates ledger.contract_calls per contract address. Purely a display
+// helper (call volume, last activity) — the actual whitelist enforcement
+// lives in registry.ts/engine.ts and doesn't depend on this at all.
+export async function getContractCallStats() {
+  const client = await ledgerPool.connect();
+  try {
+    const res = await client.query(`
+      SELECT contract_address,
+             COUNT(*) AS total_calls,
+             COUNT(*) FILTER (WHERE status = 'success') AS success_calls,
+             MAX(created_at) AS last_call_at
+      FROM ledger.contract_calls
+      GROUP BY contract_address
+    `);
+    const byAddress: Record<string, { totalCalls: number; successCalls: number; lastCallAt: string | null }> = {};
+    for (const row of res.rows) {
+      byAddress[row.contract_address] = {
+        totalCalls: Number(row.total_calls),
+        successCalls: Number(row.success_calls),
+        lastCallAt: row.last_call_at,
+      };
+    }
+    return byAddress;
   } finally {
     client.release();
   }

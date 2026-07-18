@@ -33,6 +33,11 @@ export interface PeerMeshCallbacks {
   onPeerHeader: (peerNodeId: string, header: unknown) => void;
   onPeerConnected?: (peerNodeId: string) => void;
   onPeerDisconnected?: (peerNodeId: string) => void;
+  /** A peer is asking whether we have blocks in this range in our local
+   *  (min. 1000 block) cache — see BLOCK_CACHE_SIZE in client.ts. */
+  onBackfillRequest?: (peerNodeId: string, fromHeight: number, toHeight: number) => void;
+  /** A peer answered one of our backfill requests with headers it had cached. */
+  onBackfillResponse?: (peerNodeId: string, headers: unknown[]) => void;
 }
 
 interface Peer {
@@ -103,6 +108,25 @@ export class PeerMesh {
     });
   }
 
+  /** Ask every connected peer whether they have this height range in their
+   *  local cache. Whoever does answers via onBackfillResponse. Best-effort
+   *  broadcast — this is what "R2 archive" was replaced with: the swarm
+   *  itself, not a central store. */
+  requestBackfill(fromHeight: number, toHeight: number) {
+    const msg = JSON.stringify({ kind: "backfill_request", fromHeight, toHeight });
+    this.peers.forEach((peer) => {
+      if (peer.channel?.readyState === "open") peer.channel.send(msg);
+    });
+  }
+
+  /** Answer a specific peer's backfill_request with whatever headers we had cached. */
+  respondBackfill(peerNodeId: string, headers: unknown[]) {
+    const peer = this.peers.get(peerNodeId);
+    if (peer?.channel?.readyState === "open") {
+      peer.channel.send(JSON.stringify({ kind: "backfill_response", headers }));
+    }
+  }
+
   disconnect(peerNodeId: string) {
     const peer = this.peers.get(peerNodeId);
     if (!peer) return;
@@ -144,6 +168,10 @@ export class PeerMesh {
         const parsed = JSON.parse(ev.data);
         if (parsed?.kind === "header" && parsed.header) {
           this.callbacks.onPeerHeader(peerNodeId, parsed.header);
+        } else if (parsed?.kind === "backfill_request" && typeof parsed.fromHeight === "number" && typeof parsed.toHeight === "number") {
+          this.callbacks.onBackfillRequest?.(peerNodeId, parsed.fromHeight, parsed.toHeight);
+        } else if (parsed?.kind === "backfill_response" && Array.isArray(parsed.headers)) {
+          this.callbacks.onBackfillResponse?.(peerNodeId, parsed.headers);
         }
       } catch {
         // Malformed peer payload — drop it. Not our job to police the peer's

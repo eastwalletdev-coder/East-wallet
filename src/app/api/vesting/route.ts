@@ -8,7 +8,7 @@ export async function GET() {
       const res = await client.query(`
         SELECT 
           label, total_amount, unlocked_amount, monthly_release,
-          start_date, next_unlock, months_released, total_months, is_completed
+          start_date, next_unlock, months_released, total_months, cliff_months, is_completed
         FROM identity.vesting
         ORDER BY created_at DESC
         LIMIT 1

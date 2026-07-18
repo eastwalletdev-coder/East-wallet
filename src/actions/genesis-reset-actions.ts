@@ -29,6 +29,14 @@ import { sealBlock, type PendingTx } from '@/lib/block-engine';
 
 const SYSTEM_ADDRESS = '0x0000000000000000000000000000000000000000';
 const RESTORE_BATCH_SIZE = 10; // mirrors MAX_TX_PER_BLOCK in block-engine.ts
+const FOUNDER_IDS = (process.env.FOUNDER_IDS || '').split(',').map((id) => id.trim()).filter(Boolean);
+
+// New founder vesting terms (per whitepaper update): 12-month cliff, then
+// released monthly for 36 more months — 48 months total before fully
+// unlocked. Total allocation unchanged at 50,000,000 EAST.
+const FOUNDER_VESTING_TOTAL = 50_000_000;
+const FOUNDER_VESTING_CLIFF_MONTHS = 12;
+const FOUNDER_VESTING_RELEASE_MONTHS = 36; // releases AFTER the cliff — total duration = 12 + 36 = 48
 
 function generateTxHash(type: string, id: string): string {
   return '0x' + crypto.createHash('sha256')
@@ -92,9 +100,15 @@ export async function resetGenesisChain(): Promise<GenesisResetResult> {
     `);
 
     // ── 4. Restore balances via REAL on-chain GENESIS_RESTORE tx ──────
+    // Founders are deliberately EXCLUDED — their allocation now comes
+    // exclusively from the fresh vesting schedule set up in step 6, not
+    // from whatever balance they happened to hold before the reset. Their
+    // snapshot row still exists (for audit purposes) but `restored` stays
+    // false forever for them.
     let blocksCreated = 0;
     let usersRestored = 0;
-    const toRestore = snapshots.filter(s => Number(s.balance) > 0);
+    const toRestore = snapshots.filter(s => Number(s.balance) > 0 && !FOUNDER_IDS.includes(s.telegram_id));
+    const foundersExcluded = snapshots.filter(s => FOUNDER_IDS.includes(s.telegram_id)).length;
 
     for (let i = 0; i < toRestore.length; i += RESTORE_BATCH_SIZE) {
       const batch = toRestore.slice(i, i + RESTORE_BATCH_SIZE);
@@ -147,7 +161,8 @@ export async function resetGenesisChain(): Promise<GenesisResetResult> {
     }
 
     // ── 5. Restore staking positions directly (not a transfer, so not a tx) ──
-    const stakedToRestore = snapshots.filter(s => Number(s.staked_amount) > 0);
+    // ── 5. Restore staking positions directly (not a transfer, so not a tx) ──
+    const stakedToRestore = snapshots.filter(s => Number(s.staked_amount) > 0 && !FOUNDER_IDS.includes(s.telegram_id));
     for (const s of stakedToRestore) {
       await identityPool.query(
         `UPDATE identity.users SET staked_amount = $1, stake_locked_until = $2, updated_at = NOW() WHERE telegram_id = $3`,
@@ -155,7 +170,36 @@ export async function resetGenesisChain(): Promise<GenesisResetResult> {
       );
     }
 
-    console.log(`[EASTCHAIN] Genesis reset ${resetBatchId} COMPLETE: ${usersRestored}/${toRestore.length} balance(s) restored across ${blocksCreated} block(s), ${stakedToRestore.length} stake(s) restored`);
+    // ── 6. Reset founder vesting to the new schedule (12-month cliff,
+    // then monthly for 36 more months — 48 total). This always REPLACES
+    // progress, even if a schedule already existed and was partway
+    // through — a genesis reset is a fresh start for the founder
+    // allocation too, not just user balances.
+    const vestingStart = new Date();
+    const vestingFirstUnlock = new Date(vestingStart);
+    vestingFirstUnlock.setMonth(vestingFirstUnlock.getMonth() + FOUNDER_VESTING_CLIFF_MONTHS);
+    await identityPool.query(`
+      UPDATE identity.vesting SET
+        total_amount = $1,
+        unlocked_amount = 0,
+        monthly_release = $2,
+        start_date = $3,
+        next_unlock = $4,
+        months_released = 0,
+        total_months = $5,
+        cliff_months = $6,
+        is_completed = FALSE
+    `, [
+      FOUNDER_VESTING_TOTAL,
+      FOUNDER_VESTING_TOTAL / FOUNDER_VESTING_RELEASE_MONTHS,
+      vestingStart.toISOString(),
+      vestingFirstUnlock.toISOString(),
+      FOUNDER_VESTING_RELEASE_MONTHS,
+      FOUNDER_VESTING_CLIFF_MONTHS,
+    ]);
+    console.log(`[EASTCHAIN] Genesis reset ${resetBatchId}: founder vesting reset — ${FOUNDER_VESTING_CLIFF_MONTHS}mo cliff, then ${FOUNDER_VESTING_RELEASE_MONTHS}mo of releases, first claimable ${vestingFirstUnlock.toISOString()}`);
+
+    console.log(`[EASTCHAIN] Genesis reset ${resetBatchId} COMPLETE: ${usersRestored}/${toRestore.length} balance(s) restored across ${blocksCreated} block(s), ${stakedToRestore.length} stake(s) restored, ${foundersExcluded} founder(s) excluded from restore`);
 
     return {
       success: true,

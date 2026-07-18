@@ -89,7 +89,37 @@ export async function setCachedValidators(validators: any[]): Promise<void> {
   await r.set('validators:top10', validators, { ex: 24 * 60 * 60 });
 }
 
-// ─── User balance cache (TTL 30s) ────────────────────────────────
+// ─── Archive endpoint rate limit ──────────────────────────────────
+// Protects /api/archive/blocks/[heightJson] (Postgres-backed R2 fallback,
+// see that route's comments) from being hammered — each request opens a
+// real Postgres connection, unlike a CDN-cached R2 object. Fixed-window
+// counter via INCR+EXPIRE; shared across all Vercel instances since it's
+// Redis, not per-instance memory. Fails OPEN (allowed:true) if Redis isn't
+// configured — same philosophy as every other function in this file, and
+// consistent with this endpoint being read-only public block data anyway
+// (worst case without Redis: no rate limit, not a data leak).
+const ARCHIVE_RATE_LIMIT_WINDOW_SEC = 10;
+const ARCHIVE_RATE_LIMIT_MAX = 30; // ~3/sec sustained — plenty for a Light Node catching up dozens of blocks, too slow to be worth DB-hammering with
+
+export async function checkArchiveRateLimit(ip: string): Promise<{ allowed: boolean; remainingSeconds?: number }> {
+  const r = getRedis();
+  if (!r) return { allowed: true };
+
+  try {
+    const key = `archive-rl:${ip}`;
+    const count = await r.incr(key);
+    if (count === 1) {
+      await r.expire(key, ARCHIVE_RATE_LIMIT_WINDOW_SEC);
+    }
+    if (count > ARCHIVE_RATE_LIMIT_MAX) {
+      const ttl = await r.ttl(key);
+      return { allowed: false, remainingSeconds: ttl > 0 ? ttl : ARCHIVE_RATE_LIMIT_WINDOW_SEC };
+    }
+    return { allowed: true };
+  } catch {
+    return { allowed: true }; // Redis error — fail open, same as everywhere else in this file
+  }
+}
 // Read path only — write always goes to Postgres first
 const USER_CACHE_TTL = 30; // seconds
 

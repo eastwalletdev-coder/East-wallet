@@ -2,10 +2,9 @@
 //
 // FIXED: this used to have its OWN inline block-sealing SQL, completely
 // bypassing block-engine.ts's sealBlock() — which meant empty blocks
-// sealed here never got a chain signature (chain-signing.ts) and never
-// got archived to R2 (r2-client.ts). Now routes through the same
-// attemptSealOrPropose()/sealBlock() every other block goes through, so
-// signing + R2 archiving + leader-proposal handling all apply uniformly.
+// sealed here never got a chain signature (chain-signing.ts). Now routes
+// through the same attemptSealOrPropose()/sealBlock() every other block
+// goes through, so signing + leader-proposal handling all apply uniformly.
 import { NextRequest, NextResponse } from 'next/server';
 import { identityPool } from '@/lib/db/identity';
 import { attemptSealOrPropose } from '@/lib/block-engine';

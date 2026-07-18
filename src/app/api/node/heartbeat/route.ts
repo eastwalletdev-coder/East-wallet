@@ -5,11 +5,13 @@
 //
 // Body: { telegramId, timestampMs, signature }
 // The node signs `HEARTBEAT|{telegramId}|{timestampMs}` with its
-// self-custody key. We verify against identity.users.self_custody_pubkey
-// (the same key registered via registerSelfCustody) and require the
-// telegramId to already be an active validator (elected by runEpoch) —
-// heartbeating in does not grant validator status by itself, it only
-// proves liveness for someone already elected.
+// self-custody key, verified against identity.users.self_custody_pubkey
+// (the same key registered via registerSelfCustody). Does NOT require
+// telegramId to already be an "elected" validator (top-N PoC winner from
+// runEpoch()) — any self-custody node can heartbeat in and become a
+// fallback production candidate, ranked last by score until it earns a
+// real one. See recordValidatorHeartbeat()/getActiveExternalValidators()
+// in identity.ts and leader-schedule.ts's score-priority pickLeader().
 import { NextRequest, NextResponse } from 'next/server';
 import { identityPool, recordValidatorHeartbeat } from '@/lib/db/identity';
 import { verifySignature } from '@/lib/keypair-service';
@@ -30,28 +32,22 @@ export async function POST(req: NextRequest) {
 
     const client = await identityPool.connect();
     let pubkey: string | null = null;
-    let isActiveValidator = false;
+    let walletAddress: string | null = null;
     try {
       const res = await client.query(
-        `SELECT u.self_custody_pubkey, v.is_active
-         FROM identity.users u
-         LEFT JOIN identity.validators v ON v.telegram_id = u.telegram_id
-         WHERE u.telegram_id = $1`,
+        `SELECT self_custody_pubkey, wallet_address FROM identity.users WHERE telegram_id = $1`,
         [telegramId]
       );
       if (res.rows.length > 0) {
         pubkey = res.rows[0].self_custody_pubkey;
-        isActiveValidator = res.rows[0].is_active === true;
+        walletAddress = res.rows[0].wallet_address;
       }
     } finally {
       client.release();
     }
 
-    if (!pubkey) {
+    if (!pubkey || !walletAddress) {
       return NextResponse.json({ success: false, error: 'SELF_CUSTODY_REQUIRED' }, { status: 403 });
-    }
-    if (!isActiveValidator) {
-      return NextResponse.json({ success: false, error: 'NOT_AN_ACTIVE_VALIDATOR' }, { status: 403 });
     }
 
     const message = `HEARTBEAT|${telegramId}|${timestampMs}`;
@@ -60,7 +56,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'INVALID_SIGNATURE' }, { status: 401 });
     }
 
-    await recordValidatorHeartbeat(telegramId);
+    await recordValidatorHeartbeat(telegramId, walletAddress);
     return NextResponse.json({ success: true });
   } catch (err: any) {
     console.error('[EASTCHAIN] heartbeat error:', err);

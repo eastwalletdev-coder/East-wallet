@@ -101,37 +101,37 @@ export function CreateWalletDialog({
     setStep('submitting');
     try {
       const result = await registerWithServer(wallet.mnemonic);
-      if (!result.success) { setError(`Gagal: ${result.error}`); setStep('intro'); return; }
-      toast({ title: mode === 'new' ? 'Wallet EAST siap' : 'Upgrade berhasil', description: 'Alamat sama seperti di tab Wallet.' });
+      if (!result.success) { setError(`Failed: ${result.error}`); setStep('intro'); return; }
+      toast({ title: mode === 'new' ? 'EAST wallet ready' : 'Upgrade successful', description: 'Same address as in the Wallet tab.' });
       onSuccess(result.user);
       onOpenChange(false);
       reset();
     } catch (err: any) {
-      setError(err?.message || 'Terjadi kesalahan, coba lagi');
+      setError(err?.message || 'Something went wrong, try again');
       setStep('intro');
     }
   };
 
   // Case 2: vault exists but locked — unlock with existing password, then register.
   const handleUnlockExisting = async () => {
-    if (!password) { setError('Masukkan password wallet kamu'); return; }
+    if (!password) { setError('Enter your wallet password'); return; }
     setError('');
     setStep('submitting');
     try {
       const ok = await wallet.unlock(password); // syncs global context too (Wallet tab)
-      if (!ok) { setError('Password salah'); setStep('unlockPassword'); return; }
+      if (!ok) { setError('Incorrect password'); setStep('unlockPassword'); return; }
       // Re-derive directly from the entered password rather than waiting on
       // context state, since setState from unlock() won't be visible yet
       // in this same closure.
       const phrase = await decryptVaultMnemonic(password);
       const result = await registerWithServer(phrase);
-      if (!result.success) { setError(`Gagal: ${result.error}`); setStep('unlockPassword'); return; }
-      toast({ title: mode === 'new' ? 'Wallet EAST siap' : 'Upgrade berhasil', description: 'Alamat sama seperti di tab Wallet.' });
+      if (!result.success) { setError(`Failed: ${result.error}`); setStep('unlockPassword'); return; }
+      toast({ title: mode === 'new' ? 'EAST wallet ready' : 'Upgrade successful', description: 'Same address as in the Wallet tab.' });
       onSuccess(result.user);
       onOpenChange(false);
       reset();
     } catch (err: any) {
-      setError(err?.message || 'Password salah atau terjadi kesalahan');
+      setError(err?.message || 'Incorrect password or something went wrong');
       setStep('unlockPassword');
     }
   };
@@ -152,24 +152,24 @@ export function CreateWalletDialog({
 
   // Case 3, step B: set a NEW password, persist to 'east_vault', register.
   const handleCreateNew = async () => {
-    if (password.length < 8) { setError('Password minimal 8 karakter'); return; }
-    if (password !== confirmPassword) { setError('Konfirmasi password tidak cocok'); return; }
+    if (password.length < 8) { setError('Password must be at least 8 characters'); return; }
+    if (password !== confirmPassword) { setError("Passwords don't match"); return; }
     setError('');
     setStep('submitting');
     try {
       const result = await registerWithServer(pendingMnemonic);
-      if (!result.success) { setError(`Gagal membuat wallet: ${result.error}`); setStep('setPassword'); return; }
+      if (!result.success) { setError(`Failed to create wallet: ${result.error}`); setStep('setPassword'); return; }
 
       // Persist AFTER server confirms — same phrase shown during backup,
       // now becomes the one and only vault for EAST + multi-chain both.
       await wallet.createWallet(password, pendingMnemonic);
 
-      toast({ title: 'Wallet berhasil dibuat', description: 'Satu wallet ini juga dipakai di tab Wallet (multi-chain).' });
+      toast({ title: 'Wallet created successfully', description: 'This one wallet is also used in the Wallet tab (multi-chain).' });
       onSuccess(result.user);
       onOpenChange(false);
       reset();
     } catch (err: any) {
-      setError(err?.message || 'Terjadi kesalahan, coba lagi');
+      setError(err?.message || 'Something went wrong, try again');
       setStep('setPassword');
     }
   };
@@ -182,26 +182,26 @@ export function CreateWalletDialog({
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 {wallet.mnemonic ? <WalletIcon className="w-5 h-5 text-primary" /> : <ShieldCheck className="w-5 h-5 text-primary" />}
-                {mode === 'new' ? 'Buat Wallet EAST Kamu' : 'Upgrade ke Self-Custody'}
+                {mode === 'new' ? 'Create Your EAST Wallet' : 'Upgrade to Self-Custody'}
               </DialogTitle>
               <DialogDescription>
                 {wallet.mnemonic
-                  ? 'Wallet multi-chain kamu sudah aktif. Alamat yang sama akan dipakai untuk EAST native — tidak perlu bikin wallet baru.'
+                  ? 'Your multi-chain wallet is already active. The same address will be used for EAST native — no need to create a new wallet.'
                   : wallet.hasPassword
-                    ? 'Kamu sudah punya wallet (dipakai di tab Wallet). Masukkan password-nya untuk pakai alamat yang sama untuk EAST — tidak perlu recovery phrase baru.'
+                    ? 'You already have a wallet (used in the Wallet tab). Enter its password to use the same address for EAST — no new recovery phrase needed.'
                     : mode === 'new'
-                      ? 'Sebelum mulai mining, kamu perlu wallet EVM-compatible sungguhan — private key dibuat & disimpan di device kamu sendiri. Wallet ini juga otomatis jadi wallet kamu di tab Wallet (multi-chain).'
-                      : 'Wallet kamu saat ini pakai alamat sementara (bukan hasil keypair asli). Upgrade untuk dapat alamat EVM asli yang kamu kontrol sepenuhnya — dipakai juga di tab Wallet.'}
+                      ? 'Before you start mining, you need a real EVM-compatible wallet — the private key is generated and stored on your own device. This wallet also automatically becomes your wallet in the Wallet tab (multi-chain).'
+                      : 'Your wallet currently uses a temporary address (not a real generated keypair). Upgrade to get a real EVM address fully controlled by you — also used in the Wallet tab.'}
               </DialogDescription>
             </DialogHeader>
             {error && <p className="text-sm text-destructive">{error}</p>}
             {wallet.mnemonic ? (
               <>
                 <p className="text-[10px] text-muted-foreground break-all font-mono">{address}</p>
-                <Button onClick={handleUseUnlockedWallet} className="w-full">Gunakan Wallet Ini</Button>
+                <Button onClick={handleUseUnlockedWallet} className="w-full">Use This Wallet</Button>
               </>
             ) : wallet.hasPassword ? (
-              <Button onClick={() => setStep('unlockPassword')} className="w-full">Masukkan Password</Button>
+              <Button onClick={() => setStep('unlockPassword')} className="w-full">Enter Password</Button>
             ) : (
               <Button onClick={handleGenerate} className="w-full">Generate Wallet</Button>
             )}
@@ -212,7 +212,7 @@ export function CreateWalletDialog({
           <>
             <DialogHeader>
               <DialogTitle>Unlock Wallet</DialogTitle>
-              <DialogDescription>Masukkan password wallet kamu yang sudah ada (yang dipakai di tab Wallet).</DialogDescription>
+              <DialogDescription>Enter your existing wallet password (the one used in the Wallet tab).</DialogDescription>
             </DialogHeader>
             <div>
               <Label htmlFor="unlock-pw">Password</Label>
@@ -220,7 +220,7 @@ export function CreateWalletDialog({
               {error && <p className="text-sm text-destructive mt-1">{error}</p>}
             </div>
             <DialogFooter>
-              <Button onClick={handleUnlockExisting} className="w-full">Unlock & Lanjut</Button>
+              <Button onClick={handleUnlockExisting} className="w-full">Unlock & Continue</Button>
             </DialogFooter>
           </>
         )}
@@ -228,29 +228,29 @@ export function CreateWalletDialog({
         {step === 'backup' && (
           <>
             <DialogHeader>
-              <DialogTitle>Simpan Recovery Phrase</DialogTitle>
-              <DialogDescription>24 kata ini adalah satu-satunya cara memulihkan wallet kamu (EAST & multi-chain). Jangan share ke siapa pun.</DialogDescription>
+              <DialogTitle>Save Recovery Phrase</DialogTitle>
+              <DialogDescription>These 24 words are the only way to recover your wallet (EAST & multi-chain). Never share them with anyone.</DialogDescription>
             </DialogHeader>
             <Alert variant="destructive" className="mb-2">
               <AlertTriangle className="w-4 h-4" />
-              <AlertDescription>Kalau hilang, wallet & saldo tidak bisa dipulihkan. Tulis di kertas, jangan screenshot.</AlertDescription>
+              <AlertDescription>If lost, your wallet and balance cannot be recovered. Write it on paper — don't screenshot it.</AlertDescription>
             </Alert>
             <div className="grid grid-cols-3 gap-2 p-3 rounded-md bg-muted font-mono text-xs">
               {pendingMnemonic.split(' ').map((w, i) => (
                 <div key={i}><span className="text-muted-foreground">{i + 1}.</span> {w}</div>
               ))}
             </div>
-            <p className="text-[10px] text-muted-foreground break-all mt-1">Alamat: {address}</p>
+            <p className="text-[10px] text-muted-foreground break-all mt-1">Address: {address}</p>
             <Button variant="outline" size="sm" onClick={handleCopyMnemonic} className="w-fit">
               {copied ? <CheckCheck className="w-4 h-4 mr-1" /> : <Copy className="w-4 h-4 mr-1" />}
-              {copied ? 'Disalin' : 'Salin phrase'}
+              {copied ? 'Copied' : 'Copy phrase'}
             </Button>
             <div className="flex items-center gap-2 mt-2">
               <Checkbox id="backedUp" checked={backedUp} onCheckedChange={(v) => setBackedUp(v === true)} />
-              <Label htmlFor="backedUp" className="text-sm">Saya sudah menyimpan recovery phrase ini dengan aman</Label>
+              <Label htmlFor="backedUp" className="text-sm">I have safely stored this recovery phrase</Label>
             </div>
             <DialogFooter>
-              <Button disabled={!backedUp} onClick={() => setStep('setPassword')} className="w-full">Lanjut</Button>
+              <Button disabled={!backedUp} onClick={() => setStep('setPassword')} className="w-full">Continue</Button>
             </DialogFooter>
           </>
         )}
@@ -258,23 +258,23 @@ export function CreateWalletDialog({
         {step === 'setPassword' && (
           <>
             <DialogHeader>
-              <DialogTitle>Amankan dengan Password</DialogTitle>
-              <DialogDescription>Password ini mengenkripsi wallet di device kamu (dipakai juga untuk buka tab Wallet). Server tidak pernah menerima password atau private key.</DialogDescription>
+              <DialogTitle>Secure with a Password</DialogTitle>
+              <DialogDescription>This password encrypts your wallet on this device (also used to unlock the Wallet tab). The server never receives your password or private key.</DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div>
                 <Label htmlFor="pw">Password</Label>
-                <Input id="pw" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Minimal 8 karakter" />
+                <Input id="pw" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 8 characters" />
               </div>
               <div>
-                <Label htmlFor="pw2">Konfirmasi Password</Label>
+                <Label htmlFor="pw2">Confirm Password</Label>
                 <Input id="pw2" type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} />
               </div>
               {error && <p className="text-sm text-destructive">{error}</p>}
             </div>
             <DialogFooter>
               <Button onClick={handleCreateNew} className="w-full">
-                {mode === 'new' ? 'Buat Wallet & Mulai Mining' : 'Konfirmasi Upgrade'}
+                {mode === 'new' ? 'Create Wallet & Start Mining' : 'Confirm Upgrade'}
               </Button>
             </DialogFooter>
           </>
@@ -283,7 +283,7 @@ export function CreateWalletDialog({
         {step === 'submitting' && (
           <div className="flex flex-col items-center justify-center py-8 gap-3">
             <Loader2 className="w-6 h-6 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">Menyimpan wallet...</p>
+            <p className="text-sm text-muted-foreground">Saving wallet...</p>
           </div>
         )}
       </DialogContent>

@@ -206,7 +206,7 @@ export default function LedgerContent() {
                         <ShieldCheck className="w-3 h-3" />{v.status}
                       </div>
                       <span className="text-[9px] text-white/30">
-                        {new Date(v.createdAt).toLocaleString('id-ID', {
+                        {new Date(v.createdAt).toLocaleString('en-US', {
                           day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
                         })}
                       </span>

@@ -94,6 +94,20 @@ export async function execute(
   const vesting = vestingRes.rows[0];
 
   if (vesting.is_completed) return { success: false, error: 'VESTING_COMPLETED' };
+
+  // Cliff: nothing unlocks until cliff_months after start_date, regardless
+  // of next_unlock. start_date is set once when the schedule begins (see
+  // genesis-reset-actions.ts) — if it's somehow unset, fail closed rather
+  // than let a claim through with no cliff check at all.
+  if (Number(vesting.cliff_months) > 0) {
+    if (!vesting.start_date) return { success: false, error: 'VESTING_NOT_STARTED' };
+    const cliffEndsAt = new Date(vesting.start_date);
+    cliffEndsAt.setMonth(cliffEndsAt.getMonth() + Number(vesting.cliff_months));
+    if (Date.now() < cliffEndsAt.getTime()) {
+      return { success: false, error: `CLIFF_ACTIVE:${cliffEndsAt.toISOString()}` };
+    }
+  }
+
   if (vesting.next_unlock && new Date(vesting.next_unlock).getTime() > Date.now()) {
     return { success: false, error: 'NOT_YET_UNLOCKED' };
   }

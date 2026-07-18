@@ -17,6 +17,7 @@ interface VestingData {
   next_unlock: string;
   months_released: number;
   total_months: number;
+  cliff_months: number;
   is_completed: boolean;
 }
 
@@ -181,10 +182,12 @@ export default function VestingContent() {
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-3">
         <div className="flex items-center gap-1.5 mb-3">
           <Calendar className="w-3 h-3 text-primary" />
-          <p className="text-[9px] text-white/40 uppercase tracking-wider font-bold">12 Month Timeline</p>
+          <p className="text-[9px] text-white/40 uppercase tracking-wider font-bold">
+            {vesting?.cliff_months ? `${vesting.cliff_months}mo Cliff + ` : ""}{vesting?.total_months ?? 12} Month Release Timeline
+          </p>
         </div>
         <div className="grid grid-cols-6 gap-1.5">
-          {Array.from({ length: 12 }, (_, i) => {
+          {Array.from({ length: vesting?.total_months ?? 12 }, (_, i) => {
             const released = vesting?.months_released ?? 0;
             const isDone   = i < released;
             const isCurrent = i === released;
@@ -211,7 +214,7 @@ export default function VestingContent() {
           })}
         </div>
         <p className="text-[9px] text-white/30 mt-2 text-center">
-          {vesting?.months_released ?? 0} / 12 months released
+          {vesting?.months_released ?? 0} / {vesting?.total_months ?? 12} months released
         </p>
       </div>
 

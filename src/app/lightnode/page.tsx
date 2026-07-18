@@ -1,13 +1,9 @@
 "use client"
 
 import { LightNodePanel } from "@/components/LightNodePanel";
-import { ProducerPanel } from "@/components/ProducerPanel";
-import { useTelegram } from "@/hooks/use-telegram";
 import { Radio } from "lucide-react";
 
 export default function LightNodePage() {
-  const { userId } = useTelegram();
-
   return (
     <div className="px-3 pt-4 pb-24 space-y-4">
       <div>
@@ -22,8 +18,6 @@ export default function LightNodePage() {
       </div>
 
       <LightNodePanel />
-
-      {userId && <ProducerPanel telegramId={userId} />}
     </div>
   );
 }

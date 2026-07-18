@@ -68,9 +68,9 @@ async function sealSingleTx(
   const merkleRoot = computeMerkleRoot([tx.txHash]);
   const sequenceHash = computeSequenceHash(prevHash, blockIndex, timestamp);
   const blockHash = computeBlockHash(prevHash, blockIndex, merkleRoot, timestamp, 1);
-  // Leader-proposal mode: if 1+ external/self-custody node is verified live,
-  // credit the highest-scored one currently reachable (see leader-schedule.ts).
-  // Falls back to the original top-score behavior when nobody is active.
+  // Leader-proposal mode: if 2+ external validator nodes are verified live,
+  // credit one of them via deterministic rotation (see leader-schedule.ts).
+  // Falls back to the original top-score behavior below < 2 active nodes.
   const validatorId = (await resolveBlockProducer(blockIndex)) ?? await getActiveValidator();
 
   // Create block

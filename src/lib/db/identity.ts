@@ -440,27 +440,19 @@ export async function migrateIdentityV12() {
 export const HEARTBEAT_FRESHNESS_SECONDS = 90;
 
 /**
- * Records a heartbeat from a node with a self-custody key. Caller MUST
- * verify the signature before calling this — see /api/node/heartbeat/route.ts.
- * UPSERTs (not just UPDATEs): a Light Node heartbeating in for the first
- * time — one that was never elected by an epoch's PoC scoring, see
- * poc-engine.ts — won't have a identity.validators row yet. This creates
- * one with score 0, so it still shows up in getActiveExternalValidators()
- * as a fallback ("opsi 2") candidate, just ranked last by score. It does
- * NOT grant is_active/"elected" status — that still only comes from
- * runEpoch()'s top-N cutoff; heartbeating just proves liveness.
+ * Records a heartbeat from an external validator node. Caller MUST verify
+ * the signature before calling this — see /api/node/heartbeat/route.ts.
+ * Also flips node_type to 'external' the first time, since a heartbeat is
+ * proof the caller is running independent node software.
  */
-export async function recordValidatorHeartbeat(telegramId: string, walletAddress: string): Promise<void> {
+export async function recordValidatorHeartbeat(telegramId: string): Promise<void> {
   const client = await identityPool.connect();
   try {
     await client.query(
-      `INSERT INTO identity.validators
-         (telegram_id, wallet_address, node_type, last_heartbeat_at, epoch_updated_at)
-       VALUES ($1, $2, 'external', NOW(), NOW())
-       ON CONFLICT (telegram_id) DO UPDATE SET
-         node_type = 'external',
-         last_heartbeat_at = NOW()`,
-      [telegramId, walletAddress]
+      `UPDATE identity.validators
+       SET node_type = 'external', last_heartbeat_at = NOW()
+       WHERE telegram_id = $1`,
+      [telegramId]
     );
   } finally {
     client.release();
@@ -468,13 +460,9 @@ export async function recordValidatorHeartbeat(telegramId: string, walletAddress
 }
 
 /**
- * Currently-reachable producer candidates, best score first. This used to
- * also require is_active=TRUE (this epoch's top-N PoC winners) — that gate
- * is gone: any node_type='external' node with a fresh heartbeat and a
- * registered self-custody key counts, ordered by total_score DESC. A Light
- * Node that was never elected just has total_score=0 and sorts to the
- * back of the list — the fallback pool for when nobody higher-ranked is
- * currently online. See recordValidatorHeartbeat() above.
+ * Active external validators right now — is_active (won this epoch's
+ * scoring) AND node_type='external' AND heartbeat fresh. This is the list
+ * leader-schedule.ts picks from and counts against the "2+" threshold.
  */
 export async function getActiveExternalValidators(): Promise<Array<{
   telegramId: string;
@@ -487,10 +475,11 @@ export async function getActiveExternalValidators(): Promise<Array<{
       `SELECT v.telegram_id, v.total_score, u.self_custody_pubkey
        FROM identity.validators v
        JOIN identity.users u ON u.telegram_id = v.telegram_id
-       WHERE v.node_type = 'external'
+       WHERE v.is_active = TRUE
+         AND v.node_type = 'external'
          AND v.last_heartbeat_at > NOW() - INTERVAL '${HEARTBEAT_FRESHNESS_SECONDS} seconds'
          AND u.self_custody_pubkey IS NOT NULL
-       ORDER BY v.total_score DESC, v.telegram_id ASC` // score priority first; telegram_id only breaks exact ties deterministically
+       ORDER BY v.telegram_id ASC` // stable order — deterministic leader picking needs this
     );
     return res.rows.map((r: any) => ({
       telegramId: r.telegram_id,

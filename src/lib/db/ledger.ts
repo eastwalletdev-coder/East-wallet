@@ -271,7 +271,7 @@ export async function migrateSchemaV2() {
  * Vercel keeps assembling and hashing every block itself (that part is NOT
  * decentralized by this migration — see leader-schedule.ts for the honest
  * scope of what changes). What changes is WHO gets credited/authorized as
- * the block's producer once 1+ external/self-custody node is active:
+ * the block's producer once 2+ external validator nodes are active:
  * instead of always self-producing, Vercel creates a proposal assigning the
  * slot to the elected leader, waits up to a short deadline for that node to
  * countersign, and only falls back to self-producing if the deadline passes

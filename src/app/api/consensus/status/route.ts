@@ -27,7 +27,7 @@ export async function GET(req: NextRequest) {
       consensus: {
         mode: leaderProposalActive ? 'leader-proposal' : 'internal',
         activeExternalValidators: activeExternal.length,
-        requiredForLeaderProposal: 1,
+        requiredForLeaderProposal: 2,
         leaderProposalActive,
       },
       validators,

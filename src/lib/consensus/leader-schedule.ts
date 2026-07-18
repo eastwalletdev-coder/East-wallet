@@ -1,10 +1,9 @@
 /**
  * EASTCHAIN — Leader schedule / block proposals
  * ─────────────────────────────────────────────────────────────────────
- * Once 1+ external validator node is genuinely live, Vercel assigns the
- * next block slot to the highest-scored currently-reachable node (see
- * pickLeader() — score priority, not round-robin) and gives it a short
- * window to actually COMPUTE and submit the block (merkleRoot,
+ * Once 2+ external validator nodes are genuinely live, Vercel assigns the
+ * next block slot to a deterministically-picked leader and gives it a
+ * short window to actually COMPUTE and submit the block (merkleRoot,
  * sequenceHash, blockHash) rather than just counter-signing a fixed
  * string. Vercel independently recomputes every value from its own
  * trusted inputs (prev_hash + tx_hashes it already has) and ONLY accepts
@@ -12,16 +11,6 @@
  * prevHash, wrong blockHash, bad signature, timestamp out of bounds) is
  * rejected with a specific reason and logged, and the slot falls back to
  * Vercel self-producing so the chain never stalls.
- *
- * This is intentionally a bootstrap design for before there's a real
- * external-validator network: eligibility isn't gated on being one of
- * this epoch's top-N PoC winners (identity.validators.is_active) — ANY
- * self-custody node that heartbeats in counts (see recordValidatorHeartbeat()
- * in identity.ts), ranked by total_score. A never-elected Light Node just
- * has score 0 and sorts to the back — it only gets picked when nothing
- * higher-ranked is currently online, which is fine: someone producing a
- * block beats nobody producing one, and every submission is independently
- * re-verified regardless of who sent it.
  *
  * What is still NOT decentralized: applying the block's side effects
  * (balance updates via commitFn/rollbackFn) — those closures only exist
@@ -63,28 +52,25 @@ export type ValidatedProduction = {
 };
 
 /**
- * Score-priority pick: getActiveExternalValidators() already returns its
- * list sorted by total_score DESC, so this just takes the front of the
- * list — the highest-scored node that is CURRENTLY reachable (fresh
- * heartbeat). If the top scorer isn't heartbeating right now, they simply
- * aren't in the list at all, so the next-highest-scored active one is
- * picked automatically. No blockIndex-based rotation: the same node keeps
- * getting picked block after block for as long as it stays the best
- * currently-online option, which is exactly the point (prioritize score,
- * only fall back to a lower-scored node when nothing better is around).
+ * Deterministic round-robin: same block index always picks the same
+ * leader given the same active-validator set, so any node could recompute
+ * this independently rather than trusting Vercel's word for it.
  */
 export function pickLeader(
-  activeExternalValidators: Array<{ telegramId: string; selfCustodyPubkey: string | null }>
+  activeExternalValidators: Array<{ telegramId: string; selfCustodyPubkey: string | null }>,
+  blockIndex: number
 ): LeaderAssignment | null {
-  const chosen = activeExternalValidators.find(v => !!v.selfCustodyPubkey);
-  if (!chosen || !chosen.selfCustodyPubkey) return null;
+  if (activeExternalValidators.length === 0) return null;
+  const idx = ((blockIndex % activeExternalValidators.length) + activeExternalValidators.length) % activeExternalValidators.length;
+  const chosen = activeExternalValidators[idx];
+  if (!chosen.selfCustodyPubkey) return null;
   return { telegramId: chosen.telegramId, pubkeyHex: chosen.selfCustodyPubkey };
 }
 
-/** True once 1+ external node is genuinely live — the mode-switch condition. */
+/** True once 2+ external nodes are genuinely live — the mode-switch condition. */
 export async function isLeaderProposalModeActive(): Promise<boolean> {
   const active = await getActiveExternalValidators();
-  return active.length >= 1;
+  return active.length >= 2;
 }
 
 /**
@@ -96,8 +82,8 @@ export async function isLeaderProposalModeActive(): Promise<boolean> {
  */
 export async function resolveBlockProducer(blockIndex: number): Promise<string | null> {
   const activeExternal = await getActiveExternalValidators();
-  if (activeExternal.length < 1) return null;
-  const leader = pickLeader(activeExternal);
+  if (activeExternal.length < 2) return null;
+  const leader = pickLeader(activeExternal, blockIndex);
   return leader?.telegramId ?? null;
 }
 
@@ -203,11 +189,11 @@ export async function planBlockProduction(
   | { mode: 'leader'; leader: LeaderAssignment; proposalId: number; waitForAttestation: () => Promise<boolean> }
 > {
   const activeExternal = await getActiveExternalValidators();
-  if (activeExternal.length < 1) {
+  if (activeExternal.length < 2) {
     return { mode: 'internal' };
   }
 
-  const leader = pickLeader(activeExternal);
+  const leader = pickLeader(activeExternal, blockIndex);
   if (!leader) {
     // Enough "active" rows but none with a usable self-custody pubkey yet.
     return { mode: 'internal' };

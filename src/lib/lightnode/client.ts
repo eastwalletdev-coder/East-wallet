@@ -39,19 +39,12 @@ const STEP_DELAY_MS = 600;           // pacing so the sync steps are visibly ani
 
 // Railway's WS hub only keeps a small in-memory ring buffer of recent
 // headers for backfill (~20) — it's a lightweight relay, not a database.
-// If our gap is bigger than that, we no longer reach for a central R2
-// archive: every Light Node is now REQUIRED to retain its own rolling
-// local cache of at least this many verified blocks (see
-// loadBlockCache/persistBlockCache + cacheHeader below) and serve them to
-// any connected peer that asks over the WebRTC mesh (webrtc-peer.ts's
-// backfill_request/backfill_response). Only if no connected peer has the
-// range does this fall back to the Postgres-backed /api/archive route
-// (see NEXT_PUBLIC_ARCHIVE_BASE_URL in .env.example) — still no R2.
+// If our gap is bigger than that, Railway alone can't fill it (see
+// verifyHeader's "accept the jump" comment below). Beyond this threshold,
+// fetch the missing range from the permanent R2 archive first — see
+// r2-client.ts (server write side) and catchUpFromArchive() below.
 const RAILWAY_BACKFILL_LIMIT = 20;
-const BLOCK_CACHE_KEY = "east_lightnode_block_cache_v1";
-const BLOCK_CACHE_SIZE = 1000; // mandatory minimum retained locally per node
-const PEER_BACKFILL_TIMEOUT_MS = 6000; // how long we give the peer mesh to answer before also trying the HTTP fallback
-const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from the archive fallback
+const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from R2
 
 // Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
 // EIP-191) signature — no more "accepted but not cryptographically
@@ -130,31 +123,6 @@ function persist(state: LightNodeState) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
 }
 
-// ── Local block cache — every Light Node retains at least BLOCK_CACHE_SIZE
-//    verified headers so it can serve peers doing their own catch-up over
-//    the WebRTC mesh (see webrtc-peer.ts). This is the replacement for the
-//    old central R2 archive: the swarm IS the archive now. ──
-function loadBlockCache(): Map<number, BlockHeader> {
-  if (typeof window === "undefined") return new Map();
-  try {
-    const raw = localStorage.getItem(BLOCK_CACHE_KEY);
-    if (!raw) return new Map();
-    const arr: BlockHeader[] = JSON.parse(raw);
-    return new Map(arr.map((h) => [h.height, h]));
-  } catch {
-    return new Map();
-  }
-}
-
-function persistBlockCache(cache: Map<number, BlockHeader>) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(BLOCK_CACHE_KEY, JSON.stringify([...cache.values()]));
-  } catch {
-    // Storage full/unavailable — cache stays in-memory only for this session.
-  }
-}
-
 // ── Header verification (mirrors railway-server's intent, runs client-side
 //    since Light Nodes — not Railway — are the ones that actually verify) ──
 function verifyHeader(header: BlockHeader, prevHeight: number, prevHash: string | null): { valid: boolean; reason?: string } {
@@ -166,17 +134,15 @@ function verifyHeader(header: BlockHeader, prevHeight: number, prevHash: string 
     // a gap (e.g. the device was offline and the chain moved on), we can't
     // verify the intermediate links — that's expected for a Light Node and
     // isn't evidence of tampering, so we accept the jump instead of getting
-    // stuck forever waiting for blocks that already scrolled out of the
-    // hub's history. applyHeader() chases the skipped range down afterward
-    // via fillGap() — see there — so this doesn't leave a permanent hole.
+    // stuck forever waiting for blocks that already scrolled out of the hub's history.
     if (header.height === prevHeight + 1 && prevHash && header.previousHash !== prevHash) {
       return { valid: false, reason: "Previous hash mismatch" };
     }
   }
 
   // Signature check: proves this header actually came from Vercel's
-  // sealBlock() — not a compromised Railway relay or a malicious peer in
-  // the WebRTC mesh serving a self-consistent but fake chain.
+  // sealBlock() — not a leaked R2 write credential or a compromised
+  // Railway relay serving a self-consistent but fake chain.
   //
   // secp256k1 / EVM-style (EIP-191 personal_sign): we don't compare
   // against a raw public key, we recover the signer ADDRESS from the
@@ -237,12 +203,10 @@ export class LightNodeClient {
   private pingSentAt = 0;
   private url: string;
   private peerMesh: PeerMesh;
-  private blockCache: Map<number, BlockHeader>;
 
   constructor(url: string) {
     this.url = url;
     this.state = loadState();
-    this.blockCache = loadBlockCache();
     this.peerMesh = new PeerMesh({
       sendSignal: (msg) => this.ws?.send(JSON.stringify(msg)),
       onPeerHeader: (peerNodeId, header) => {
@@ -259,20 +223,6 @@ export class LightNodeClient {
       onPeerDisconnected: (peerNodeId) => {
         this.log(`Peer mesh: disconnected from ${peerNodeId.slice(0, 8)}…`);
         this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
-      },
-      onBackfillRequest: (peerNodeId, fromHeight, toHeight) => {
-        const found: BlockHeader[] = [];
-        for (let h = fromHeight; h <= toHeight; h++) {
-          const header = this.blockCache.get(h);
-          if (header) found.push(header);
-        }
-        if (found.length > 0) {
-          this.log(`Peer mesh: serving ${found.length} cached block(s) to ${peerNodeId.slice(0, 8)}…`);
-          this.peerMesh.respondBackfill(peerNodeId, found);
-        }
-      },
-      onBackfillResponse: (peerNodeId, headers) => {
-        this.handlePeerBackfillHeaders(peerNodeId, headers as BlockHeader[]);
       },
     });
   }
@@ -339,23 +289,12 @@ export class LightNodeClient {
           }
           {
             const gap = msg.latestHeight - this.state.currentHeight;
-            if (gap > RAILWAY_BACKFILL_LIMIT + 1 && this.peerMesh.connectedPeerIds.length > 0) {
-              // Gap bigger than Railway's ring buffer — ask the peer mesh
-              // first (every node keeps its own last-1000-block cache).
-              // requestPeerBackfill() always follows up with the normal
-              // sync_request below once peers have had a chance to answer.
-              this.requestPeerBackfill(this.state.currentHeight + 1, msg.latestHeight - RAILWAY_BACKFILL_LIMIT, msg.latestHeight);
-            } else if (gap > RAILWAY_BACKFILL_LIMIT + 1) {
-              // No peers connected yet — try the Postgres-backed HTTP
-              // fallback directly (still not R2, see .env.example).
-              const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL;
-              if (archiveUrl) {
-                this.catchUpFromArchive(archiveUrl, msg.latestHeight);
-              } else {
-                this.ws?.send(JSON.stringify({
-                  type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
-                }));
-              }
+            const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL;
+            if (gap > RAILWAY_BACKFILL_LIMIT + 1 && archiveUrl) {
+              // Gap bigger than Railway's ring buffer can cover — pull the
+              // older portion from the permanent R2 archive first, then
+              // let Railway's normal backfill handle just the recent tail.
+              this.catchUpFromArchive(archiveUrl, msg.latestHeight);
             } else {
               this.ws?.send(JSON.stringify({
                 type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
@@ -453,106 +392,24 @@ export class LightNodeClient {
   // Verifies + applies exactly one header, then calls onDone. Shared by
   // both the initial backfill (5 blocks, paced) and live block:new events.
   private applyHeader(header: any, silent: boolean = false, onDone?: () => void) {
-    const prevHeight = this.state.currentHeight;
-    const result = verifyHeader(header, prevHeight, this.lastHash);
+    const result = verifyHeader(header, this.state.currentHeight, this.lastHash);
     if (!result.valid) {
       this.log(`Header REJECTED — block #${header.height} (hash ${String(header.hash).slice(0, 10)}…): ${result.reason}`, "error");
       onDone?.();
       return;
     }
-    // verifyHeader() deliberately ACCEPTS a jump (see its comment) instead
-    // of getting stuck — but accepting it silently would leave a permanent
-    // hole in our local block cache, which is what peers rely on us for
-    // (see BLOCK_CACHE_SIZE). Chase down whatever we skipped in the
-    // background so this node stays a complete backfill source.
-    const hadGap = prevHeight >= 0 && header.height > prevHeight + 1;
-
     this.lastHash = header.hash;
     this.log(`Downloading block #${header.height}…`);
     this.set({ currentHeight: header.height });
     this.log(`Header Verified — block #${header.height} (${result.reason ?? "ok"})`);
     this.set({ verifiedHeaderCount: this.state.verifiedHeaderCount + 1 });
-    this.cacheHeader(header);
     if (!silent) this.log("Local Ledger Updated");
-    if (hadGap) this.fillGap(prevHeight + 1, header.height - 1);
     this.checkEligibility();
     this.peerMesh.broadcastHeader(header); // best-effort — reduces peers' reliance on Railway alone
     this.ws?.send(JSON.stringify({
       type: "ack", nodeId: this.state.nodeId, height: header.height, timestamp: Date.now(),
     }));
     onDone?.();
-  }
-
-  // Chases down a range left behind by an accepted jump (see applyHeader
-  // above) — peer mesh first, archive fallback for whatever's still
-  // missing after a short wait. This is a CACHE-FILL operation, not a
-  // live-tip catch-up: currentHeight/lastHash never move because of it —
-  // see cacheHistoricalHeader() below.
-  private fillGap(fromHeight: number, toHeight: number) {
-    if (toHeight < fromHeight) return;
-    const missing = toHeight - fromHeight + 1;
-    this.log(`Gap left by an accepted jump: missing block(s) #${fromHeight}-#${toHeight} (${missing} total) — backfilling…`);
-
-    if (this.peerMesh.connectedPeerIds.length > 0) {
-      this.peerMesh.requestBackfill(fromHeight, toHeight);
-      setTimeout(() => this.fillRemainingGapFromArchive(fromHeight, toHeight), PEER_BACKFILL_TIMEOUT_MS);
-    } else {
-      this.fillRemainingGapFromArchive(fromHeight, toHeight);
-    }
-  }
-
-  // Only fetches heights the peer mesh didn't already supply — checked
-  // against the local cache right before fetching, so a slow-but-eventual
-  // peer response isn't wastefully re-fetched from the archive too.
-  private async fillRemainingGapFromArchive(fromHeight: number, toHeight: number) {
-    const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL;
-    if (!archiveUrl) return;
-
-    const stillMissing: number[] = [];
-    for (let h = fromHeight; h <= toHeight; h++) {
-      if (!this.blockCache.has(h)) stillMissing.push(h);
-    }
-    if (stillMissing.length === 0) return; // peer mesh already covered the whole gap
-
-    this.log(`Peer mesh left ${stillMissing.length} block(s) of the gap unfilled — trying archive fallback…`);
-    for (let i = 0; i < stillMissing.length; i += ARCHIVE_CONCURRENCY) {
-      const batch = stillMissing.slice(i, i + ARCHIVE_CONCURRENCY);
-      const results = await Promise.all(
-        batch.map(async (h) => {
-          try {
-            const res = await fetch(`${archiveUrl.replace(/\/$/, "")}/blocks/${h}.json`);
-            if (!res.ok) return null;
-            return await res.json();
-          } catch {
-            return null;
-          }
-        })
-      );
-      for (const header of results) {
-        if (header) this.cacheHistoricalHeader(header);
-      }
-    }
-  }
-
-  // Verifies and caches a single HISTORICAL header — one behind our
-  // current tip, arriving to fill a gap (see fillGap above). Reuses
-  // verifyHeader with prevHeight=-1, which skips the sequential/"stale or
-  // duplicate" checks (meaningless for a header arriving out of order) but
-  // still runs the real trust boundary underneath: the chain signature
-  // check. NEVER touches currentHeight/lastHash — those track the live
-  // tip and must not roll backward because a late historical header showed up.
-  private cacheHistoricalHeader(header: BlockHeader): boolean {
-    if (!header || typeof header.height !== "number") return false;
-    if (header.height >= this.state.currentHeight) return false; // not what this path is for
-    if (this.blockCache.has(header.height)) return false; // already have it
-
-    const result = verifyHeader(header, -1, null);
-    if (!result.valid) {
-      this.log(`Backfilled header REJECTED — block #${header.height}: ${result.reason}`, "error");
-      return false;
-    }
-    this.cacheHeader(header);
-    return true;
   }
 
   // Processes the last-N backfilled headers one at a time with a short
@@ -580,64 +437,13 @@ export class LightNodeClient {
     this.checkEligibility();
   }
 
-  // Local block cache maintenance — called from applyHeader() for every
-  // header this node verifies (Railway-sourced, peer-sourced, doesn't
-  // matter). Every node is required to retain at least BLOCK_CACHE_SIZE
-  // of these so it can answer peers' backfill_request messages.
-  private cacheHeader(header: BlockHeader) {
-    this.blockCache.set(header.height, header);
-    if (this.blockCache.size > BLOCK_CACHE_SIZE) {
-      let oldest = Infinity;
-      for (const h of this.blockCache.keys()) if (h < oldest) oldest = h;
-      this.blockCache.delete(oldest);
-    }
-    persistBlockCache(this.blockCache);
-  }
-
-  // Broadcasts a backfill_request to every connected WebRTC peer, then —
-  // regardless of what the mesh could cover — always follows up with the
-  // normal sync_request so Railway still fills whatever tail is within
-  // its own ring buffer. This is the primary gap-filling path now (see
-  // BLOCK_CACHE_SIZE above); catchUpFromArchive() below is the fallback
-  // for when no peer is connected yet.
-  private requestPeerBackfill(fromHeight: number, toHeight: number, latestHeight: number) {
-    this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — asking peer mesh for #${fromHeight}-#${toHeight}…`);
-    this.peerMesh.requestBackfill(fromHeight, toHeight);
-    setTimeout(() => {
-      this.ws?.send(JSON.stringify({
-        type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
-      }));
-    }, PEER_BACKFILL_TIMEOUT_MS);
-  }
-
-  // A peer answered our backfill_request with headers from its own local
-  // cache. Two cases, dispatched per-header since a single response can mix
-  // both after a reconnect: still-catching-up-to-the-tip headers go through
-  // the normal sequential path; headers behind our current tip (filling a
-  // gap left by an accepted jump) are cache-only via cacheHistoricalHeader.
-  private handlePeerBackfillHeaders(peerNodeId: string, headers: BlockHeader[]) {
-    if (!Array.isArray(headers) || headers.length === 0) return;
-    this.log(`Peer mesh: received ${headers.length} backfilled block(s) from ${peerNodeId.slice(0, 8)}…`);
-    const sorted = [...headers].sort((a, b) => a.height - b.height);
-    for (const header of sorted) {
-      if (header.height > this.state.currentHeight) {
-        this.set({ syncPhase: "validating" });
-        this.applyHeader(header, true);
-      } else {
-        this.cacheHistoricalHeader(header);
-      }
-    }
-  }
-
   // Pulls headers for [currentHeight+1 .. latestHeight-RAILWAY_BACKFILL_LIMIT]
-  // from this app's own Postgres-backed /api/archive route (see
-  // NEXT_PUBLIC_ARCHIVE_BASE_URL in .env.example — no external storage
-  // service, no R2), verifies each via the exact same hash-chain check
+  // from the permanent R2 archive (one small immutable object per height,
+  // see r2-client.ts), verifies each via the exact same hash-chain check
   // used for Railway's own backfill, then requests the final short tail
-  // from Railway to reach the live tip. This only runs when no WebRTC
-  // peer is connected yet to try requestPeerBackfill() instead. If the
-  // fallback is unreachable or any fetch fails, falls back to Railway's
-  // normal (possibly-truncated) backfill rather than getting stuck.
+  // from Railway to reach the live tip. If the archive is unreachable or
+  // any fetch fails, falls back to Railway's normal (possibly-truncated)
+  // backfill rather than getting stuck.
   private async catchUpFromArchive(archiveBaseUrl: string, latestHeight: number) {
     const targetHeight = latestHeight - RAILWAY_BACKFILL_LIMIT;
     const fromHeight = this.state.currentHeight + 1;
@@ -648,7 +454,7 @@ export class LightNodeClient {
       return;
     }
 
-    this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — fetching archive fallback…`);
+    this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — fetching archive from R2…`);
     this.set({ syncPhase: "downloading", syncProgress: { current: 0, total: totalToFetch } });
 
     const heights: number[] = [];
@@ -687,7 +493,7 @@ export class LightNodeClient {
       }
     }
 
-    this.log(`Archive catch-up complete — ${fetchedCount} block(s) verified from fallback`);
+    this.log(`Archive catch-up complete — ${fetchedCount} block(s) verified from R2`);
     // Now ask Railway for just the recent tail to reach the true live tip.
     this.ws?.send(JSON.stringify({
       type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,

@@ -1,71 +1,54 @@
-# Patch: fix 504 di /api/archive/blocks/[height] — startup chain jangan re-run tiap cold start
+# Patch: fix Light Node gak bisa catch-up — konflik routing archive endpoint
 
-## Akar masalah
+## Akar masalah (2 lapis)
 
-`src/instrumentation.ts` (`register()`) jalan otomatis di SETIAP cold
-start serverless instance, bukan cuma sekali per deployment. Isinya:
-`initIdentitySchema`, `initLedgerSchema`, 7 fungsi `migrateIdentityVx`,
-6 fungsi `migrateLedgerVx`/`migrateSchemaV2`, `migrateContractSchema`
-(total 13+ round-trip DB berurutan), lalu `backfillKeypairs()` (loop
-per user), `recoverFromChannel()` (fetch history Telegram channel),
-dan `runEpoch()` (hitung PoC penuh) — semua di-`await` berurutan
-SEBELUM instance itu sempat melayani request pertamanya.
+1. **Konflik dynamic route**: repo Anda sudah punya
+   `src/app/api/archive/blocks/[heightJson]/route.ts` dari SEBELUMNYA —
+   versi lengkap dengan two-tier lookup (`ledger.blocks` lalu fallback
+   `identity.archive_blocks` cold storage). Patch archive kemarin
+   (`eastchain-patch-archive-vercel-fix.zip`) bikin folder BARU
+   `[height]` di posisi path yang SAMA. Next.js tidak mengizinkan dua
+   nama dynamic segment berbeda (`height` vs `heightJson`) di level
+   yang sama — bikin build error / routing ambigu.
 
-`/api/archive/blocks/[height]` adalah route baru yang jarang punya
-instance warm. `catchUpFromArchive()` di client juga nembak
-`ARCHIVE_CONCURRENCY = 8` request paralel sekaligus saat gap besar —
-Vercel spin up beberapa instance cold bersamaan, dan tiap satu wajib
-nyelesain seluruh chain di atas dulu sebelum bisa balikin data block.
-Itu yang bikin lewat timeout Vercel → 504 berulang di block yang sama.
+2. **Response shape gak cocok**: bahkan kalau `[heightJson]` yang
+   kepakai, JSON-nya tidak punya field `success: true`. Tapi
+   `catchUpFromArchive()` di `src/lib/lightnode/client.ts` cuma
+   nganggep block valid kalau `body?.success` ada — jadi SEMUA block
+   dianggap "missing", langsung fallback ke ring buffer Railway yang
+   cuma nampung ~20 block. Light Node gak akan pernah bisa ngejar gap
+   besar walau server-nya sendiri sehat.
 
-Migration v6 sendiri (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS
-has_first_claimed`) ringan — bukan biang keladinya sendirian. Yang
-berat itu SELURUH chain yang re-run terus-menerus.
+Catatan: tombol "Prune L2" (`performRollingArchive()`) ternyata cuma
+COPY ke `identity.archive_blocks`, tidak pernah `DELETE FROM
+ledger.blocks` — jadi bukan penyebab, aman diabaikan.
 
 ## File yang berubah
 
-- `src/lib/db/identity.ts` — **tambah** 2 fungsi baru:
-  `hasStartupChainCompleted()` dan `markStartupChainCompleted()`.
-  Pola sama seperti guard `schema_flags` yang sudah dipakai
-  `migrateIdentityV4`. Tidak mengubah fungsi migration yang sudah ada
-  sama sekali.
-- `src/instrumentation.ts` — **diubah**. `register()` sekarang:
-  1. Cek `hasStartupChainCompleted()` dulu. Kalau sudah pernah sukses,
-     SKIP seluruh chain init/migration (13+ round trip tadi).
-  2. Kalau belum, jalankan seperti biasa, lalu tandai selesai dengan
-     `markStartupChainCompleted()` di akhir — jadi cold start
-     berikutnya otomatis skip.
-  3. `backfillKeypairs()`, `recoverFromChannel()`, `runEpoch()` diubah
-     jadi fire-and-forget (tidak di-`await`) — tetap jalan di
-     background, tapi tidak lagi menahan response request yang
-     memicu cold start itu.
+- `src/app/api/archive/blocks/[heightJson]/route.ts` — tambah
+  `success: true` di 2 response sukses-nya (tier 1 `ledger.blocks`,
+  tier 2 `identity.archive_blocks`). Tidak ada logic lain yang diubah
+  — dua-tier lookup yang sudah ada (termasuk fallback cold storage)
+  tetap dipakai apa adanya karena memang lebih lengkap dari versi
+  patch kemarin.
 
-## Yang SENGAJA tidak diubah
+## WAJIB: hapus folder duplikat
 
-- Urutan dan isi tiap fungsi `migrateIdentityVx`/`migrateLedgerVx` —
-  tidak disentuh sama sekali, resikonya nol untuk data yang sudah ada.
-- Scheduler `setInterval` 24 jam untuk `runEpoch()` — tetap sama.
-- Behavior retry: kalau `hasStartupChainCompleted()` sendiri gagal
-  (mis. Neon lagi wake-up dari idle-suspend), exception itu ketangkep
-  di try/catch luar seperti sebelumnya — `markStartupChainCompleted()`
-  otomatis tidak kepanggil, jadi cold start berikutnya retry lagi
-  dari awal. Tidak ada perubahan perilaku di skenario gagal.
+Folder ini dari patch kemarin **harus dihapus** dari repo Anda (bukan
+ditimpa, benar-benar dihapus foldernya):
 
-## Cara pakai
+    src/app/api/archive/blocks/[height]/
 
-Copy 2 file di atas ke posisi yang sama persis di repo (timpa yang
-lama), commit + push. Setelah deploy pertama sukses (flag
-`startup_chain_v1_completed` ke-set di `identity.schema_flags`), cold
-start berikutnya — termasuk buat `/api/archive/blocks/[height]` —
-harusnya jauh lebih cepat dan 504-nya hilang.
+Kalau masih ada bareng `[heightJson]`, build tetap akan konflik.
+Setelah dihapus, copy file `[heightJson]/route.ts` dari patch ini ke
+posisi yang sama (timpa yang lama), commit + push.
 
-## Cara verifikasi setelah deploy
+## Cara verifikasi
 
-1. Buka Vercel → Logs → filter route `/api/archive/blocks/`. Harusnya
-   status 200, bukan 504 lagi (kecuali height-nya memang belum ada di
-   `ledger.blocks`, itu wajar 404).
-2. Cek Neon: `SELECT * FROM identity.schema_flags WHERE flag =
-   'startup_chain_v1_completed';` — harus ada 1 baris setelah deploy
-   pertama.
-3. Light node yang tadinya stuck di block #680 harusnya lanjut
-   catch-up begitu archive endpoint mulai balas cepat.
+1. Build Vercel sukses tanpa error "different slug names for the same
+   dynamic path".
+2. `curl https://<app-url>/api/archive/blocks/680` — respons harus ada
+   `"success":true`.
+3. Light Node yang tadinya nyangkut mulai nambah currentHeight lagi —
+   cek panel Light Node di app (log "Archive catch-up complete — N
+   block(s) verified from archive").

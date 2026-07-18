@@ -73,6 +73,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ heig
       const row = res.rows[0];
       const timestamp = new Date(row.created_at).getTime();
       return NextResponse.json({
+        success: true, // required by catchUpFromArchive() in lightnode/client.ts — without it every response here was treated as a missing block
         height: row.block_index,
         hash: row.block_hash,
         previousHash: row.prev_hash,
@@ -120,6 +121,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ heig
       : new Date(row.archived_at).getTime();
 
     return NextResponse.json({
+      success: true, // required by catchUpFromArchive() in lightnode/client.ts — without it every response here was treated as a missing block
       height: row.block_index,
       hash: row.block_hash,
       previousHash: row.prev_hash,

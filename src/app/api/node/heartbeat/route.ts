@@ -13,6 +13,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { identityPool, recordValidatorHeartbeat } from '@/lib/db/identity';
 import { verifySignature } from '@/lib/keypair-service';
+import { recordHeartbeatRedis } from '@/lib/db/redis';
 
 const MAX_CLOCK_SKEW_MS = 60_000; // reject heartbeats timestamped >60s off
 
@@ -61,6 +62,7 @@ export async function POST(req: NextRequest) {
     }
 
     await recordValidatorHeartbeat(telegramId);
+    await recordHeartbeatRedis(telegramId); // fast path for getActiveExternalValidators() — see db/redis.ts
     return NextResponse.json({ success: true });
   } catch (err: any) {
     console.error('[EASTCHAIN] heartbeat error:', err);

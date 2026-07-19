@@ -22,6 +22,48 @@ function getRedis(): Redis | null {
 const CLAIM_COOLDOWN_SEC = 24 * 60 * 60; // 24 hours
 const EXPORT_COOLDOWN_SEC = 5 * 60; // 5 minutes — throttle private key export attempts
 
+// ─── Validator heartbeat freshness (fast path) ────────────────────
+// Moves the "is this validator still alive" check off Postgres — with
+// many validators each heartbeating every 30s (see scripts/heartbeat-daemon.js),
+// that's a steady stream of writes/reads hitting identity.validators just
+// to answer a question Redis's native key expiry already answers for free.
+// Postgres's last_heartbeat_at column is NOT removed — heartbeat/route.ts
+// still updates it every time, so it remains the durable fallback (and
+// what the admin panel displays) if Redis is ever unavailable.
+const VALIDATOR_HEARTBEAT_TTL_SEC = 90; // MUST match HEARTBEAT_FRESHNESS_SECONDS in db/identity.ts
+
+export async function recordHeartbeatRedis(telegramId: string): Promise<void> {
+  const r = getRedis();
+  if (!r) return; // fail open — the Postgres write in the same request still lands regardless
+  try {
+    await r.set(`validator-heartbeat:${telegramId}`, Date.now(), { ex: VALIDATOR_HEARTBEAT_TTL_SEC });
+  } catch {
+    // best-effort only — never block/fail the heartbeat request over a cache write
+  }
+}
+
+/**
+ * Batch-checks which of the given telegramIds have a fresh heartbeat in
+ * Redis. Returns null (NOT an empty Set) if Redis is unavailable or errors,
+ * so callers can tell "checked, nobody's fresh" apart from "couldn't check
+ * at all" — the latter must fall back to Postgres's last_heartbeat_at,
+ * never silently treat every validator as offline.
+ */
+export async function getFreshHeartbeatIdsRedis(telegramIds: string[]): Promise<Set<string> | null> {
+  if (telegramIds.length === 0) return new Set();
+  const r = getRedis();
+  if (!r) return null;
+  try {
+    const keys = telegramIds.map((id) => `validator-heartbeat:${id}`);
+    const values = await r.mget(...keys);
+    const fresh = new Set<string>();
+    telegramIds.forEach((id, i) => { if (values[i] != null) fresh.add(id); });
+    return fresh;
+  } catch {
+    return null;
+  }
+}
+
 // Rate limit: 1 claim per 24 hours per user
 export async function checkClaimCooldown(telegramId: string): Promise<{
   allowed: boolean;

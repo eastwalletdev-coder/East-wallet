@@ -32,8 +32,13 @@
 // the same valid signature, so this works for blocks sealed before the
 // signing key was even configured, not just new ones.
 //
-// To actually use this: set NEXT_PUBLIC_ARCHIVE_BASE_URL to this app's own
-// domain + /api/archive, e.g. https://thiseast.vercel.app/api/archive
+// To actually use this: just set NEXT_PUBLIC_APP_URL to this app's own
+// domain, e.g. https://thiseast.vercel.app — lightnode/client.ts appends
+// "/api/archive/blocks/{height}" itself, so don't include that suffix
+// here. NEXT_PUBLIC_ARCHIVE_BASE_URL only needs setting if the archive
+// should be served from a DIFFERENT domain than the main app (e.g. R2
+// with a custom domain) — leave it unset otherwise, since it would
+// otherwise just duplicate NEXT_PUBLIC_APP_URL with no added benefit.
 import { NextRequest, NextResponse } from 'next/server';
 import { ledgerPool } from '@/lib/db/ledger';
 import { identityPool } from '@/lib/db/identity';

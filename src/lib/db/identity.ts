@@ -4,6 +4,7 @@
  */
 import { Pool } from 'pg';
 import { getPublicKeyForUser } from '@/lib/keypair-service';
+import { getFreshHeartbeatIdsRedis } from '@/lib/db/redis';
 
 const identityPool = new Pool({
   connectionString: process.env.DATABASE_IDENTITY_URL,
@@ -503,6 +504,13 @@ export async function recordValidatorHeartbeat(telegramId: string): Promise<void
  * Active external validators right now — is_active (won this epoch's
  * scoring) AND node_type='external' AND heartbeat fresh. This is the list
  * leader-schedule.ts picks from and counts against the "2+" threshold.
+ *
+ * Freshness is checked via Redis first (see db/redis.ts — every heartbeat
+ * writes there too, TTL'd to expire on its own after HEARTBEAT_FRESHNESS_SECONDS,
+ * so no interval math needed and no per-heartbeat Postgres write pressure
+ * on the hot path). Falls back to last_heartbeat_at here ONLY if Redis is
+ * unavailable/erroring — never silently drops every validator just because
+ * the cache is down.
  */
 export async function getActiveExternalValidators(): Promise<Array<{
   telegramId: string;
@@ -512,16 +520,26 @@ export async function getActiveExternalValidators(): Promise<Array<{
   const client = await identityPool.connect();
   try {
     const res = await client.query(
-      `SELECT v.telegram_id, v.total_score, u.self_custody_pubkey
+      `SELECT v.telegram_id, v.total_score, u.self_custody_pubkey, v.last_heartbeat_at
        FROM identity.validators v
        JOIN identity.users u ON u.telegram_id = v.telegram_id
        WHERE v.is_active = TRUE
          AND v.node_type = 'external'
-         AND v.last_heartbeat_at > NOW() - INTERVAL '${HEARTBEAT_FRESHNESS_SECONDS} seconds'
          AND u.self_custody_pubkey IS NOT NULL
        ORDER BY v.telegram_id ASC` // stable order — deterministic leader picking needs this
     );
-    return res.rows.map((r: any) => ({
+
+    const candidates = res.rows as Array<{ telegram_id: string; total_score: string; self_custody_pubkey: string | null; last_heartbeat_at: string | null }>;
+    const freshFromRedis = await getFreshHeartbeatIdsRedis(candidates.map((r) => r.telegram_id));
+
+    const isFresh = (row: typeof candidates[number]): boolean => {
+      if (freshFromRedis !== null) return freshFromRedis.has(row.telegram_id);
+      // Redis unavailable — fall back to the Postgres timestamp directly.
+      if (!row.last_heartbeat_at) return false;
+      return Date.now() - new Date(row.last_heartbeat_at).getTime() < HEARTBEAT_FRESHNESS_SECONDS * 1000;
+    };
+
+    return candidates.filter(isFresh).map((r) => ({
       telegramId: r.telegram_id,
       selfCustodyPubkey: r.self_custody_pubkey,
       totalScore: Number(r.total_score),

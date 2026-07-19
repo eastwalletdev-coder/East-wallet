@@ -1,54 +1,37 @@
-# Patch: fix Light Node gak bisa catch-up — konflik routing archive endpoint
+# Patch: bersihin log basi "archived to R2" + naikin timeout Railway publish
 
-## Akar masalah (2 lapis)
+## Konteks
 
-1. **Konflik dynamic route**: repo Anda sudah punya
-   `src/app/api/archive/blocks/[heightJson]/route.ts` dari SEBELUMNYA —
-   versi lengkap dengan two-tier lookup (`ledger.blocks` lalu fallback
-   `identity.archive_blocks` cold storage). Patch archive kemarin
-   (`eastchain-patch-archive-vercel-fix.zip`) bikin folder BARU
-   `[height]` di posisi path yang SAMA. Next.js tidak mengizinkan dua
-   nama dynamic segment berbeda (`height` vs `heightJson`) di level
-   yang sama — bikin build error / routing ambigu.
+Dari log deploy terbaru muncul 2 hal — keduanya BUKAN berhubungan
+dengan bug archive route yang kemarin (itu sudah beres, block #788
+kelihatan sealed normal):
 
-2. **Response shape gak cocok**: bahkan kalau `[heightJson]` yang
-   kepakai, JSON-nya tidak punya field `success: true`. Tapi
-   `catchUpFromArchive()` di `src/lib/lightnode/client.ts` cuma
-   nganggep block valid kalau `body?.success` ada — jadi SEMUA block
-   dianggap "missing", langsung fallback ke ring buffer Railway yang
-   cuma nampung ~20 block. Light Node gak akan pernah bisa ngejar gap
-   besar walau server-nya sendiri sehat.
+## 1. "archived to R2" — cuma teks log basi, bukan bug
 
-Catatan: tombol "Prune L2" (`performRollingArchive()`) ternyata cuma
-COPY ke `identity.archive_blocks`, tidak pernah `DELETE FROM
-ledger.blocks` — jadi bukan penyebab, aman diabaikan.
+`sealBlock()` di `block-engine.ts` memang sudah gak pernah manggil
+`archiveBlockToR2()` lagi sejak pindah ke NeonDB. Cuma komentar +
+`console.log` di `src/app/api/empty-block/route.ts` yang lupa
+di-update, jadi kelihatan salah padahal block-nya beneran sudah benar
+tersimpan Postgres.
 
-## File yang berubah
+**File**: `src/app/api/empty-block/route.ts` — update komentar +ubah
+log jadi `"sealed (signed + archived to Postgres)"`.
 
-- `src/app/api/archive/blocks/[heightJson]/route.ts` — tambah
-  `success: true` di 2 response sukses-nya (tier 1 `ledger.blocks`,
-  tier 2 `identity.archive_blocks`). Tidak ada logic lain yang diubah
-  — dua-tier lookup yang sudah ada (termasuk fallback cold storage)
-  tetap dipakai apa adanya karena memang lebih lengkap dari versi
-  patch kemarin.
+## 2. Railway publish AbortError — beneran timeout, non-fatal
 
-## WAJIB: hapus folder duplikat
+`publishBlockToRailway()` di `lightnode-publisher.ts` pasang batas 3
+detik buat POST notifikasi block baru ke Railway hub. Railway free
+tier suka sleep pas idle, cold-start-nya kadang lebih dari 3 detik →
+`AbortError`. Ini **tidak** menggagalkan block sealing (block #788
+tetap sealed sukses di log yang sama, function ini fire-and-forget /
+gak di-`await` di `block-engine.ts`) — cuma bikin log rame dan light
+node kehilangan satu push WS real-time (tapi tetap ke-catch lewat
+archive catch-up berikutnya).
 
-Folder ini dari patch kemarin **harus dihapus** dari repo Anda (bukan
-ditimpa, benar-benar dihapus foldernya):
+**File**: `src/lib/lightnode-publisher.ts` — naikin timeout dari 3000ms
+ke 8000ms, kasih ruang buat Railway cold-start.
 
-    src/app/api/archive/blocks/[height]/
+## Yang TIDAK diubah
 
-Kalau masih ada bareng `[heightJson]`, build tetap akan konflik.
-Setelah dihapus, copy file `[heightJson]/route.ts` dari patch ini ke
-posisi yang sama (timpa yang lama), commit + push.
-
-## Cara verifikasi
-
-1. Build Vercel sukses tanpa error "different slug names for the same
-   dynamic path".
-2. `curl https://<app-url>/api/archive/blocks/680` — respons harus ada
-   `"success":true`.
-3. Light Node yang tadinya nyangkut mulai nambah currentHeight lagi —
-   cek panel Light Node di app (log "Archive catch-up complete — N
-   block(s) verified from archive").
+Tidak ada perubahan logic sealing, archiving, atau signing — murni
+teks log + satu angka timeout.

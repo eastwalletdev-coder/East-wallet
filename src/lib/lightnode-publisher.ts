@@ -28,7 +28,14 @@ export async function publishBlockToRailway(header: PublishHeader): Promise<void
 
   try {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3000);
+    // Railway free-tier services sleep when idle and can take several
+    // seconds to cold-start on the next request — 3s was tripping the
+    // AbortController on a healthy-but-cold hub, logging a scary
+    // "Railway publish failed" error for a publish that would've
+    // succeeded a couple seconds later. 8s gives it room without
+    // meaningfully delaying the (already fire-and-forget, non-awaited)
+    // caller in block-engine.ts.
+    const timeout = setTimeout(() => controller.abort(), 8000);
     await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", "x-railway-secret": secret },

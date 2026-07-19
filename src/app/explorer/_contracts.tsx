@@ -114,11 +114,3 @@ export default function ContractsContent() {
           </Card>
         );
       })}
-
-      <p className="text-white/20 text-[9px] text-center px-4 pb-2 leading-relaxed">
-        Addresses follow EVM formatting for familiarity, but calls are validated against this
-        exact whitelist server-side — not executed as EVM bytecode.
-      </p>
-    </div>
-  );
-}

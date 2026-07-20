@@ -77,6 +77,15 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ heig
     if (res.rows.length > 0) {
       const row = res.rows[0];
       const timestamp = new Date(row.created_at).getTime();
+      // Full tx rows too — light nodes only ever needed the header to
+      // verify chain continuity, but a validator daemon rebuilding its own
+      // full local ledger copy (see scripts/full-node-sync.js) needs the
+      // actual transactions, not just their hashes.
+      const txRes = await ledgerClient.query(
+        `SELECT tx_hash, tx_type, sender_address, recipient_address, amount, gas_fee, status, created_at
+         FROM ledger.transactions WHERE block_index = $1 ORDER BY created_at ASC`,
+        [height]
+      );
       return NextResponse.json({
         success: true, // required by catchUpFromArchive() in lightnode/client.ts — without it every response here was treated as a missing block
         height: row.block_index,
@@ -87,6 +96,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ heig
         timestamp,
         epoch: Math.floor(timestamp / 86_400_000),
         signature: signChainHeader(row.block_index, row.block_hash), // null if CHAIN_SIGNING_PRIVATE_KEY unset — same behavior as live sealing
+        transactions: txRes.rows,
       }, {
         headers: { 'Cache-Control': 'public, max-age=31536000, immutable' }, // block content is immutable once sealed
       });
@@ -135,6 +145,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ heig
       timestamp,
       epoch: Math.floor(timestamp / 86_400_000),
       signature: signChainHeader(row.block_index, row.block_hash),
+      // Cold storage only ever kept {tx_hash, created_at} per tx (see
+      // block_data's shape above) — no amount/sender/recipient/type. A
+      // full-node daemon rebuilding history through this tier gets less
+      // than it would from tier 1, which is the best this route can do
+      // until performRollingArchive() is changed to preserve full rows.
+      transactions: txs,
     }, {
       headers: { 'Cache-Control': 'public, max-age=31536000, immutable' },
     });

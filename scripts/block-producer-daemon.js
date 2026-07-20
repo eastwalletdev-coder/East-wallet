@@ -38,6 +38,13 @@
  *   EASTCHAIN_TELEGRAM_ID   Your Telegram ID
  *   EASTCHAIN_VAULT_PATH    Path to vault file (default: .eastchain-validator-vault.json in script dir)
  *
+ * Optional — full local ledger + peer-to-peer sync (see lib/full-node-sync.js):
+ *   EASTCHAIN_RAILWAY_WS_URL              Railway hub URL, e.g. wss://xxx.up.railway.app
+ *   EASTCHAIN_CHAIN_SIGNING_ADDRESS       same value as NEXT_PUBLIC_CHAIN_SIGNING_ADDRESS in the app
+ *   EASTCHAIN_SIGNING_ENFORCED_FROM_HEIGHT  optional, default 0
+ * Leave these unset and this daemon behaves exactly as before — full-node
+ * sync is additive, not required for block production to keep working.
+ *
  * Graceful shutdown: Ctrl+C — sends a final heartbeat, then exits.
  */
 
@@ -48,6 +55,7 @@ const crypto = require('crypto');
 const bip39 = require('bip39');
 const { derivePath } = require('ed25519-hd-key');
 const nacl = require('tweetnacl');
+const { FullNodeSync } = require('./lib/full-node-sync');
 
 const EAST_DERIVATION_PATH = "m/44'/501'/0'/0'";
 const DEFAULT_VAULT_PATH = path.join(__dirname, '.eastchain-validator-vault.json');
@@ -246,12 +254,34 @@ async function main() {
   const heartbeatTimer = setInterval(() => sendHeartbeat(apiUrl, telegramId, mnemonic), HEARTBEAT_INTERVAL_MS);
   const proposalTimer = setInterval(() => checkAndProduceBlock(apiUrl, telegramId, mnemonic), POLL_PROPOSAL_INTERVAL_MS);
 
+  // Full local ledger + peer-to-peer sync, so newly-joining validators can
+  // increasingly catch up from EACH OTHER instead of always pulling from
+  // Vercel directly. Opt-in via env var — a validator that hasn't set
+  // EASTCHAIN_RAILWAY_WS_URL just keeps working exactly as before.
+  let fullNodeSync = null;
+  const railwayWsUrl = process.env.EASTCHAIN_RAILWAY_WS_URL;
+  const chainSigningAddress = process.env.EASTCHAIN_CHAIN_SIGNING_ADDRESS;
+  if (railwayWsUrl && chainSigningAddress) {
+    fullNodeSync = new FullNodeSync({
+      railwayWsUrl,
+      appUrl: apiUrl,
+      chainSigningAddress,
+      signingEnforcedFromHeight: Number(process.env.EASTCHAIN_SIGNING_ENFORCED_FROM_HEIGHT || 0),
+      nodeId: `validator-${telegramId}`,
+    });
+    fullNodeSync.start();
+    log(`Full-node sync enabled (hub: ${railwayWsUrl})`);
+  } else {
+    log('Full-node sync disabled — set EASTCHAIN_RAILWAY_WS_URL and EASTCHAIN_CHAIN_SIGNING_ADDRESS to enable it.');
+  }
+
   process.on('SIGINT', async () => {
     if (isShuttingDown) return;
     isShuttingDown = true;
     log('\nMenerima SIGINT, mengirim heartbeat final sebelum keluar...');
     clearInterval(heartbeatTimer);
     clearInterval(proposalTimer);
+    fullNodeSync?.stop();
     await sendHeartbeat(apiUrl, telegramId, mnemonic);
     log('Daemon berhenti.');
     process.exit(0);
@@ -262,6 +292,7 @@ async function main() {
     isShuttingDown = true;
     clearInterval(heartbeatTimer);
     clearInterval(proposalTimer);
+    fullNodeSync?.stop();
     log('Menerima SIGTERM, berhenti.');
     process.exit(0);
   });

@@ -28,6 +28,7 @@
 import { ledgerPool } from '@/lib/db/ledger';
 import { getActiveExternalValidators } from '@/lib/db/identity';
 import { verifySignature } from '@/lib/keypair-service';
+import { setCachedProposal } from '@/lib/db/redis';
 import {
   computeMerkleRoot,
   computeSequenceHash,
@@ -104,7 +105,19 @@ async function createProposal(
        RETURNING id`,
       [blockIndex, leader.telegramId, leader.pubkeyHex, JSON.stringify(txHashes), isEmpty, deadline, prevHash]
     );
-    return res.rows[0].id;
+    const proposalId = res.rows[0].id;
+
+    // Write-through cache: the assigned leader's daemon polls
+    // /api/consensus/my-proposal every 2s (see block-producer-daemon.js) —
+    // populating Redis here means that poll can be answered without
+    // touching Postgres at all for the whole deadline window. TTL matches
+    // the deadline plus a small margin so it naturally expires alongside it.
+    await setCachedProposal(leader.telegramId, {
+      proposalId, blockIndex, prevHash, txHashes, isEmpty,
+      deadlineAt: deadline.toISOString(),
+    }, Math.ceil(LEADER_WINDOW_MS / 1000) + 2);
+
+    return proposalId;
   } finally {
     client.release();
   }

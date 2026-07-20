@@ -194,3 +194,132 @@ export async function checkArchiveRateLimit(identifier: string): Promise<{
     return { allowed: true }; // fail open — an archive hiccup shouldn't block a Light Node's sync
   }
 }
+
+// ─── Producer daemon endpoint caching + rate limits ────────────────
+// scripts/block-producer-daemon.js heartbeats every 30s AND polls
+// /api/consensus/my-proposal every 2s, FOREVER, per running daemon. Before
+// this, both hit Postgres on every single call — the 2s poll alone is
+// ~43,000 Postgres round trips/day per daemon. On Neon's free tier, that
+// means the compute node never gets to autosuspend (it only suspends
+// after a few minutes of true inactivity), so it silently burns through
+// the whole monthly compute-hour budget in days. Everything below either
+// serves repeat calls straight from Redis (free, no Neon cost) or caps
+// how often Postgres gets touched at all.
+
+async function checkGenericRateLimit(key: string, limit: number, windowSec: number): Promise<{
+  allowed: boolean;
+  remainingSeconds?: number;
+}> {
+  const r = getRedis();
+  if (!r) return { allowed: true };
+  try {
+    const count = await r.incr(key);
+    if (count === 1) await r.expire(key, windowSec);
+    if (count > limit) {
+      const ttl = await r.ttl(key);
+      return { allowed: false, remainingSeconds: ttl > 0 ? ttl : windowSec };
+    }
+    return { allowed: true };
+  } catch {
+    return { allowed: true };
+  }
+}
+
+// Defense-in-depth against a runaway/duplicate daemon (e.g. accidentally
+// started twice) — the daemon's own setInterval is the primary control,
+// this just caps the damage if that's ever bypassed. Generous margin over
+// the intended cadence so a healthy single daemon never trips it.
+export async function checkHeartbeatRateLimit(telegramId: string) {
+  return checkGenericRateLimit(`hb_rl:${telegramId}`, 4, 60); // ~1 per 30s intended → allow up to 4/min
+}
+export async function checkProposalPollRateLimit(telegramId: string) {
+  return checkGenericRateLimit(`proposal_rl:${telegramId}`, 45, 60); // ~1 per 2s intended (30/min) → allow up to 45/min
+}
+
+// Caches the identity.users/identity.validators JOIN that /api/node/heartbeat
+// needs to authorize a caller (self_custody_pubkey + is_active). This data
+// changes rarely — pubkey essentially never after self-custody registration,
+// is_active at most once per 24h epoch — so a 5-minute cache still stays
+// accurate enough while skipping the Postgres round trip on nearly every
+// 30s heartbeat call.
+const VALIDATOR_AUTH_CACHE_TTL_SEC = 300;
+
+export type ValidatorAuthCache = { pubkey: string; isActiveValidator: boolean };
+
+export async function getCachedValidatorAuth(telegramId: string): Promise<ValidatorAuthCache | null> {
+  const r = getRedis();
+  if (!r) return null;
+  try {
+    return await r.get<ValidatorAuthCache>(`validator-auth:${telegramId}`);
+  } catch {
+    return null;
+  }
+}
+
+export async function setCachedValidatorAuth(telegramId: string, auth: ValidatorAuthCache): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  try {
+    await r.set(`validator-auth:${telegramId}`, auth, { ex: VALIDATOR_AUTH_CACHE_TTL_SEC });
+  } catch {}
+}
+
+// Throttles the actual Postgres UPDATE inside recordValidatorHeartbeat().
+// Redis's own heartbeat key (recordHeartbeatRedis above) is already the
+// fast-path freshness source getActiveExternalValidators() reads — Postgres's
+// last_heartbeat_at only needs to stay roughly fresh as the DURABLE
+// fallback for when Redis is down, not updated on every single 30s ping.
+const PG_HEARTBEAT_WRITE_THROTTLE_SEC = 180; // write to Postgres at most once per 3 min per validator
+
+export async function shouldWriteHeartbeatToPostgres(telegramId: string): Promise<boolean> {
+  const r = getRedis();
+  if (!r) return true; // Redis down — Postgres is now the only source of truth, always write
+  const key = `hb_pg_throttle:${telegramId}`;
+  try {
+    // SET with NX only succeeds if the key didn't already exist — that's
+    // our "am I still within the throttle window" check in one round trip.
+    const result = await r.set(key, '1', { nx: true, ex: PG_HEARTBEAT_WRITE_THROTTLE_SEC });
+    return result !== null;
+  } catch {
+    return true; // fail open toward writing — never worse than pre-throttle behavior
+  }
+}
+
+// Write-through cache for a validator's currently-pending block proposal
+// (see createProposal() in leader-schedule.ts, which writes here right
+// after the Postgres INSERT). /api/consensus/my-proposal checks this FIRST
+// on every poll — a hit costs nothing against Neon. Distinguishes "checked,
+// nothing pending" ({pending:false} — trust it, skip Postgres) from "Redis
+// itself is unreachable" (null — caller MUST fall back to Postgres), same
+// convention as getFreshHeartbeatIdsRedis above. This is deliberately NOT
+// used to negative-cache "nothing pending" from the READ side — only the
+// WRITE side (the moment a proposal is actually created) populates it, so
+// a genuinely new proposal is visible on the daemon's very next 2s poll
+// instead of being hidden behind a stale negative cache.
+export type CachedProposal = {
+  proposalId: number;
+  blockIndex: number;
+  prevHash: string;
+  txHashes: string[];
+  isEmpty: boolean;
+  deadlineAt: string; // ISO
+};
+
+export async function setCachedProposal(telegramId: string, proposal: CachedProposal, ttlSeconds: number): Promise<void> {
+  const r = getRedis();
+  if (!r) return; // best-effort — the Postgres row is still the source of truth
+  try {
+    await r.set(`proposal:${telegramId}`, proposal, { ex: Math.max(1, ttlSeconds) });
+  } catch {}
+}
+
+export async function getCachedProposal(telegramId: string): Promise<CachedProposal | { pending: false } | null> {
+  const r = getRedis();
+  if (!r) return null; // unreachable — caller falls back to Postgres
+  try {
+    const cached = await r.get<CachedProposal>(`proposal:${telegramId}`);
+    return cached ?? { pending: false };
+  } catch {
+    return null;
+  }
+}

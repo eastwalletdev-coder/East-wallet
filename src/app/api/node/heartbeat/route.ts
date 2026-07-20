@@ -10,10 +10,26 @@
 // telegramId to already be an active validator (elected by runEpoch) —
 // heartbeating in does not grant validator status by itself, it only
 // proves liveness for someone already elected.
+//
+// CU note: this used to hit Postgres (a SELECT JOIN + an UPDATE) on every
+// single call, forever — at a 30s cadence that's a steady drip that never
+// lets Neon's free-tier compute autosuspend. Now: (1) rate-limited via
+// Redis before anything else, (2) the pubkey/is_active lookup is cached
+// (see getCachedValidatorAuth in db/redis.ts — 5 min TTL, this data barely
+// ever changes), and (3) the actual Postgres last_heartbeat_at UPDATE is
+// throttled to at most once per 3 min per validator (Redis's own heartbeat
+// key is already the fast-path freshness source; Postgres just needs to
+// stay roughly fresh as the durable fallback for when Redis is down).
 import { NextRequest, NextResponse } from 'next/server';
 import { identityPool, recordValidatorHeartbeat } from '@/lib/db/identity';
 import { verifySignature } from '@/lib/keypair-service';
-import { recordHeartbeatRedis } from '@/lib/db/redis';
+import {
+  recordHeartbeatRedis,
+  checkHeartbeatRateLimit,
+  getCachedValidatorAuth,
+  setCachedValidatorAuth,
+  shouldWriteHeartbeatToPostgres,
+} from '@/lib/db/redis';
 
 const MAX_CLOCK_SKEW_MS = 60_000; // reject heartbeats timestamped >60s off
 
@@ -25,27 +41,45 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'MISSING_FIELDS' }, { status: 400 });
     }
 
+    const rl = await checkHeartbeatRateLimit(telegramId);
+    if (!rl.allowed) {
+      return NextResponse.json(
+        { success: false, error: 'RATE_LIMITED' },
+        { status: 429, headers: { 'Retry-After': String(rl.remainingSeconds ?? 30) } }
+      );
+    }
+
     if (Math.abs(Date.now() - Number(timestampMs)) > MAX_CLOCK_SKEW_MS) {
       return NextResponse.json({ success: false, error: 'TIMESTAMP_OUT_OF_RANGE' }, { status: 400 });
     }
 
-    const client = await identityPool.connect();
     let pubkey: string | null = null;
     let isActiveValidator = false;
-    try {
-      const res = await client.query(
-        `SELECT u.self_custody_pubkey, v.is_active
-         FROM identity.users u
-         LEFT JOIN identity.validators v ON v.telegram_id = u.telegram_id
-         WHERE u.telegram_id = $1`,
-        [telegramId]
-      );
-      if (res.rows.length > 0) {
-        pubkey = res.rows[0].self_custody_pubkey;
-        isActiveValidator = res.rows[0].is_active === true;
+
+    const cachedAuth = await getCachedValidatorAuth(telegramId);
+    if (cachedAuth) {
+      pubkey = cachedAuth.pubkey;
+      isActiveValidator = cachedAuth.isActiveValidator;
+    } else {
+      const client = await identityPool.connect();
+      try {
+        const res = await client.query(
+          `SELECT u.self_custody_pubkey, v.is_active
+           FROM identity.users u
+           LEFT JOIN identity.validators v ON v.telegram_id = u.telegram_id
+           WHERE u.telegram_id = $1`,
+          [telegramId]
+        );
+        if (res.rows.length > 0) {
+          pubkey = res.rows[0].self_custody_pubkey;
+          isActiveValidator = res.rows[0].is_active === true;
+        }
+      } finally {
+        client.release();
       }
-    } finally {
-      client.release();
+      if (pubkey) {
+        await setCachedValidatorAuth(telegramId, { pubkey, isActiveValidator });
+      }
     }
 
     if (!pubkey) {
@@ -61,8 +95,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ success: false, error: 'INVALID_SIGNATURE' }, { status: 401 });
     }
 
-    await recordValidatorHeartbeat(telegramId);
-    await recordHeartbeatRedis(telegramId); // fast path for getActiveExternalValidators() — see db/redis.ts
+    // Redis is the fast-path freshness source (read on every leader-pick) —
+    // always update it. Postgres is the durable fallback — only touched
+    // when the throttle window has elapsed.
+    await recordHeartbeatRedis(telegramId);
+    if (await shouldWriteHeartbeatToPostgres(telegramId)) {
+      await recordValidatorHeartbeat(telegramId);
+    }
+
     return NextResponse.json({ success: true });
   } catch (err: any) {
     console.error('[EASTCHAIN] heartbeat error:', err);

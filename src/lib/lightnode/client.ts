@@ -46,6 +46,7 @@ const STEP_DELAY_MS = 600;           // pacing so the sync steps are visibly ani
 // by Postgres — R2 isn't used) and catchUpFromArchive() below.
 const RAILWAY_BACKFILL_LIMIT = 20;
 const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from the archive API
+const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long before falling back to the archive
 
 // Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
 // EIP-191) signature — no more "accepted but not cryptographically
@@ -204,6 +205,8 @@ export class LightNodeClient {
   private pingSentAt = 0;
   private url: string;
   private peerMesh: PeerMesh;
+  private fullSyncProviders: string[] = [];
+  private pendingFullSyncRequest: { fromNodeId: string; resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> } | null = null;
 
   constructor(url: string) {
     this.url = url;
@@ -285,26 +288,44 @@ export class LightNodeClient {
         case "welcome":
           this.set({ syncPhase: "downloading" });
           this.log("Synchronization Started");
-          if (msg.latestHeight >= 0) {
-            this.log(`Network tip is block #${msg.latestHeight}`);
-          }
-          {
-            const gap = msg.latestHeight - this.state.currentHeight;
-            // NEXT_PUBLIC_ARCHIVE_BASE_URL stays supported for anyone who
-            // still fronts the archive with a custom domain, but normally
-            // this is unset and we just hit the app's own API — no R2.
+          // Railway's own latestHeight is NOT trustworthy alone — it's only
+          // whatever block:new broadcasts Railway itself has seen since ITS
+          // last restart, not the real chain height. If Railway just
+          // restarted (or nothing's been sealed since), it reports -1 even
+          // when the real chain is at block #800+. Confirm with Vercel's
+          // authoritative /api/chain-height before deciding whether the gap
+          // needs the archive — otherwise a stale/-1 Railway tip makes a
+          // real 200-block gap look like "nothing to catch up", and this
+          // node quietly stays behind forever. Same fix as full-node-sync.js.
+          this.resolveNetworkTip(msg.latestHeight).then(async (latestHeight) => {
+            if (latestHeight >= 0) {
+              this.log(`Network tip is block #${latestHeight}`);
+            }
+            const gap = latestHeight - this.state.currentHeight;
             const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
-            if (gap > RAILWAY_BACKFILL_LIMIT + 1 && archiveUrl) {
-              // Gap bigger than Railway's ring buffer can cover — pull the
-              // older portion from the archive API first, then let
-              // Railway's normal backfill handle just the recent tail.
-              this.catchUpFromArchive(archiveUrl, msg.latestHeight);
-            } else {
+
+            if (gap > RAILWAY_BACKFILL_LIMIT + 1) {
+              // Prefer a peer (validator daemon or another full node) over
+              // Vercel first — spreads catch-up load across the network
+              // instead of every node with a gap hitting the same
+              // serverless endpoint. Best-effort: currentHeight advances as
+              // far as the peer's contiguous, verified response reaches,
+              // then whatever's still missing falls through below.
+              await this.tryPeerCatchUp(this.state.currentHeight + 1, latestHeight);
+            }
+
+            const remainingGap = latestHeight - this.state.currentHeight;
+            if (remainingGap > RAILWAY_BACKFILL_LIMIT + 1 && archiveUrl) {
+              this.catchUpFromArchive(archiveUrl, latestHeight);
+            } else if (remainingGap > 0) {
+              // Small enough for Railway's own ring-buffer backfill, or no
+              // peer/archive was available — this is the same request the
+              // hub already understands.
               this.ws?.send(JSON.stringify({
                 type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
               }));
             }
-          }
+          });
           break;
 
         case "block:backfill":
@@ -349,6 +370,14 @@ export class LightNodeClient {
         case "relay:demoted":
           this.set({ isRelay: false });
           this.log("Demoted from relay node (fell out of Railway's top tier)");
+          break;
+
+        case "full_sync_providers":
+          this.fullSyncProviders = msg.nodeIds || [];
+          break;
+
+        case "full_sync_response":
+          this.handleFullSyncResponse(msg.fromNodeId, msg.blocks || []);
           break;
 
         case "webrtc_offer":
@@ -439,6 +468,74 @@ export class LightNodeClient {
     this.log("Local Ledger Updated");
     this.set({ syncPhase: "live" });
     this.checkEligibility();
+  }
+
+  // Asks a random known full-sync provider (a validator daemon or another
+  // full node — never another browser Light Node, which never reports
+  // hasFullLedger) for [from..to], relayed blind through Railway (see
+  // full_sync_request/full_sync_response in server.ts). Resolves true only
+  // if the peer's response got us all the way to `to`; a timeout or a
+  // short/partial response resolves false, and whatever WAS applied stays
+  // applied (currentHeight only ever advances, never rolls back) — the
+  // caller in the "welcome" handler picks up wherever this left off.
+  private async tryPeerCatchUp(from: number, to: number): Promise<boolean> {
+    if (this.fullSyncProviders.length === 0 || !this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    if (this.pendingFullSyncRequest) return false; // one in flight at a time is enough
+
+    const peer = this.fullSyncProviders[Math.floor(Math.random() * this.fullSyncProviders.length)];
+    this.log(`Requesting #${from}–#${to} from peer ${peer.slice(0, 8)}…`);
+
+    const ok = await new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingFullSyncRequest = null;
+        this.log(`Peer ${peer.slice(0, 8)}… timed out — falling back`, "warn");
+        resolve(false);
+      }, FULL_SYNC_PEER_TIMEOUT_MS);
+      this.pendingFullSyncRequest = { fromNodeId: peer, resolve, timer };
+      this.ws!.send(JSON.stringify({ type: "full_sync_request", toNodeId: peer, fromHeight: from, toHeight: to }));
+    });
+
+    return ok && this.state.currentHeight >= to;
+  }
+
+  private handleFullSyncResponse(fromNodeId: string, blocks: any[]) {
+    // Apply in height order — applyHeader() only advances currentHeight for
+    // the immediate next block, so an out-of-order or gappy batch just
+    // stalls at the first hole rather than corrupting anything.
+    const sorted = [...blocks].sort((a, b) => a.height - b.height);
+    for (const block of sorted) {
+      if (block.height !== this.state.currentHeight + 1) continue; // not next — skip, don't break the chain
+      this.applyHeader(block, true);
+    }
+    this.log(`Peer ${fromNodeId.slice(0, 8)}… sent ${blocks.length} block(s), now at #${this.state.currentHeight}`);
+
+    const pending = this.pendingFullSyncRequest;
+    if (pending && pending.fromNodeId === fromNodeId) {
+      clearTimeout(pending.timer);
+      this.pendingFullSyncRequest = null;
+      pending.resolve(true);
+    }
+  }
+
+  // Confirms Railway's self-reported tip against Vercel's own /api/chain-height
+  // (straight from Postgres) before this node commits to a sync strategy.
+  // Only overrides Railway's number when Vercel reports something HIGHER —
+  // if Vercel is unreachable, or reports lower/equal, Railway's figure is
+  // used as-is rather than blocking sync on this one extra request.
+  private async resolveNetworkTip(railwayLatestHeight: number): Promise<number> {
+    const appUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
+    if (!appUrl) return railwayLatestHeight;
+    try {
+      const res = await fetch(`${appUrl.replace(/\/$/, "")}/api/chain-height`);
+      if (!res.ok) return railwayLatestHeight;
+      const data = await res.json();
+      if (typeof data.latestHeight === "number" && data.latestHeight > railwayLatestHeight) {
+        return data.latestHeight;
+      }
+      return railwayLatestHeight;
+    } catch {
+      return railwayLatestHeight; // Vercel check failed — fall back to Railway's own number rather than stalling
+    }
   }
 
   // Pulls headers for [currentHeight+1 .. latestHeight-RAILWAY_BACKFILL_LIMIT]

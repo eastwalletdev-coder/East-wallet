@@ -207,6 +207,7 @@ export class LightNodeClient {
   private peerMesh: PeerMesh;
   private fullSyncProviders: string[] = [];
   private pendingFullSyncRequest: { fromNodeId: string; resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private isSyncing = false; // 🔥 NEW: Prevent concurrent sync attempts
 
   constructor(url: string) {
     this.url = url;
@@ -314,17 +315,8 @@ export class LightNodeClient {
               await this.tryPeerCatchUp(this.state.currentHeight + 1, latestHeight);
             }
 
-            const remainingGap = latestHeight - this.state.currentHeight;
-            if (remainingGap > RAILWAY_BACKFILL_LIMIT + 1 && archiveUrl) {
-              this.catchUpFromArchive(archiveUrl, latestHeight);
-            } else if (remainingGap > 0) {
-              // Small enough for Railway's own ring-buffer backfill, or no
-              // peer/archive was available — this is the same request the
-              // hub already understands.
-              this.ws?.send(JSON.stringify({
-                type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
-              }));
-            }
+            // 🔥 NEW: After peer attempt, check remaining gap and loop
+            await this.checkAndContinueSync();
           });
           break;
 
@@ -452,7 +444,10 @@ export class LightNodeClient {
     if (headers.length === 0) {
       // Nothing cached on Railway yet (fresh restart) — fall through to
       // live blocks as they arrive naturally.
+      this.log("⚠️ No backfill available from Railway");
       this.set({ syncPhase: "live" });
+      // 🔥 NEW: Check if we still need to sync
+      await this.checkAndContinueSync();
       return;
     }
     this.set({ syncPhase: "downloading", syncProgress: { current: 0, total: headers.length } });
@@ -468,6 +463,10 @@ export class LightNodeClient {
     this.log("Local Ledger Updated");
     this.set({ syncPhase: "live" });
     this.checkEligibility();
+
+    // 🔥 NEW: After backfill complete, check if we need to sync more
+    this.log(`📊 Backfill processed: ${headers.length} blocks (now at #${this.state.currentHeight})`);
+    await this.checkAndContinueSync();
   }
 
   // Asks a random known full-sync provider (a validator daemon or another
@@ -483,12 +482,12 @@ export class LightNodeClient {
     if (this.pendingFullSyncRequest) return false; // one in flight at a time is enough
 
     const peer = this.fullSyncProviders[Math.floor(Math.random() * this.fullSyncProviders.length)];
-    this.log(`Requesting #${from}–#${to} from peer ${peer.slice(0, 8)}…`);
+    this.log(`🔗 Requesting #${from}–#${to} from peer ${peer.slice(0, 8)}…`);
 
     const ok = await new Promise<boolean>((resolve) => {
       const timer = setTimeout(() => {
         this.pendingFullSyncRequest = null;
-        this.log(`Peer ${peer.slice(0, 8)}… timed out — falling back`, "warn");
+        this.log(`⏱️ Peer ${peer.slice(0, 8)}… timed out — falling back`, "warn");
         resolve(false);
       }, FULL_SYNC_PEER_TIMEOUT_MS);
       this.pendingFullSyncRequest = { fromNodeId: peer, resolve, timer };
@@ -507,7 +506,7 @@ export class LightNodeClient {
       if (block.height !== this.state.currentHeight + 1) continue; // not next — skip, don't break the chain
       this.applyHeader(block, true);
     }
-    this.log(`Peer ${fromNodeId.slice(0, 8)}… sent ${blocks.length} block(s), now at #${this.state.currentHeight}`);
+    this.log(`✅ Peer ${fromNodeId.slice(0, 8)}… sent ${blocks.length} block(s), now at #${this.state.currentHeight}`);
 
     const pending = this.pendingFullSyncRequest;
     if (pending && pending.fromNodeId === fromNodeId) {
@@ -515,6 +514,11 @@ export class LightNodeClient {
       this.pendingFullSyncRequest = null;
       pending.resolve(true);
     }
+
+    // 🔥 NEW: After peer sync, check if more syncing needed
+    this.checkAndContinueSync().catch((err) => {
+      this.log(`Error during post-peer sync check: ${err}`, "warn");
+    });
   }
 
   // Confirms Railway's self-reported tip against Vercel's own /api/chain-height
@@ -538,6 +542,66 @@ export class LightNodeClient {
     }
   }
 
+  // 🔥 NEW: Check for remaining gap and continue syncing if needed
+  private async checkAndContinueSync(): Promise<void> {
+    // Prevent concurrent sync attempts
+    if (this.isSyncing) {
+      this.log("🔄 Sync already in progress, skipping check");
+      return;
+    }
+
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.log("⚠️ WebSocket not open, cannot continue sync");
+      return;
+    }
+
+    try {
+      this.isSyncing = true;
+
+      // Get latest network height
+      const latestHeight = await this.resolveNetworkTip(-1);
+      if (latestHeight < 0) {
+        this.log("⚠️ Could not resolve network tip height");
+        return;
+      }
+
+      const currentHeight = this.state.currentHeight;
+      const remainingGap = latestHeight - currentHeight;
+
+      this.log(`📊 Sync status: current=#${currentHeight}, network=#${latestHeight}, gap=${remainingGap} blocks`);
+
+      if (remainingGap <= 0) {
+        // ✅ Fully synced!
+        this.set({ syncPhase: "live" });
+        this.log(`✅ FULLY SYNCED at block #${currentHeight}`);
+        return;
+      }
+
+      this.log(`⚠️ Gap still exists: ${remainingGap} blocks`);
+
+      const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
+
+      if (remainingGap > RAILWAY_BACKFILL_LIMIT + 1 && archiveUrl) {
+        // Gap is too large for Railway backfill - need to fetch from archive
+        this.log(`🔄 Fetching next batch from archive (gap: ${remainingGap} blocks)...`);
+        await this.catchUpFromArchive(archiveUrl, latestHeight);
+        
+        // Recursively check if more syncing is needed
+        await this.checkAndContinueSync();
+      } else if (remainingGap > 0) {
+        // Small gap - request from Railway
+        this.log(`📤 Requesting ${remainingGap} blocks from Railway...`);
+        this.ws.send(JSON.stringify({
+          type: "sync_request",
+          nodeId: this.state.nodeId,
+          fromHeight: currentHeight + 1,
+        }));
+      }
+    } finally {
+      this.isSyncing = false;
+    }
+  }
+
   // Pulls headers for [currentHeight+1 .. latestHeight-RAILWAY_BACKFILL_LIMIT]
   // from the app's own archive API (backed by Postgres — see
   // src/app/api/archive/blocks/[height]/route.ts), verifies each via the
@@ -551,11 +615,12 @@ export class LightNodeClient {
     const totalToFetch = targetHeight - fromHeight + 1;
 
     if (totalToFetch <= 0) {
+      this.log(`⏭️ Archive range complete, requesting final ${RAILWAY_BACKFILL_LIMIT} blocks from Railway`);
       this.ws?.send(JSON.stringify({ type: "sync_request", nodeId: this.state.nodeId, fromHeight }));
       return;
     }
 
-    this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — fetching archive…`);
+    this.log(`📦 Fetching ${totalToFetch} blocks from archive (gap: ${latestHeight - this.state.currentHeight})...`);
     this.set({ syncPhase: "downloading", syncProgress: { current: 0, total: totalToFetch } });
 
     const heights: number[] = [];
@@ -584,7 +649,7 @@ export class LightNodeClient {
           // Missing/unreachable object — stop trusting the archive from
           // here on and let Railway's normal (possibly partial) backfill
           // take over for whatever remains. Not treated as tampering.
-          this.log(`Archive missing block #${h} — falling back to hub backfill for the rest`, "warn");
+          this.log(`❌ Archive missing block #${h} — falling back to Railway`, "warn");
           this.ws?.send(JSON.stringify({
             type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
           }));
@@ -597,11 +662,15 @@ export class LightNodeClient {
       }
     }
 
-    this.log(`Archive catch-up complete — ${fetchedCount} block(s) verified from archive`);
-    // Now ask Railway for just the recent tail to reach the true live tip.
-    this.ws?.send(JSON.stringify({
-      type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
-    }));
+    this.log(`✅ Archive batch complete — ${fetchedCount}/${totalToFetch} blocks verified`);
+    // 🔥 NEW: After archive batch, request remaining tail from Railway
+    const newGap = latestHeight - this.state.currentHeight;
+    if (newGap > 0) {
+      this.log(`📤 Requesting final ${newGap} blocks from Railway...`);
+      this.ws?.send(JSON.stringify({
+        type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
+      }));
+    }
   }
 
   private startRelayStats() {

@@ -155,8 +155,16 @@ class FullNodeSync {
 
     switch (msg.type) {
       case 'welcome':
+        // Railway's own latestHeight is NOT trustworthy here — it's only
+        // whatever block:new broadcasts Railway itself has seen since ITS
+        // last restart, not the real chain height. If Railway just
+        // restarted (or nothing's been sealed since), it reports -1 even
+        // when the real chain is at block #800+. Ask Vercel directly for
+        // the authoritative number instead of catching up to Railway's
+        // possibly-wrong idea of the tip.
         this.networkTipHeight = msg.latestHeight ?? -1;
-        log(`Connected. Network tip: #${this.networkTipHeight}. Local tip: #${this.ledger.getLatestHeight()}.`);
+        log(`Connected. Railway's own tip: #${this.networkTipHeight}. Local tip: #${this.ledger.getLatestHeight()}. Confirming real height with Vercel...`);
+        await this._refreshRealNetworkTip();
         this._catchUp();
         break;
 
@@ -192,6 +200,20 @@ class FullNodeSync {
       verifiedHeaderCount: this.ledger.size,
       hasFullLedger: this.networkTipHeight >= 0 && this.ledger.getLatestHeight() >= this.networkTipHeight,
     }));
+  }
+
+  async _refreshRealNetworkTip() {
+    try {
+      const res = await fetch(`${this.appUrl}/api/chain-height`);
+      if (!res.ok) { log(`  Vercel height check failed (${res.status}) — keeping Railway's figure.`); return; }
+      const data = await res.json();
+      if (typeof data.latestHeight === 'number' && data.latestHeight > this.networkTipHeight) {
+        log(`  Vercel says real tip is #${data.latestHeight} (Railway said #${this.networkTipHeight}) — using Vercel's number.`);
+        this.networkTipHeight = data.latestHeight;
+      }
+    } catch (err) {
+      log(`  Vercel height check failed (${err.message}) — keeping Railway's figure.`);
+    }
   }
 
   // ── Catch-up ──────────────────────────────────────────────────────

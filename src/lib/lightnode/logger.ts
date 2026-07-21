@@ -363,7 +363,8 @@ export class LightNodeLogger {
     }
 
     if (options?.since) {
-      filtered = filtered.filter((l) => l.timestamp >= options.since);
+      const since = options.since;
+      filtered = filtered.filter((l) => l.timestamp >= since);
     }
 
     if (options?.limit) {

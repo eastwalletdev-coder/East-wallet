@@ -37,16 +37,29 @@ const MIN_PARTICIPATION_SECONDS = 120; // 2 minutes
 const STEP_DELAY_MS = 600;           // pacing so the sync steps are visibly animated,
                                       // not an instant jump-cut to "done"
 
-// Railway's WS hub only keeps a small in-memory ring buffer of recent
-// headers for backfill (~20) — it's a lightweight relay, not a database.
-// If our gap is bigger than that, Railway alone can't fill it (see
-// verifyHeader's "accept the jump" comment below). Beyond this threshold,
-// fetch the missing range from the app's own archive API first — see
-// src/app/api/archive/blocks/[height]/route.ts (server read side, backed
-// by Postgres — R2 isn't used) and catchUpFromArchive() below.
+// How big a gap has to be before we stop trusting Railway's plain
+// sync_request and proactively go get it from a peer (an external
+// validator's full ledger) or the archive instead. This must stay SMALL —
+// it's the trigger for actually using external validators at all. A gap
+// of, say, 859 blocks is exactly the case a Termux/VPS validator's
+// full-node-sync.js is built to serve; if this threshold is too high, the
+// client just never asks the validator in the first place, no matter how
+// many are online.
+const PEER_AND_ARCHIVE_TRIGGER_GAP = 20;
+
+// Raw capacity of Railway's in-memory ring buffer (see BACKFILL_SIZE in
+// railway-server's server.ts — keep these two in sync). Only used to size
+// the small "tail" left for Railway's own backfill after archive-filling
+// the rest in catchUpFromArchive() — NOT used to decide whether to trust
+// Railway in the first place (that's PEER_AND_ARCHIVE_TRIGGER_GAP above).
+// The buffer resets to empty on every Railway restart/redeploy (it only
+// refills from live block:new broadcasts going forward, never
+// retroactively) — that's what SYNC_REQUEST_WATCHDOG_MS below guards
+// against even for the small tail.
 const RAILWAY_BACKFILL_LIMIT = 1000;
 const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from the archive API
 const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long before falling back to the archive
+const SYNC_REQUEST_WATCHDOG_MS = 10_000; // if a plain sync_request hasn't closed the gap by then, Railway's buffer likely didn't have it — fall back to the archive instead of hanging forever
 
 // Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
 // EIP-191) signature — no more "accepted but not cryptographically
@@ -207,6 +220,7 @@ export class LightNodeClient {
   private peerMesh: PeerMesh;
   private fullSyncProviders: string[] = [];
   private pendingFullSyncRequest: { fromNodeId: string; resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> } | null = null;
+  private syncRequestWatchdog: ReturnType<typeof setTimeout> | null = null;
 
   constructor(url: string) {
     this.url = url;
@@ -304,7 +318,7 @@ export class LightNodeClient {
             const gap = latestHeight - this.state.currentHeight;
             const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
 
-            if (gap > RAILWAY_BACKFILL_LIMIT + 1) {
+            if (gap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1) {
               // Prefer a peer (validator daemon or another full node) over
               // Vercel first — spreads catch-up load across the network
               // instead of every node with a gap hitting the same
@@ -315,7 +329,7 @@ export class LightNodeClient {
             }
 
             const remainingGap = latestHeight - this.state.currentHeight;
-            if (remainingGap > RAILWAY_BACKFILL_LIMIT + 1 && archiveUrl) {
+            if (remainingGap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1 && archiveUrl) {
               this.catchUpFromArchive(archiveUrl, latestHeight);
             } else if (remainingGap > 0) {
               // Small enough for Railway's own ring-buffer backfill, or no
@@ -324,6 +338,22 @@ export class LightNodeClient {
               this.ws?.send(JSON.stringify({
                 type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
               }));
+
+              // Safety net: Railway's buffer is only whatever it's seen
+              // live since its own last restart — it can come back empty
+              // even for a gap "small enough" per RAILWAY_BACKFILL_LIMIT.
+              // If the gap still isn't closed by the time this fires, stop
+              // waiting on a backfill that may never come and go get the
+              // exact missing range from the archive instead.
+              if (this.syncRequestWatchdog) clearTimeout(this.syncRequestWatchdog);
+              const targetHeight = latestHeight;
+              this.syncRequestWatchdog = setTimeout(() => {
+                this.syncRequestWatchdog = null;
+                if (this.state.currentHeight < targetHeight && archiveUrl) {
+                  this.log(`Hub backfill didn't close the gap (#${this.state.currentHeight} of #${targetHeight}) after ${SYNC_REQUEST_WATCHDOG_MS / 1000}s — falling back to archive`, "warn");
+                  this.fetchArchiveRange(archiveUrl, this.state.currentHeight + 1, targetHeight);
+                }
+              }, SYNC_REQUEST_WATCHDOG_MS);
             }
           });
           break;
@@ -401,6 +431,7 @@ export class LightNodeClient {
       this.stopParticipationClock();
       this.stopRelayStats();
       this.peerMesh.disconnectAll();
+      if (this.syncRequestWatchdog) { clearTimeout(this.syncRequestWatchdog); this.syncRequestWatchdog = null; }
 
       if (this.manualDisconnect) return; // user closed it — don't fight that
       const delay = withJitter(this.reconnectDelayMs);
@@ -548,18 +579,34 @@ export class LightNodeClient {
   private async catchUpFromArchive(archiveBaseUrl: string, latestHeight: number) {
     const targetHeight = latestHeight - RAILWAY_BACKFILL_LIMIT;
     const fromHeight = this.state.currentHeight + 1;
-    const totalToFetch = targetHeight - fromHeight + 1;
 
-    if (totalToFetch <= 0) {
+    if (targetHeight < fromHeight) {
       this.ws?.send(JSON.stringify({ type: "sync_request", nodeId: this.state.nodeId, fromHeight }));
       return;
     }
 
     this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — fetching archive…`);
+    await this.fetchArchiveRange(archiveBaseUrl, fromHeight, targetHeight);
+
+    // Now ask Railway for just the recent tail to reach the true live tip.
+    this.ws?.send(JSON.stringify({
+      type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
+    }));
+  }
+
+  // Fetches and applies [fromHeight..toHeight] from the app's own Postgres-
+  // backed archive API, in small concurrent batches. Shared by
+  // catchUpFromArchive() (gap too big for Railway's buffer by our own
+  // estimate) and the sync_request watchdog above (gap looked small enough,
+  // but Railway's buffer didn't actually have it — same fallback either way).
+  private async fetchArchiveRange(archiveBaseUrl: string, fromHeight: number, toHeight: number) {
+    const totalToFetch = toHeight - fromHeight + 1;
+    if (totalToFetch <= 0) return;
+
     this.set({ syncPhase: "downloading", syncProgress: { current: 0, total: totalToFetch } });
 
     const heights: number[] = [];
-    for (let h = fromHeight; h <= targetHeight; h++) heights.push(h);
+    for (let h = fromHeight; h <= toHeight; h++) heights.push(h);
 
     let fetchedCount = 0;
     for (let i = 0; i < heights.length; i += ARCHIVE_CONCURRENCY) {
@@ -598,10 +645,6 @@ export class LightNodeClient {
     }
 
     this.log(`Archive catch-up complete — ${fetchedCount} block(s) verified from archive`);
-    // Now ask Railway for just the recent tail to reach the true live tip.
-    this.ws?.send(JSON.stringify({
-      type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
-    }));
   }
 
   private startRelayStats() {

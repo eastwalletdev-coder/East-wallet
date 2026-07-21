@@ -80,7 +80,7 @@ async function sealBlock(
   txs: PendingTx[],
   isEmpty: boolean,
   validatorIdOverride?: string | null,
-  producedBlockOverride?: { blockHash: string; merkleRoot: string; sequenceHash: string; timestampMs: number } | null
+  producedBlockOverride?: { blockHash: string; merkleRoot: string; sequenceHash: string; timestampMs: number; blockIndex: number; prevHash: string } | null
 ): Promise<{
   success: boolean;
   blockIndex?: number;
@@ -107,16 +107,27 @@ async function sealBlock(
     // If a leader's production was already verified in leader-schedule.ts
     // (see validateAndAcceptProduction), use THOSE values — that's the
     // whole point of letting the external node produce the block. We
-    // still re-verify here as a final belt-and-suspenders check: if the
-    // chain tip somehow moved between verification and sealing (it
-    // shouldn't, sealBlock is single-flight via isProcessing), fall back
-    // to computing fresh rather than writing a now-inconsistent block.
+    // still re-verify here as a final belt-and-suspenders check: the
+    // leader's wait window (LEADER_WINDOW_MS, up to ~15s) is NOT covered
+    // by the isProcessing single-flight guard below (that only applies
+    // once THIS call reaches sealBlock) — a concurrent request (e.g. the
+    // empty-block cron, or another user's claim) can seal a different
+    // block in the meantime and shift the real chain tip. merkleRoot
+    // alone doesn't catch that: it only depends on this block's own tx
+    // hashes, which don't change — but blockHash/sequenceHash are also
+    // functions of blockIndex + prevHash, and THOSE can have moved. Using
+    // a stale blockHash/sequenceHash under a new index+prevHash would
+    // write a block whose stored hash doesn't actually match its own
+    // position in the chain. So all three must still agree, not just merkleRoot.
     let timestamp: number;
     let merkleRoot: string;
     let sequenceHash: string;
     let blockHash: string;
 
-    const stillConsistent = producedBlockOverride && freshMerkleRoot === producedBlockOverride.merkleRoot;
+    const stillConsistent = producedBlockOverride
+      && freshMerkleRoot === producedBlockOverride.merkleRoot
+      && blockIndex === producedBlockOverride.blockIndex
+      && prevHash === producedBlockOverride.prevHash;
     if (stillConsistent) {
       timestamp = producedBlockOverride!.timestampMs;
       merkleRoot = producedBlockOverride!.merkleRoot;
@@ -124,7 +135,7 @@ async function sealBlock(
       blockHash = producedBlockOverride!.blockHash;
     } else {
       if (producedBlockOverride) {
-        console.warn(`[EASTCHAIN] Block #${blockIndex}: producedBlockOverride no longer consistent with current chain tip — sealing fresh instead.`);
+        console.warn(`[EASTCHAIN] Block #${blockIndex}: producedBlockOverride no longer consistent with current chain tip (index/prevHash/merkleRoot shifted — likely a concurrent seal during the leader's wait window) — sealing fresh instead.`);
       }
       timestamp = Date.now();
       merkleRoot = freshMerkleRoot;

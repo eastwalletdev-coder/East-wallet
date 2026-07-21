@@ -50,6 +50,8 @@ export type ValidatedProduction = {
   merkleRoot: string;
   sequenceHash: string;
   timestampMs: number;
+  blockIndex: number;
+  prevHash: string;
 };
 
 /**
@@ -241,7 +243,8 @@ export async function getValidatedProduction(proposalId: number): Promise<Valida
   const client = await ledgerPool.connect();
   try {
     const res = await client.query(
-      `SELECT submitted_block_hash, submitted_merkle_root, submitted_sequence_hash, submitted_timestamp_ms
+      `SELECT submitted_block_hash, submitted_merkle_root, submitted_sequence_hash, submitted_timestamp_ms,
+              block_index, prev_hash
        FROM ledger.block_proposals WHERE id = $1 AND status = 'submitted'`,
       [proposalId]
     );
@@ -255,6 +258,8 @@ export async function getValidatedProduction(proposalId: number): Promise<Valida
       merkleRoot: r.submitted_merkle_root,
       sequenceHash: r.submitted_sequence_hash,
       timestampMs: Number(r.submitted_timestamp_ms),
+      blockIndex: r.block_index,
+      prevHash: r.prev_hash,
     };
   } finally {
     client.release();

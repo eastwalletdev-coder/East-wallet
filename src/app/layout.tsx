@@ -7,6 +7,7 @@ import { RPCProvider } from '@/lib/rpc-context';
 import Link from 'next/link';
 import { Globe } from 'lucide-react';
 import { SplashScreen } from '@/components/SplashScreen';
+import { SpeedInsights } from '@vercel/speed-insights/next';
 
 export const metadata: Metadata = {
   title: 'EAST Wallet',
@@ -46,6 +47,7 @@ export default function RootLayout({
             <Toaster />
           </RPCProvider>
         </WalletProvider>
+        <SpeedInsights />
       </body>
     </html>
   );

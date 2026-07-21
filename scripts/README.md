@@ -64,7 +64,7 @@ Daemon ini:
 - Membaca vault lokal (tanya password sekali saat startup)
 - Kirim heartbeat tiap 30 detik ke `/api/node/heartbeat`
 - Server track `last_heartbeat_at` Anda — jadi Anda counted sebagai "active external validator"
-- Kalau ≥2 validator eksternal aktif, leader-proposal mode aktif dan Anda punya chance dapat giliran eksekusi block
+- Kalau ≥1 validator eksternal aktif, leader-proposal mode aktif dan Anda punya chance dapat giliran eksekusi block
 
 ## Environment Variables
 

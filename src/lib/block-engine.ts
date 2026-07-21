@@ -51,13 +51,22 @@ async function getLastBlock(): Promise<{ blockIndex: number; blockHash: string }
 }
 
 // ─── Get active validator ─────────────────────────────────────────
+// Used for EMPTY blocks only (see sealBlock below). Prefers an elected
+// validator that's node_type='external' (an independent node someone is
+// actually running) over the internal_vercel default — otherwise the
+// internal placeholder row can outrank a live external validator purely
+// on total_score and end up as validator_id on every empty block even
+// while external validators are online. Falls back to internal_vercel
+// (or whichever row scores highest) only when no external validator is
+// currently elected — the chain must never stall for lack of an empty-
+// block validator.
 export async function getActiveValidator(): Promise<string | null> {
   const client = await identityPool.connect();
   try {
     const res = await client.query(`
       SELECT telegram_id FROM identity.validators
       WHERE is_active = TRUE
-      ORDER BY total_score DESC
+      ORDER BY (node_type = 'external') DESC, total_score DESC
       LIMIT 1
     `);
     return res.rows[0]?.telegram_id || null;
@@ -241,7 +250,7 @@ async function sealBlock(
 }
 
 // ─── Mode-switching wrapper: internal (Vercel self-produce) vs ───
-// ─── leader-proposal (2+ active external validator nodes) ────────
+// ─── leader-proposal (1+ active external validator node) ─────────
 async function attemptSealOrPropose(txs: PendingTx[], isEmpty: boolean): Promise<ReturnType<typeof sealBlock>> {
   const { blockIndex: lastIndex, blockHash: prevHash } = await getLastBlock();
   const nextBlockIndex = lastIndex + 1;

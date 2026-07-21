@@ -1,7 +1,7 @@
 /**
  * EASTCHAIN — Leader schedule / block proposals
  * ─────────────────────────────────────────────────────────────────────
- * Once 2+ external validator nodes are genuinely live, Vercel assigns the
+ * Once 1+ external validator node is genuinely live, Vercel assigns the
  * next block slot to a deterministically-picked leader and gives it a
  * short window to actually COMPUTE and submit the block (merkleRoot,
  * sequenceHash, blockHash) rather than just counter-signing a fixed
@@ -68,10 +68,10 @@ export function pickLeader(
   return { telegramId: chosen.telegramId, pubkeyHex: chosen.selfCustodyPubkey };
 }
 
-/** True once 2+ external nodes are genuinely live — the mode-switch condition. */
+/** True once 1+ external node is genuinely live — the mode-switch condition. */
 export async function isLeaderProposalModeActive(): Promise<boolean> {
   const active = await getActiveExternalValidators();
-  return active.length >= 2;
+  return active.length >= 1;
 }
 
 /**
@@ -83,7 +83,7 @@ export async function isLeaderProposalModeActive(): Promise<boolean> {
  */
 export async function resolveBlockProducer(blockIndex: number): Promise<string | null> {
   const activeExternal = await getActiveExternalValidators();
-  if (activeExternal.length < 2) return null;
+  if (activeExternal.length < 1) return null;
   const leader = pickLeader(activeExternal, blockIndex);
   return leader?.telegramId ?? null;
 }
@@ -202,7 +202,7 @@ export async function planBlockProduction(
   | { mode: 'leader'; leader: LeaderAssignment; proposalId: number; waitForAttestation: () => Promise<boolean> }
 > {
   const activeExternal = await getActiveExternalValidators();
-  if (activeExternal.length < 2) {
+  if (activeExternal.length < 1) {
     return { mode: 'internal' };
   }
 

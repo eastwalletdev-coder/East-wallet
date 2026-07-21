@@ -157,7 +157,7 @@ export default function ConsensusStatusPage() {
             <span className="font-semibold">Internal Mode:</span> Vercel self-produces all blocks. No external validator nodes are actively participating yet.
           </p>
           <p>
-            <span className="font-semibold">Leader-Proposal Mode:</span> ≥2 external validator nodes are online and sending heartbeats. Vercel deterministically elects one as leader for each block; they have a window to counter-sign (future). Currently Vercel still seals blocks and credits elected leaders.
+            <span className="font-semibold">Leader-Proposal Mode:</span> ≥1 external validator node is online and sending heartbeats. Vercel deterministically elects one as leader for each block; they have a window to counter-sign (future). Currently Vercel still seals blocks and credits elected leaders.
           </p>
         </div>
       </div>

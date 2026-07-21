@@ -375,7 +375,7 @@ export async function migrateIdentityV8() {
  *     produces on their behalf, exactly like today) or 'external' (they run
  *     their own always-on process that heartbeats in).
  *   - last_heartbeat_at: updated by /api/node/heartbeat. A validator only
- *     counts toward the "2+ active external nodes" leader-proposal
+ *     counts toward the "1+ active external nodes" leader-proposal
  *     threshold if this is recent — being scored highly is not enough on
  *     its own.
  */
@@ -503,7 +503,7 @@ export async function recordValidatorHeartbeat(telegramId: string): Promise<void
 /**
  * Active external validators right now — is_active (won this epoch's
  * scoring) AND node_type='external' AND heartbeat fresh. This is the list
- * leader-schedule.ts picks from and counts against the "2+" threshold.
+ * leader-schedule.ts picks from and counts against the "1+" threshold.
  *
  * Freshness is checked via Redis first (see db/redis.ts — every heartbeat
  * writes there too, TTL'd to expire on its own after HEARTBEAT_FRESHNESS_SECONDS,

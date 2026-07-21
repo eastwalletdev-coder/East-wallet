@@ -133,7 +133,7 @@ Troubleshooting:
       number: 8,
       title: 'Get Block Execution Rights (Future)',
       content: `
-Once ≥2 external validators are online, "leader-proposal mode" activates:
+Once ≥1 external validator is online, "leader-proposal mode" activates:
 
 • Vercel will start deterministically electing one validator per block
 • That validator gets a short window (~15 seconds) to counter-sign the proposal
@@ -211,7 +211,7 @@ For now, you just heartbeat and wait for future updates.
             <span className="font-semibold">Ongoing:</span> Run daemon, heartbeat every 30s, monitor status
           </p>
           <p>
-            <span className="font-semibold">Future:</span> Once ≥2 external validators online, get block proposal rights
+            <span className="font-semibold">Future:</span> Once ≥1 external validator online, get block proposal rights
           </p>
         </div>
       </div>

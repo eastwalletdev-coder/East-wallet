@@ -81,9 +81,14 @@ export interface PingMessage { type: "ping"; }
 export interface PongMessage { type: "pong"; time: number; }
 export interface ErrorMessage { type: "error"; message: string; }
 
+// ── Full-sync (large gap catch-up via a peer, see client.ts full_sync_request) ──
+export interface FullSyncProvidersMessage { type: "full_sync_providers"; nodeIds: string[]; }
+export interface FullSyncResponseMessage { type: "full_sync_response"; fromNodeId: string; blocks: BlockHeader[]; }
+
 export type InboundMessage =
   | WelcomeMessage | BlockNewMessage | BlockBackfillMessage | PongMessage | ErrorMessage
   | RelayRosterMessage | RelayPromotedMessage | RelayDemotedMessage
+  | FullSyncProvidersMessage | FullSyncResponseMessage
   | WebrtcOfferMessage | WebrtcAnswerMessage | IceCandidateMessage;
 
 export { EAST_CHAIN_ID };

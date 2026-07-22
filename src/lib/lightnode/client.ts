@@ -4,6 +4,7 @@ import { verifyMessage } from "ethers";
 import type { BlockHeader, InboundMessage } from "./protocol";
 import { EAST_CHAIN_ID } from "@/lib/contracts/registry";
 import { PeerMesh } from "./webrtc-peer";
+import { putBlock } from "./block-store";
 
 const STORAGE_KEY = "east_lightnode_state_v1";
 const HEARTBEAT_MS = 20_000;
@@ -57,9 +58,10 @@ const PEER_AND_ARCHIVE_TRIGGER_GAP = 20;
 // retroactively) — that's what SYNC_REQUEST_WATCHDOG_MS below guards
 // against even for the small tail.
 const RAILWAY_BACKFILL_LIMIT = 1000;
-const ARCHIVE_CONCURRENCY = 8; // parallel GETs when pulling a gap from the archive API
+const ARCHIVE_RANGE_CHUNK = 500; // matches MAX_RANGE server-side cap in /api/archive/blocks-range — one request covers this many heights instead of one request per height
 const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long before falling back to the archive
 const SYNC_REQUEST_WATCHDOG_MS = 10_000; // if a plain sync_request hasn't closed the gap by then, Railway's buffer likely didn't have it — fall back to the archive instead of hanging forever
+const LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS = 5_000; // how long to wait for other lightnodes (WebRTC mesh) to answer a gap request before moving on to a validator/archive
 
 // Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
 // EIP-191) signature — no more "accepted but not cryptographically
@@ -319,15 +321,43 @@ export class LightNodeClient {
             const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
 
             if (gap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1) {
-              // Prefer a peer (validator daemon or another full node) over
-              // Vercel first — spreads catch-up load across the network
-              // instead of every node with a gap hitting the same
-              // serverless endpoint. Best-effort: currentHeight advances as
-              // far as the peer's contiguous, verified response reaches,
-              // then whatever's still missing falls through below.
+              // Step 1 of 3: other lightnodes first (WebRTC mesh, see
+              // webrtc-peer.ts's requestRange + block-store.ts). Spreads
+              // catch-up load across whoever's already connected and
+              // happens to have this range in their own last-1000-block
+              // IndexedDB cache — costs Railway/Vercel nothing at all.
+              // Only the contiguous run from currentHeight+1 is applied;
+              // the loop stops at the first hole so whatever's still
+              // missing correctly falls through to the next step below.
+              const peerBlocks = await this.peerMesh.requestRange(
+                this.state.currentHeight + 1, latestHeight, LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS
+              );
+              if (peerBlocks.length > 0) {
+                const byHeight = new Map<number, any>(peerBlocks.map((b: any) => [b.height, b]));
+                let appliedFromPeers = 0;
+                for (let h = this.state.currentHeight + 1; h <= latestHeight; h++) {
+                  const header = byHeight.get(h);
+                  if (!header) break;
+                  this.applyHeader(header, true);
+                  appliedFromPeers++;
+                }
+                if (appliedFromPeers > 0) {
+                  this.log(`Caught up ${appliedFromPeers} block(s) from lightnode peers via WebRTC`);
+                }
+              }
+
+              // Step 2 of 3: a validator's full node (Termux/VPS,
+              // full-node-sync.js) over Vercel — spreads whatever's still
+              // missing across the network instead of every node with a
+              // gap hitting the same serverless endpoint. Best-effort:
+              // currentHeight advances as far as the peer's contiguous,
+              // verified response reaches, then whatever's still missing
+              // falls through below.
               await this.tryPeerCatchUp(this.state.currentHeight + 1, latestHeight);
             }
 
+            // Step 3 of 3: the archive (or Railway's own small ring
+            // buffer for whatever's left) — same as before.
             const remainingGap = latestHeight - this.state.currentHeight;
             if (remainingGap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1 && archiveUrl) {
               this.catchUpFromArchive(archiveUrl, latestHeight);
@@ -470,6 +500,7 @@ export class LightNodeClient {
     if (!silent) this.log("Local Ledger Updated");
     this.checkEligibility();
     this.peerMesh.broadcastHeader(header); // best-effort — reduces peers' reliance on Railway alone
+    putBlock(header); // fire-and-forget — see block-store.ts. Not awaited: a slow/failed IndexedDB write must never stall sync.
     this.ws?.send(JSON.stringify({
       type: "ack", nodeId: this.state.nodeId, height: header.height, timestamp: Date.now(),
     }));
@@ -595,8 +626,10 @@ export class LightNodeClient {
   }
 
   // Fetches and applies [fromHeight..toHeight] from the app's own Postgres-
-  // backed archive API, in small concurrent batches. Shared by
-  // catchUpFromArchive() (gap too big for Railway's buffer by our own
+  // backed archive API — uses /api/archive/blocks-range so a whole gap
+  // costs a couple of Postgres queries total instead of 2 queries PER
+  // HEIGHT (that endpoint's own doc comment has the before/after). Shared
+  // by catchUpFromArchive() (gap too big for Railway's buffer by our own
   // estimate) and the sync_request watchdog above (gap looked small enough,
   // but Railway's buffer didn't actually have it — same fallback either way).
   private async fetchArchiveRange(archiveBaseUrl: string, fromHeight: number, toHeight: number) {
@@ -605,32 +638,27 @@ export class LightNodeClient {
 
     this.set({ syncPhase: "downloading", syncProgress: { current: 0, total: totalToFetch } });
 
-    const heights: number[] = [];
-    for (let h = fromHeight; h <= toHeight; h++) heights.push(h);
-
     let fetchedCount = 0;
-    for (let i = 0; i < heights.length; i += ARCHIVE_CONCURRENCY) {
-      const batch = heights.slice(i, i + ARCHIVE_CONCURRENCY);
-      const results = await Promise.all(
-        batch.map(async (h) => {
-          try {
-            const res = await fetch(`${archiveBaseUrl.replace(/\/$/, "")}/api/archive/blocks/${h}`);
-            if (!res.ok) return { h, header: null };
-            const body = await res.json();
-            if (!body?.success) return { h, header: null };
-            const { success, ...header } = body;
-            return { h, header };
-          } catch {
-            return { h, header: null };
-          }
-        })
-      );
+    for (let chunkFrom = fromHeight; chunkFrom <= toHeight; chunkFrom += ARCHIVE_RANGE_CHUNK) {
+      const chunkTo = Math.min(chunkFrom + ARCHIVE_RANGE_CHUNK - 1, toHeight);
+      let blocks: any[] = [];
+      try {
+        const res = await fetch(`${archiveBaseUrl.replace(/\/$/, "")}/api/archive/blocks-range?from=${chunkFrom}&to=${chunkTo}`);
+        if (res.ok) {
+          const body = await res.json();
+          if (body?.success && Array.isArray(body.blocks)) blocks = body.blocks;
+        }
+      } catch {
+        // Network error — same handling as a missing block below: fall
+        // through to Railway's own backfill for the rest.
+      }
 
-      for (const { h, header } of results) {
+      // Apply in height order and stop at the first hole — a gap partway
+      // through means the rest can't be verified as contiguous from here.
+      const byHeight = new Map<number, any>(blocks.map((b: any) => [b.height, b]));
+      for (let h = chunkFrom; h <= chunkTo; h++) {
+        const header = byHeight.get(h);
         if (!header) {
-          // Missing/unreachable object — stop trusting the archive from
-          // here on and let Railway's normal (possibly partial) backfill
-          // take over for whatever remains. Not treated as tampering.
           this.log(`Archive missing block #${h} — falling back to hub backfill for the rest`, "warn");
           this.ws?.send(JSON.stringify({
             type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
@@ -638,7 +666,8 @@ export class LightNodeClient {
           return;
         }
         this.set({ syncPhase: "validating" });
-        this.applyHeader(header, true);
+        const { success, ...rest } = header;
+        this.applyHeader(rest, true);
         fetchedCount++;
         this.set({ syncProgress: { current: fetchedCount, total: totalToFetch }, syncPhase: "downloading" });
       }

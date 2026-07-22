@@ -118,6 +118,59 @@ export async function setNetworkStatus(status: 'active' | 'recovering' | 'halted
   await r.set('network:status', status);
 }
 
+// ─── Chain state cache (TTL 8s) ───────────────────────────────────
+// getChainState() in mining-actions.ts is global — same answer for
+// every user at any given moment — but is currently polled every 30s
+// from 4 different screens (Home, Explorer, MiningDashboard, Validator
+// page) with ZERO caching: 4 separate Postgres queries per call, every
+// time, for every concurrent user. A short TTL here means only the
+// first caller in each ~8s window actually touches Postgres; everyone
+// else in that window gets the cached copy. 8s (not longer) because
+// blockCount should still feel current to someone actively watching it
+// tick up.
+const CHAIN_STATE_CACHE_TTL = 8; // seconds
+
+export async function getCachedChainState(): Promise<any | null> {
+  const r = getRedis();
+  if (!r) return null;
+  return await r.get<any>('chainstate:latest');
+}
+
+export async function setCachedChainState(state: any): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  await r.set('chainstate:latest', state, { ex: CHAIN_STATE_CACHE_TTL });
+}
+
+// Same reasoning as chain state above — polled every 30s from the
+// Explorer page (see src/app/explorer/_ledger.tsx), identical for every
+// concurrent viewer. Keyed by limit since callers can ask for different
+// counts, though in practice this app only ever calls them with a couple
+// of fixed values.
+export async function getCachedRecentBlocks(limit: number): Promise<any[] | null> {
+  const r = getRedis();
+  if (!r) return null;
+  return await r.get<any[]>(`explorer:blocks:${limit}`);
+}
+
+export async function setCachedRecentBlocks(limit: number, blocks: any[]): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  await r.set(`explorer:blocks:${limit}`, blocks, { ex: CHAIN_STATE_CACHE_TTL });
+}
+
+export async function getCachedRecentVotes(limit: number): Promise<any[] | null> {
+  const r = getRedis();
+  if (!r) return null;
+  return await r.get<any[]>(`explorer:votes:${limit}`);
+}
+
+export async function setCachedRecentVotes(limit: number, votes: any[]): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  await r.set(`explorer:votes:${limit}`, votes, { ex: CHAIN_STATE_CACHE_TTL });
+}
+
 // Top validators cache (refreshed every 24h epoch)
 export async function getCachedValidators(): Promise<any[] | null> {
   const r = getRedis();

@@ -494,6 +494,10 @@ export async function performRollingArchive(maxIndex: number, telegramId: string
 
 // ─── Chain state & Explorer ───────────────────────────────────────
 export async function getChainState() {
+  const { getCachedChainState, setCachedChainState } = await import('@/lib/db/redis');
+  const cached = await getCachedChainState();
+  if (cached) return cached;
+
   const ledgerClient = await ledgerPool.connect();
   try {
     const lastBlock = await ledgerClient.query(
@@ -518,7 +522,7 @@ export async function getChainState() {
       totalMinted += Number(row.minted);
     }
 
-    return {
+    const state = {
       blockCount: lastBlock.rows[0]?.block_index ?? -1,
       lastBlockHash: lastBlock.rows[0]?.block_hash || 'GENESIS_WAITING',
       lastSequenceHash: lastBlock.rows[0]?.sequence_hash || null,
@@ -529,12 +533,18 @@ export async function getChainState() {
       genesis: genesisRes.rows[0]?.value || null,
       status: networkStatus,
     };
+    await setCachedChainState(state);
+    return state;
   } finally {
     ledgerClient.release();
   }
 }
 
 export async function getRecentBlocks(limitCount = 10) {
+  const { getCachedRecentBlocks, setCachedRecentBlocks } = await import('@/lib/db/redis');
+  const cached = await getCachedRecentBlocks(limitCount);
+  if (cached) return cached;
+
   const client = await ledgerPool.connect();
   try {
     const res = await client.query(`
@@ -544,6 +554,7 @@ export async function getRecentBlocks(limitCount = 10) {
       FROM ledger.blocks b
       ORDER BY b.chain_seq DESC LIMIT $1
     `, [limitCount]);
+    await setCachedRecentBlocks(limitCount, res.rows);
     return res.rows;
   } finally {
     client.release();
@@ -557,6 +568,10 @@ export async function getRecentBlocks(limitCount = 10) {
 // place they're queryable, which is why the explorer needs its own
 // section for them instead of piggybacking on getRecentBlocks().
 export async function getRecentValidatorVotes(limitCount = 15) {
+  const { getCachedRecentVotes, setCachedRecentVotes } = await import('@/lib/db/redis');
+  const cached = await getCachedRecentVotes(limitCount);
+  if (cached) return cached;
+
   const { CONTRACTS } = await import('@/lib/contracts/registry');
   const client = await ledgerPool.connect();
   try {
@@ -568,7 +583,7 @@ export async function getRecentValidatorVotes(limitCount = 15) {
        LIMIT $2`,
       [CONTRACTS.VALIDATOR, limitCount]
     );
-    return res.rows.map(r => ({
+    const votes = res.rows.map(r => ({
       callHash: r.call_hash,
       callerAddress: r.caller_address,
       roundId: r.calldata?.roundId ?? null,
@@ -577,6 +592,8 @@ export async function getRecentValidatorVotes(limitCount = 15) {
       status: r.status,
       createdAt: r.created_at,
     }));
+    await setCachedRecentVotes(limitCount, votes);
+    return votes;
   } finally {
     client.release();
   }

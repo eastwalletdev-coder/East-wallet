@@ -43,6 +43,7 @@ const HELLO_TIMEOUT_MS = 10_000;
 const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long to respond before falling back to Vercel
 const CHUNK_SIZE = 25; // blocks per full_sync_response message — stays well under Railway's 64KB maxPayload
 const RELAY_STATS_INTERVAL_MS = 30_000;
+const DRIFT_RECHECK_INTERVAL_MS = 3 * 60_000; // re-confirm real height + re-run catch-up periodically, not just once at connect — see _startDriftRecheck() for why
 const RECONNECT_BASE_MS = 2_000;
 const RECONNECT_MAX_MS = 30_000;
 
@@ -110,6 +111,7 @@ class FullNodeSync {
     this.pendingPeerRequests = new Map(); // toNodeId -> { resolve, timer, blocks: [] }
     this.reconnectDelayMs = RECONNECT_BASE_MS;
     this.stopped = false;
+    this._recheckInFlight = false;
   }
 
   start() {
@@ -132,6 +134,7 @@ class FullNodeSync {
       this.reconnectDelayMs = RECONNECT_BASE_MS;
       ws.send(JSON.stringify({ type: 'hello', role: 'light-node', nodeId: this.nodeId, chainId: EAST_CHAIN_ID }));
       this._relayStatsTimer = setInterval(() => this._reportStats(), RELAY_STATS_INTERVAL_MS);
+      this._driftRecheckTimer = setInterval(() => this._recheckDrift(), DRIFT_RECHECK_INTERVAL_MS);
     });
 
     ws.on('message', (raw) => this._handleMessage(raw));
@@ -139,6 +142,7 @@ class FullNodeSync {
     ws.on('close', () => {
       log('Disconnected from Railway hub.');
       clearInterval(this._relayStatsTimer);
+      clearInterval(this._driftRecheckTimer);
       if (this.stopped) return;
       const delay = this.reconnectDelayMs;
       log(`Reconnecting in ${Math.round(delay / 1000)}s...`);
@@ -217,6 +221,32 @@ class FullNodeSync {
   }
 
   // ── Catch-up ──────────────────────────────────────────────────────
+  // _catchUp() at connect time only covers the gap accumulated up to
+  // that moment — after that, this node's local ledger relies entirely
+  // on live block:new broadcasts to stay current (see _onNewHeader
+  // below). If even one broadcast never arrives (Railway cold-start
+  // right when Vercel's fire-and-forget publishBlockToRailway() call
+  // fires, a dropped WS frame, etc.) there was previously NO mechanism
+  // to notice — the local ledger would silently fall behind forever,
+  // even while hasFullLedger:true kept being reported. _recheckDrift()
+  // re-confirms the real tip with Vercel and re-runs catch-up on a
+  // timer so a missed broadcast self-heals within one interval instead
+  // of requiring a manual restart.
+  async _recheckDrift() {
+    if (this._recheckInFlight) return; // don't overlap if a previous recheck is still catching up a large gap
+    this._recheckInFlight = true;
+    try {
+      await this._refreshRealNetworkTip();
+      const gap = this.networkTipHeight - this.ledger.getLatestHeight();
+      if (gap > 0) {
+        log(`Drift recheck: local tip is ${gap} block(s) behind #${this.networkTipHeight} — a block:new broadcast was likely missed. Catching up.`);
+        await this._catchUp();
+      }
+    } finally {
+      this._recheckInFlight = false;
+    }
+  }
+
   async _catchUp() {
     const from = this.ledger.getLatestHeight() + 1;
     const to = this.networkTipHeight;
@@ -267,16 +297,35 @@ class FullNodeSync {
     });
   }
 
+  // Uses /api/archive/blocks-range so this whole gap costs a couple of
+  // Postgres queries total instead of 2 queries PER HEIGHT — see that
+  // route's doc comment for the before/after. Chunked at the server's own
+  // MAX_RANGE (500) so one oversized gap can't blow past its cap.
   async _catchUpFromVercel(heights) {
-    for (const h of heights) {
+    if (heights.length === 0) return;
+    const RANGE_CHUNK = 500;
+    const sorted = [...heights].sort((a, b) => a - b);
+    const from = sorted[0];
+    const to = sorted[sorted.length - 1];
+
+    for (let chunkFrom = from; chunkFrom <= to; chunkFrom += RANGE_CHUNK) {
+      const chunkTo = Math.min(chunkFrom + RANGE_CHUNK - 1, to);
+      let blocks = [];
       try {
-        const res = await fetch(`${this.appUrl}/api/archive/blocks/${h}.json`);
-        if (!res.ok) { log(`  #${h}: ${res.status} from Vercel — skipping`); continue; }
-        const block = await res.json();
-        if (!block.success) continue;
-        this._verifyAndStore(block);
+        const res = await fetch(`${this.appUrl}/api/archive/blocks-range?from=${chunkFrom}&to=${chunkTo}`);
+        if (!res.ok) { log(`  #${chunkFrom}-${chunkTo}: ${res.status} from Vercel — skipping`); continue; }
+        const body = await res.json();
+        if (!body.success || !Array.isArray(body.blocks)) continue;
+        blocks = body.blocks;
       } catch (err) {
-        log(`  #${h}: fetch failed (${err.message})`);
+        log(`  #${chunkFrom}-${chunkTo}: fetch failed (${err.message})`);
+        continue;
+      }
+      const byHeight = new Map(blocks.map(b => [b.height, b]));
+      for (const h of sorted.filter(x => x >= chunkFrom && x <= chunkTo)) {
+        const block = byHeight.get(h);
+        if (!block) { log(`  #${h}: not in archive response — skipping`); continue; }
+        this._verifyAndStore(block);
       }
     }
   }

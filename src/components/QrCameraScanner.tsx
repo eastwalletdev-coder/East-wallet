@@ -29,6 +29,22 @@ export function QrCameraScanner({ onScan, onError, filter }: QrCameraScannerProp
   const scannerRef = useRef<QrScanner | null>(null);
   const [status, setStatus] = useState<'requesting' | 'scanning' | 'no-camera' | 'denied'>('requesting');
 
+  // Keep the latest callbacks in refs instead of the effect's dependency
+  // array. Callers (e.g. SendDialog) pass these as fresh inline functions
+  // on every render, and a parent that re-renders on a 1s interval (the
+  // mining countdown on Home) was tearing the camera session down and
+  // re-requesting permission every single render — the permission prompt
+  // never stayed up long enough to tap. Refs let us always call the latest
+  // callback without the effect ever seeing them as "changed".
+  const onScanRef = useRef(onScan);
+  const onErrorRef = useRef(onError);
+  const filterRef = useRef(filter);
+  useEffect(() => {
+    onScanRef.current = onScan;
+    onErrorRef.current = onError;
+    filterRef.current = filter;
+  });
+
   useEffect(() => {
     let cancelled = false;
 
@@ -37,7 +53,7 @@ export function QrCameraScanner({ onScan, onError, filter }: QrCameraScannerProp
       if (cancelled) return;
       if (!hasCamera) {
         setStatus('no-camera');
-        onError?.('No camera detected on this device.');
+        onErrorRef.current?.('No camera detected on this device.');
         return;
       }
 
@@ -47,9 +63,9 @@ export function QrCameraScanner({ onScan, onError, filter }: QrCameraScannerProp
         videoRef.current,
         (result) => {
           const text = result.data;
-          if (filter && !filter(text)) return; // ignore non-matching codes, keep scanning
+          if (filterRef.current && !filterRef.current(text)) return; // ignore non-matching codes, keep scanning
           scanner.stop();
-          onScan(text);
+          onScanRef.current(text);
         },
         {
           highlightScanRegion: true,
@@ -65,7 +81,7 @@ export function QrCameraScanner({ onScan, onError, filter }: QrCameraScannerProp
       } catch (err: any) {
         if (!cancelled) {
           setStatus('denied');
-          onError?.(err?.message || 'Camera permission denied.');
+          onErrorRef.current?.(err?.message || 'Camera permission denied.');
         }
       }
     })();
@@ -75,7 +91,7 @@ export function QrCameraScanner({ onScan, onError, filter }: QrCameraScannerProp
       scannerRef.current?.stop();
       scannerRef.current?.destroy();
     };
-  }, [onScan, onError, filter]);
+  }, []); // mount once — camera session must survive parent re-renders
 
   if (status === 'no-camera' || status === 'denied') {
     return (

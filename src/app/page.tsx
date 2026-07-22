@@ -256,20 +256,23 @@ export default function Home() {
           </p>
         </div>
 
-        {/* Globe — full width, no container card */}
-        <div className="relative w-full flex items-center justify-center" style={{ height: '380px' }}>
+        {/* Globe — sized relative to viewport with side padding so it never touches the screen edge */}
+        <div
+          className="relative w-full flex items-center justify-center px-8"
+          style={{ height: 'min(380px, calc(78vw + 20px))', ['--globe-size' as any]: 'min(360px, 78vw)' }}
+        >
           {/* Subtle glow only — no border, no background */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="w-[360px] h-[360px] rounded-full shadow-[0_0_140px_-20px_rgba(139,92,246,0.6)] animate-pulse opacity-70" />
+            <div className="rounded-full shadow-[0_0_140px_-20px_rgba(139,92,246,0.6)] animate-pulse opacity-70" style={{ width: 'var(--globe-size)', height: 'var(--globe-size)' }} />
           </div>
 
           {/* Globe grid — no background card */}
-          <div className="relative w-[360px] h-[360px] rounded-full overflow-hidden flex items-center justify-center" style={{ perspective: "800px", transformStyle: "preserve-3d" }}>
+          <div className="relative rounded-full overflow-hidden flex items-center justify-center" style={{ width: 'var(--globe-size)', height: 'var(--globe-size)', perspective: "800px", transformStyle: "preserve-3d" }}>
             {/* Orbiting beam — identical pattern to SplashScreen's globe beam */}
             <div
               className="absolute inset-0 z-40 animate-rotate-beam pointer-events-none"
             >
-              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[360px] h-[2px] bg-gradient-to-r from-transparent via-white/100 to-transparent blur-[2px]" />
+              <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-[2px] bg-gradient-to-r from-transparent via-white/100 to-transparent blur-[2px]" />
             </div>
 
             {/* Vertical grid lines (spinning) */}

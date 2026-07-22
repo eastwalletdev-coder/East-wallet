@@ -62,6 +62,7 @@ const ARCHIVE_RANGE_CHUNK = 500; // matches MAX_RANGE server-side cap in /api/ar
 const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long before falling back to the archive
 const SYNC_REQUEST_WATCHDOG_MS = 10_000; // if a plain sync_request hasn't closed the gap by then, Railway's buffer likely didn't have it — fall back to the archive instead of hanging forever
 const LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS = 5_000; // how long to wait for other lightnodes (WebRTC mesh) to answer a gap request before moving on to a validator/archive
+const DRIFT_RECHECK_INTERVAL_MS = 3 * 60_000; // browser-side equivalent of full-node-sync.js's periodic recheck — a missed live push self-heals within this interval instead of requiring a manual reconnect
 
 // Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
 // EIP-191) signature — no more "accepted but not cryptographically
@@ -80,6 +81,7 @@ export interface LightNodeState {
   syncPhase: SyncPhase;
   syncProgress: { current: number; total: number };
   currentHeight: number;
+  networkTipHeight: number; // last known real chain tip (from Vercel's /api/chain-height, via resolveNetworkTip) — lets the UI show "#current of #tip" instead of just an abstract per-batch counter that resets every fetch and doesn't tell you how far from done you actually are
   verifiedHeaderCount: number;
   participationSeconds: number;
   lastHeartbeat: number | null;
@@ -122,6 +124,7 @@ function freshState(): LightNodeState {
     syncPhase: "idle",
     syncProgress: { current: 0, total: 0 },
     currentHeight: -1,
+    networkTipHeight: -1,
     verifiedHeaderCount: 0,
     participationSeconds: 0,
     lastHeartbeat: null,
@@ -294,6 +297,7 @@ export class LightNodeClient {
       this.startHeartbeat();
       this.startParticipationClock();
       this.startRelayStats();
+      this.startDriftRecheck();
     };
 
     ws.onmessage = (ev) => {
@@ -313,79 +317,7 @@ export class LightNodeClient {
           // needs the archive — otherwise a stale/-1 Railway tip makes a
           // real 200-block gap look like "nothing to catch up", and this
           // node quietly stays behind forever. Same fix as full-node-sync.js.
-          this.resolveNetworkTip(msg.latestHeight).then(async (latestHeight) => {
-            if (latestHeight >= 0) {
-              this.log(`Network tip is block #${latestHeight}`);
-            }
-            const gap = latestHeight - this.state.currentHeight;
-            const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
-
-            if (gap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1) {
-              // Step 1 of 3: other lightnodes first (WebRTC mesh, see
-              // webrtc-peer.ts's requestRange + block-store.ts). Spreads
-              // catch-up load across whoever's already connected and
-              // happens to have this range in their own last-1000-block
-              // IndexedDB cache — costs Railway/Vercel nothing at all.
-              // Only the contiguous run from currentHeight+1 is applied;
-              // the loop stops at the first hole so whatever's still
-              // missing correctly falls through to the next step below.
-              const peerBlocks = await this.peerMesh.requestRange(
-                this.state.currentHeight + 1, latestHeight, LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS
-              );
-              if (peerBlocks.length > 0) {
-                const byHeight = new Map<number, any>(peerBlocks.map((b: any) => [b.height, b]));
-                let appliedFromPeers = 0;
-                for (let h = this.state.currentHeight + 1; h <= latestHeight; h++) {
-                  const header = byHeight.get(h);
-                  if (!header) break;
-                  this.applyHeader(header, true);
-                  appliedFromPeers++;
-                }
-                if (appliedFromPeers > 0) {
-                  this.log(`Caught up ${appliedFromPeers} block(s) from lightnode peers via WebRTC`);
-                }
-              }
-
-              // Step 2 of 3: a validator's full node (Termux/VPS,
-              // full-node-sync.js) over Vercel — spreads whatever's still
-              // missing across the network instead of every node with a
-              // gap hitting the same serverless endpoint. Best-effort:
-              // currentHeight advances as far as the peer's contiguous,
-              // verified response reaches, then whatever's still missing
-              // falls through below.
-              await this.tryPeerCatchUp(this.state.currentHeight + 1, latestHeight);
-            }
-
-            // Step 3 of 3: the archive (or Railway's own small ring
-            // buffer for whatever's left) — same as before.
-            const remainingGap = latestHeight - this.state.currentHeight;
-            if (remainingGap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1 && archiveUrl) {
-              this.catchUpFromArchive(archiveUrl, latestHeight);
-            } else if (remainingGap > 0) {
-              // Small enough for Railway's own ring-buffer backfill, or no
-              // peer/archive was available — this is the same request the
-              // hub already understands.
-              this.ws?.send(JSON.stringify({
-                type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
-              }));
-
-              // Safety net: Railway's buffer is only whatever it's seen
-              // live since its own last restart — it can come back empty
-              // even for a gap "small enough" per RAILWAY_BACKFILL_LIMIT.
-              // If the gap still isn't closed by the time this fires, stop
-              // waiting on a backfill that may never come and go get the
-              // exact missing range from the archive instead.
-              if (this.syncRequestWatchdog) clearTimeout(this.syncRequestWatchdog);
-              const targetHeight = latestHeight;
-              this.syncRequestWatchdog = setTimeout(() => {
-                this.syncRequestWatchdog = null;
-                if (this.state.currentHeight < targetHeight && archiveUrl) {
-                  this.log(`Hub backfill didn't close the gap (#${this.state.currentHeight} of #${targetHeight}) after ${SYNC_REQUEST_WATCHDOG_MS / 1000}s — falling back to archive`, "warn");
-                  this.fetchArchiveRange(archiveUrl, this.state.currentHeight + 1, targetHeight);
-                }
-              }, SYNC_REQUEST_WATCHDOG_MS);
-            }
-          });
+          this.resolveNetworkTip(msg.latestHeight).then((latestHeight) => this.runCatchUp(latestHeight));
           break;
 
         case "block:backfill":
@@ -395,6 +327,9 @@ export class LightNodeClient {
         case "block:new":
           // Live block arriving after initial sync — verify immediately.
           this.set({ syncPhase: "validating" });
+          if (msg.header?.height > this.state.networkTipHeight) {
+            this.set({ networkTipHeight: msg.header.height });
+          }
           this.applyHeader(msg.header, false, () => this.set({ syncPhase: "live" }));
           break;
 
@@ -460,6 +395,7 @@ export class LightNodeClient {
       this.stopHeartbeat();
       this.stopParticipationClock();
       this.stopRelayStats();
+      this.stopDriftRecheck();
       this.peerMesh.disconnectAll();
       if (this.syncRequestWatchdog) { clearTimeout(this.syncRequestWatchdog); this.syncRequestWatchdog = null; }
 
@@ -475,9 +411,120 @@ export class LightNodeClient {
     };
   }
 
+  // The full catch-up sequence: peer-mesh (WebRTC lightnodes) → validator
+  // full node → archive/Railway backfill. Called once at connect (from the
+  // "welcome" handler) AND periodically (see startDriftRecheck below) —
+  // previously this only ever ran once per connection, so a browser tab
+  // that stayed connected but simply never received a live block:new (a
+  // missed Railway push, or two lightnodes peer-connected to each other
+  // but neither actually getting fresh pushes from Railway to relay)
+  // would silently drift behind forever, "noticing" only when something
+  // forced a reconnect. This is the browser-side equivalent of
+  // full-node-sync.js's _recheckDrift() on the validator/Termux side.
+  private async runCatchUp(latestHeight: number) {
+    if (latestHeight >= 0) {
+      this.log(`Network tip is block #${latestHeight}`);
+      this.set({ networkTipHeight: latestHeight });
+    }
+    const gap = latestHeight - this.state.currentHeight;
+    const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
+
+    if (gap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1) {
+      // Step 1 of 3: other lightnodes first (WebRTC mesh, see
+      // webrtc-peer.ts's requestRange + block-store.ts). Spreads
+      // catch-up load across whoever's already connected and
+      // happens to have this range in their own last-1000-block
+      // IndexedDB cache — costs Railway/Vercel nothing at all.
+      // Only the contiguous run from currentHeight+1 is applied;
+      // the loop stops at the first hole so whatever's still
+      // missing correctly falls through to the next step below.
+      const peerBlocks = await this.peerMesh.requestRange(
+        this.state.currentHeight + 1, latestHeight, LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS
+      );
+      if (peerBlocks.length > 0) {
+        const byHeight = new Map<number, any>(peerBlocks.map((b: any) => [b.height, b]));
+        let appliedFromPeers = 0;
+        for (let h = this.state.currentHeight + 1; h <= latestHeight; h++) {
+          const header = byHeight.get(h);
+          if (!header) break;
+          this.applyHeader(header, true);
+          appliedFromPeers++;
+        }
+        if (appliedFromPeers > 0) {
+          this.log(`Caught up ${appliedFromPeers} block(s) from lightnode peers via WebRTC`);
+        }
+      }
+
+      // Step 2 of 3: a validator's full node (Termux/VPS,
+      // full-node-sync.js) over Vercel — spreads whatever's still
+      // missing across the network instead of every node with a
+      // gap hitting the same serverless endpoint. Best-effort:
+      // currentHeight advances as far as the peer's contiguous,
+      // verified response reaches, then whatever's still missing
+      // falls through below.
+      await this.tryPeerCatchUp(this.state.currentHeight + 1, latestHeight);
+    }
+
+    // Step 3 of 3: the archive (or Railway's own small ring
+    // buffer for whatever's left) — same as before.
+    const remainingGap = latestHeight - this.state.currentHeight;
+    if (remainingGap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1 && archiveUrl) {
+      this.catchUpFromArchive(archiveUrl, latestHeight);
+    } else if (remainingGap > 0) {
+      // Small enough for Railway's own ring-buffer backfill, or no
+      // peer/archive was available — this is the same request the
+      // hub already understands.
+      this.ws?.send(JSON.stringify({
+        type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
+      }));
+
+      // Safety net: Railway's buffer is only whatever it's seen
+      // live since its own last restart — it can come back empty
+      // even for a gap "small enough" per RAILWAY_BACKFILL_LIMIT.
+      // If the gap still isn't closed by the time this fires, stop
+      // waiting on a backfill that may never come and go get the
+      // exact missing range from the archive instead.
+      if (this.syncRequestWatchdog) clearTimeout(this.syncRequestWatchdog);
+      const targetHeight = latestHeight;
+      this.syncRequestWatchdog = setTimeout(() => {
+        this.syncRequestWatchdog = null;
+        if (this.state.currentHeight < targetHeight && archiveUrl) {
+          this.log(`Hub backfill didn't close the gap (#${this.state.currentHeight} of #${targetHeight}) after ${SYNC_REQUEST_WATCHDOG_MS / 1000}s — falling back to archive`, "warn");
+          this.fetchArchiveRange(archiveUrl, this.state.currentHeight + 1, targetHeight);
+        }
+      }, SYNC_REQUEST_WATCHDOG_MS);
+    }
+  }
+
+  private driftRecheckTimer: ReturnType<typeof setInterval> | null = null;
+  private driftRecheckInFlight = false;
+
+  private startDriftRecheck() {
+    this.stopDriftRecheck();
+    this.driftRecheckTimer = setInterval(async () => {
+      if (this.driftRecheckInFlight) return; // don't overlap a still-running recheck
+      this.driftRecheckInFlight = true;
+      try {
+        const latestHeight = await this.resolveNetworkTip(-1);
+        if (latestHeight > this.state.currentHeight) {
+          this.log(`Drift recheck: local tip is ${latestHeight - this.state.currentHeight} block(s) behind #${latestHeight} — a live update was likely missed. Catching up.`);
+          await this.runCatchUp(latestHeight);
+        }
+      } finally {
+        this.driftRecheckInFlight = false;
+      }
+    }, DRIFT_RECHECK_INTERVAL_MS);
+  }
+
+  private stopDriftRecheck() {
+    if (this.driftRecheckTimer) clearInterval(this.driftRecheckTimer);
+    this.driftRecheckTimer = null;
+  }
+
   disconnect() {
     this.manualDisconnect = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    this.stopDriftRecheck();
     this.ws?.close();
     this.ws = null;
     this.peerMesh.disconnectAll();
@@ -488,7 +535,19 @@ export class LightNodeClient {
   private applyHeader(header: any, silent: boolean = false, onDone?: () => void) {
     const result = verifyHeader(header, this.state.currentHeight, this.lastHash);
     if (!result.valid) {
-      this.log(`Header REJECTED — block #${header.height} (hash ${String(header.hash).slice(0, 10)}…): ${result.reason}`, "error");
+      // "Stale or duplicate" is the EXPECTED outcome when two lightnodes
+      // are peer-mesh-connected and both already have overlapping history
+      // — e.g. this node just range-caught-up from peer A, then peer B
+      // (who has the same range) gossips the same headers over. That's
+      // not a problem: it's just confirming we already have it. Logging
+      // it at "error" made a harmless, common event look like something
+      // was broken. Genuine failures (bad hash chain, bad signature)
+      // still log loud, since those DO mean something is wrong.
+      const benign = result.reason === "Stale or duplicate block height";
+      this.log(
+        `Header ${benign ? "skipped" : "REJECTED"} — block #${header.height} (hash ${String(header.hash).slice(0, 10)}…): ${result.reason}`,
+        benign ? "info" : "error"
+      );
       onDone?.();
       return;
     }
@@ -499,7 +558,20 @@ export class LightNodeClient {
     this.set({ verifiedHeaderCount: this.state.verifiedHeaderCount + 1 });
     if (!silent) this.log("Local Ledger Updated");
     this.checkEligibility();
-    this.peerMesh.broadcastHeader(header); // best-effort — reduces peers' reliance on Railway alone
+    if (!silent) {
+      // Only a genuinely new live tip (arrived via Railway's block:new)
+      // gets pushed onward to WebRTC peers. Backfill/catch-up replay and
+      // headers we just received FROM a peer are both applied with
+      // silent:true specifically so they DON'T get re-broadcast here —
+      // otherwise catching up a batch of N blocks re-sends all N to every
+      // connected peer even though they likely already have them (spammy),
+      // and worse, gossiping a header straight back to the peer that just
+      // sent it causes it to reject its own data as "stale or duplicate"
+      // a moment later. Peers still get this same header on their own
+      // next live tick, or by asking via requestRange — this only stops
+      // the redundant immediate echo.
+      this.peerMesh.broadcastHeader(header);
+    }
     putBlock(header); // fire-and-forget — see block-store.ts. Not awaited: a slow/failed IndexedDB write must never stall sync.
     this.ws?.send(JSON.stringify({
       type: "ack", nodeId: this.state.nodeId, height: header.height, timestamp: Date.now(),

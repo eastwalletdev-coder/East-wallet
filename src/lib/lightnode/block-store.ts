@@ -20,7 +20,7 @@
 const DB_NAME = "eastchain-lightnode";
 const DB_VERSION = 1;
 const STORE_NAME = "blocks";
-export const MAX_STORED_BLOCKS = 1000;
+export const MAX_STORED_BLOCKS = 5000;
 
 function isAvailable(): boolean {
   return typeof indexedDB !== "undefined";

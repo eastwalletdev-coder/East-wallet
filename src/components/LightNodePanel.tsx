@@ -99,6 +99,15 @@ export function LightNodePanel() {
               Block {state.syncProgress.current}/{state.syncProgress.total || "?"} ·
               {" "}Verifying hash & validator signature…
             </p>
+            {state.networkTipHeight >= 0 && (
+              <p className="text-[10px] text-primary/70 font-code">
+                Height #{Math.max(state.currentHeight, 0)} of #{state.networkTipHeight}
+                {state.networkTipHeight > 0 && (
+                  <> · {Math.min(100, Math.round((Math.max(state.currentHeight, 0) / state.networkTipHeight) * 100))}%</>
+                )}
+                {state.currentHeight >= state.networkTipHeight && " · caught up"}
+              </p>
+            )}
           </CardContent>
         </Card>
       )}
@@ -107,7 +116,11 @@ export function LightNodePanel() {
       <div className="grid grid-cols-2 gap-2">
         <Stat label="Session ID" value={state.nodeId.slice(0, 13) + "…"} mono />
         <Stat label="Latency" value={state.latencyMs != null ? `${state.latencyMs} ms` : "—"} />
-        <Stat label="Current Height" value={state.currentHeight >= 0 ? `#${state.currentHeight}` : "—"} />
+        <Stat
+          label="Current Height"
+          value={state.currentHeight >= 0 ? `#${state.currentHeight}` : "—"}
+          sub={state.networkTipHeight > state.currentHeight ? `of #${state.networkTipHeight}` : undefined}
+        />
         <Stat label="Last Heartbeat" value={timeAgo(state.lastHeartbeat)} />
         <Stat label="Last Claim Epoch" value={state.lastClaimEpoch || "—"} />
         <Stat label="Connection" value={state.connectionStatus} />
@@ -166,12 +179,13 @@ export function LightNodePanel() {
   );
 }
 
-function Stat({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+function Stat({ label, value, mono, sub }: { label: string; value: string; mono?: boolean; sub?: string }) {
   return (
     <Card className="bg-card/20 border-border/20">
       <CardContent className="p-3">
         <p className="text-[8px] text-muted-foreground uppercase font-bold">{label}</p>
         <p className={`text-[11px] text-white font-bold truncate ${mono ? "font-code" : ""}`}>{value}</p>
+        {sub && <p className="text-[9px] text-primary/60 truncate">{sub}</p>}
       </CardContent>
     </Card>
   );

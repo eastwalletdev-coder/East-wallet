@@ -727,6 +727,29 @@ export async function migrateIdentityV13() {
 }
 
 /**
+ * Adds the two columns backing the flexible-amount staking widget's
+ * "request unstake now, claim after a 24h delay" flow (see
+ * lib/contracts/staking-contract.ts's requestUnstake/claimUnstake).
+ * Purely additive — existing staked_amount/stake_locked_until columns and
+ * the old (unused-by-any-UI) 'unstake' contract function are untouched.
+ */
+export async function migrateIdentityV14() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`
+      ALTER TABLE identity.users
+        ADD COLUMN IF NOT EXISTS pending_unstake_amount NUMERIC(20,8) NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS pending_unstake_claimable_at BIGINT NOT NULL DEFAULT 0;
+    `);
+    console.log('[EASTCHAIN] Identity schema migration v14 completed (pending_unstake_amount, pending_unstake_claimable_at columns)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v14 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Claim message builders live in src/lib/east-claim-messages.ts — a plain
  * isomorphic module importable from client components too (needed so the
  * browser can sign the exact same string this server verifies against).

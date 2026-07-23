@@ -19,7 +19,7 @@ import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveVali
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import { generateEastId } from '@/lib/east-id';
-import { stakeEastContract, claimMiningRewardContract, claimVestedContract, requestUnstakeContract, claimUnstakeContract } from '@/actions/contract-actions';
+import { stakeEastContract, claimMiningRewardContract, claimVestedContract } from '@/actions/contract-actions';
 import crypto from 'crypto';
 
 const FOUNDER_IDS = (process.env.FOUNDER_IDS || '').split(',').map(id => id.trim()).filter(Boolean);
@@ -144,6 +144,7 @@ export async function registerOrUpdateUser(
 
   const walletAddress = generateWalletFromTelegramId(telegramId);
   const isFounder = FOUNDER_IDS.includes(telegramId);
+  const eastId = generateEastId(walletAddress);
 
   // ── Level 1: Redis cache read (< 50ms) ──────────────────────────
   // For returning users with no startParam, serve from cache immediately
@@ -215,24 +216,13 @@ export async function registerOrUpdateUser(
     await client.query('COMMIT');
 
     const user = userRes.rows[0];
-    // eastId must derive from the user's ACTUAL current wallet_address
-    // (user.wallet_address), not the `walletAddress` var computed at the
-    // top of this function — that one is always the deterministic
-    // custodial_hash address, used only for the initial INSERT. For a
-    // user who has upgraded to self-custody EVM, using it here would
-    // silently show an EastID tied to an address they no longer use,
-    // right after the very cache invalidation that upgrade triggers.
-    const currentEastId = generateEastId(user.wallet_address);
     const userData = {
       telegramId: user.telegram_id,
       walletAddress: user.wallet_address,
-      walletType: user.wallet_type || 'custodial_hash',
-      eastId: currentEastId,
+      eastId,
       username: user.username,
       balance: Number(user.balance),
       stakedAmount: Number(user.staked_amount),
-      pendingUnstakeAmount: Number(user.pending_unstake_amount || 0),
-      pendingUnstakeClaimableAt: Number(user.pending_unstake_claimable_at || 0),
       eastpassTier: Number(user.eastpass_tier),
       isFounder: user.is_founder,
       referredBy: user.referred_by,
@@ -341,7 +331,7 @@ export async function sendEast(
     if (Number(sender.balance) < totalDebit) { await identityClient.query('ROLLBACK'); return { success: false, error: 'INSUFFICIENT_BALANCE' }; }
 
     const recipientRes = await identityClient.query(
-      'SELECT telegram_id, wallet_address FROM identity.users WHERE LOWER(wallet_address) = $1 FOR UPDATE',
+      'SELECT telegram_id, wallet_address FROM identity.users WHERE wallet_address = $1 FOR UPDATE',
       [recipientAddress.toLowerCase()]
     );
     if (!recipientRes.rows.length) { await identityClient.query('ROLLBACK'); return { success: false, error: 'RECIPIENT_NOT_FOUND' }; }
@@ -416,44 +406,6 @@ export async function stakeEast(
     blockHash: res.blockHash,
     gasFee: res.gasFee,
     callHash: res.callHash,
-  };
-}
-
-// ─── Request Unstake (flexible-amount stake widget) ────────────────
-// Takes effect immediately (stops counting toward tier/boost right away).
-// Funds sit in escrow for 24h before claimUnstake() below can move them
-// to balance. amount is optional — omit to unstake everything currently
-// staked. Runs through lib/contracts/staking-contract.ts's requestUnstake.
-export async function requestUnstake(
-  tgId: string,
-  amount?: number,
-  initData?: string
-) {
-  const res = await requestUnstakeContract(tgId, amount, initData);
-  if (!res.success) return { success: false, error: res.error };
-  return {
-    success: true,
-    txHash: res.txHash,
-    requested: res.requested,
-    claimableAt: res.claimableAt,
-    blockIndex: res.blockIndex,
-    blockHash: res.blockHash,
-  };
-}
-
-// ─── Claim Unstake ───────────────────────────────────────────────────
-// Moves a previously-requested unstake into balance once the 24h delay
-// has passed. Returns CLAIM_DELAY_ACTIVE:<secondsRemaining> if called too
-// early — mirrors the mining claim cooldown error shape.
-export async function claimUnstake(tgId: string, initData?: string) {
-  const res = await claimUnstakeContract(tgId, initData);
-  if (!res.success) return { success: false, error: res.error };
-  return {
-    success: true,
-    txHash: res.txHash,
-    claimed: res.claimed,
-    blockIndex: res.blockIndex,
-    blockHash: res.blockHash,
   };
 }
 

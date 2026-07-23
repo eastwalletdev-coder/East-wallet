@@ -123,10 +123,11 @@ export class PeerMesh {
     }
   }
 
-  /** Push our latest known header(s) out to every connected peer (best-effort gossip). */
-  broadcastHeader(header: unknown) {
+  /** Push our latest known header(s) out to every connected peer (best-effort gossip). excludePeerId skips echoing a header back to whoever we just received it from — used when forwarding a peer-sourced header onward down the tree. */
+  broadcastHeader(header: unknown, excludePeerId?: string) {
     const msg = JSON.stringify({ kind: "header", header });
-    this.peers.forEach((peer) => {
+    this.peers.forEach((peer, peerId) => {
+      if (peerId === excludePeerId) return;
       if (peer.channel?.readyState === "open") peer.channel.send(msg);
     });
   }

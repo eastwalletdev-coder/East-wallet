@@ -237,12 +237,24 @@ export class LightNodeClient {
         // Same trust boundary as a Railway-sourced header — verifyHeader()
         // inside applyHeader() doesn't know or care which transport it came
         // from. A peer can only waste bandwidth by sending junk, never get
-        // an unverified header accepted.
-        this.applyHeader(header, true);
+        // an unverified header accepted. silent:true keeps this out of the
+        // "Local Ledger Updated" log (it's a relay, not our own new find),
+        // but sourcePeerId still gets it forwarded to our OTHER connected
+        // peers (down the tree) — see applyHeader's broadcast condition.
+        this.applyHeader(header, true, undefined, peerNodeId);
       },
       onPeerConnected: (peerNodeId) => {
         this.log(`Peer mesh: connected to ${peerNodeId.slice(0, 8)}…`);
         this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
+        // Without this, a freshly-dialed parent (e.g. right after a
+        // tier:assign) only helps once it happens to broadcast its NEXT
+        // new live block — anything it already has from before the
+        // connection opened just sits there until the up-to-3-minute
+        // drift recheck eventually calls requestRange(). That's what
+        // looked like a "guardian just sitting there not downloading"
+        // bug: the connection itself was fine, nothing had asked it for
+        // anything yet. Ask right away instead of waiting.
+        this.triggerImmediateCatchUp();
       },
       onPeerDisconnected: (peerNodeId) => {
         this.log(`Peer mesh: disconnected from ${peerNodeId.slice(0, 8)}…`);
@@ -345,6 +357,7 @@ export class LightNodeClient {
         // ── Tier hierarchy signaling — Railway is the intro point only ──
         case "tier:assign": {
           const previousParent = this.state.parentNodeId;
+          const previousTier = this.state.tier;
           this.set({ tier: msg.tier, parentNodeId: msg.parentNodeId });
           this.log(`Tier assigned: ${msg.tier}${msg.parentNodeId ? ` (parent: ${msg.parentNodeId.slice(0, 8)}…)` : ""}`);
 
@@ -362,6 +375,18 @@ export class LightNodeClient {
               // next rescore assigns a reachable parent.
               this.log(`Tier mesh: couldn't reach parent ${msg.parentNodeId!.slice(0, 8)}… — falling back to hub`, "warn");
             });
+          }
+
+          // Becoming Leader (or "none") means we're now the one RESPONSIBLE
+          // for going to Railway/the validator/the archive ourselves —
+          // without this, a freshly-promoted node just sat there with the
+          // right tier but no active fetch until the next scheduled drift
+          // recheck (up to 3 minutes later), which is exactly the "promoted
+          // but still not downloading" symptom.
+          const justBecameResponsible = previousTier !== "leader" && previousTier !== "none"
+            && (msg.tier === "leader" || msg.tier === "none");
+          if (justBecameResponsible) {
+            this.triggerImmediateCatchUp();
           }
           break;
         }
@@ -536,6 +561,24 @@ export class LightNodeClient {
   private driftRecheckTimer: ReturnType<typeof setInterval> | null = null;
   private driftRecheckInFlight = false;
 
+  // Called right when a new WebRTC peer connection opens (see
+  // onPeerConnected above) — asks that peer (and anyone else connected)
+  // for whatever we're missing immediately, instead of waiting for the
+  // next scheduled drift recheck. Shares the same in-flight guard so this
+  // never runs concurrently with a periodic recheck.
+  private async triggerImmediateCatchUp() {
+    if (this.driftRecheckInFlight) return;
+    this.driftRecheckInFlight = true;
+    try {
+      const latestHeight = await this.resolveNetworkTip(-1);
+      if (latestHeight > this.state.currentHeight) {
+        await this.runCatchUp(latestHeight);
+      }
+    } finally {
+      this.driftRecheckInFlight = false;
+    }
+  }
+
   private startDriftRecheck() {
     this.stopDriftRecheck();
     this.driftRecheckTimer = setInterval(async () => {
@@ -578,7 +621,7 @@ export class LightNodeClient {
 
   // Verifies + applies exactly one header, then calls onDone. Shared by
   // both the initial backfill (5 blocks, paced) and live block:new events.
-  private applyHeader(header: any, silent: boolean = false, onDone?: () => void) {
+  private applyHeader(header: any, silent: boolean = false, onDone?: () => void, sourcePeerId?: string) {
     const result = verifyHeader(header, this.state.currentHeight, this.lastHash);
     if (!result.valid) {
       // "Stale or duplicate" is the EXPECTED outcome when two lightnodes
@@ -604,19 +647,21 @@ export class LightNodeClient {
     this.set({ verifiedHeaderCount: this.state.verifiedHeaderCount + 1 });
     if (!silent) this.log("Local Ledger Updated");
     this.checkEligibility();
-    if (!silent) {
-      // Only a genuinely new live tip (arrived via Railway's block:new)
-      // gets pushed onward to WebRTC peers. Backfill/catch-up replay and
-      // headers we just received FROM a peer are both applied with
-      // silent:true specifically so they DON'T get re-broadcast here —
-      // otherwise catching up a batch of N blocks re-sends all N to every
-      // connected peer even though they likely already have them (spammy),
-      // and worse, gossiping a header straight back to the peer that just
-      // sent it causes it to reject its own data as "stale or duplicate"
-      // a moment later. Peers still get this same header on their own
-      // next live tick, or by asking via requestRange — this only stops
-      // the redundant immediate echo.
-      this.peerMesh.broadcastHeader(header);
+    if (!silent || sourcePeerId) {
+      // Forward onward down the tree (Leader -> Guardian -> Broadcaster ->
+      // Vision) whenever this is a genuinely new live header — whether it
+      // arrived straight from Railway (silent:false, no sourcePeerId) or
+      // from our own parent via gossip (sourcePeerId set). Previously a
+      // peer-received header was always applied silent:true and NEVER
+      // re-broadcast at all, so live blocks only ever reached the Leader's
+      // immediate children (Guardians) and never propagated further down —
+      // Broadcasters and Visions could only ever get anything via their own
+      // requestRange() pull, never the live push. excludePeerId stops this
+      // from echoing straight back to whoever we just got it from (that's
+      // the redundant-echo/duplicate-reject problem from before) while
+      // still reaching every OTHER connected peer (our other children,
+      // if any — a Guardian is also a Broadcaster's-worth of fan-out).
+      this.peerMesh.broadcastHeader(header, sourcePeerId);
     }
     putBlock(header); // fire-and-forget — see block-store.ts. Not awaited: a slow/failed IndexedDB write must never stall sync.
     this.ws?.send(JSON.stringify({

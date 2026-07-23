@@ -34,6 +34,8 @@ export const CONTRACT_ABI: Record<string, Record<string, string[]>> = {
   [CONTRACTS.STAKING]: {
     stake: ['amount'],
     unstake: [],
+    requestUnstake: ['amount'],
+    claimUnstake: [],
     claimStakingReward: [],
   },
   [CONTRACTS.VESTING]: {

@@ -14,7 +14,8 @@ import crypto from 'crypto';
 
 const STAKING_POOL_ADDRESS = '0x0000000000000000000000000000000000000001';
 const SYSTEM_ADDRESS = '0x0000000000000000000000000000000000000000';
-const STAKE_LOCK_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+const STAKE_LOCK_MS = 30 * 24 * 60 * 60 * 1000; // 30 days — only used by the legacy tier-card 'unstake' function below
+const UNSTAKE_CLAIM_DELAY_MS = 24 * 60 * 60 * 1000; // 24h — used by requestUnstake/claimUnstake (the new stake widget)
 const STAKING_APY = 0.08; // 8% simple APY, paid out pro-rata on claim
 
 function txHash(seed: string): string {
@@ -119,6 +120,70 @@ export async function execute(
     `, [staked, tgId]);
 
     return { success: true, data: { txHash: hash, blockIndex, blockHash, unstaked: staked } };
+  }
+
+  // ── Flexible-amount staking widget flow ──────────────────────────
+  // Unlike the tier-card 'unstake' above (instant, but blocked until the
+  // 30-day stake_locked_until passes), this is: request unstake for any
+  // amount up to what's staked — takes effect immediately (stops counting
+  // toward tier/boost right away) — then the funds sit in escrow for
+  // UNSTAKE_CLAIM_DELAY_MS before claimUnstake() can move them to balance.
+  if (functionName === 'requestUnstake') {
+    const staked = Number(user.staked_amount);
+    const requested = params.amount !== undefined ? Number(params.amount) : staked;
+    if (!Number.isFinite(requested) || requested <= 0) return { success: false, error: 'INVALID_AMOUNT' };
+    if (requested > staked) return { success: false, error: 'INSUFFICIENT_STAKE' };
+
+    const timestamp = Date.now();
+    const claimableAt = timestamp + UNSTAKE_CLAIM_DELAY_MS;
+    const newStaked = staked - requested;
+    const newTier = getTierFromStaked(newStaked);
+    // Accumulates if a previous request hasn't been claimed yet, and resets
+    // the timer to a fresh 24h from now for the combined pending amount —
+    // keeps the model simple (one pending bucket per user) rather than a
+    // queue of independently-timed partial unstakes.
+    const newPending = Number(user.pending_unstake_amount || 0) + requested;
+    const hash = txHash(`requestunstake_${tgId}`);
+
+    const { blockIndex, blockHash } = await sealSingleTx(ledgerClient, {
+      // Funds haven't reached the user's wallet yet — still escrowed in the
+      // pool — so sender and recipient are both the pool; the chain record
+      // exists so the request itself is auditable.
+      txHash: hash, txType: 'UNSTAKE_REQUEST', senderAddress: STAKING_POOL_ADDRESS,
+      recipientAddress: STAKING_POOL_ADDRESS, senderId: 'staking_pool', recipientId: tgId, amount: requested,
+    });
+
+    await identityClient.query(`
+      UPDATE identity.users SET staked_amount = $1, eastpass_tier = $2,
+        pending_unstake_amount = $3, pending_unstake_claimable_at = $4, updated_at = NOW()
+      WHERE telegram_id = $5
+    `, [newStaked, newTier.level, newPending, claimableAt, tgId]);
+
+    return { success: true, data: { txHash: hash, blockIndex, blockHash, requested, claimableAt } };
+  }
+
+  if (functionName === 'claimUnstake') {
+    const pending = Number(user.pending_unstake_amount || 0);
+    if (pending <= 0) return { success: false, error: 'NOTHING_TO_CLAIM' };
+    const claimableAt = Number(user.pending_unstake_claimable_at || 0);
+    if (Date.now() < claimableAt) {
+      const remainingSeconds = Math.ceil((claimableAt - Date.now()) / 1000);
+      return { success: false, error: `CLAIM_DELAY_ACTIVE:${remainingSeconds}` };
+    }
+
+    const hash = txHash(`claimunstake_${tgId}`);
+    const { blockIndex, blockHash } = await sealSingleTx(ledgerClient, {
+      txHash: hash, txType: 'UNSTAKE_CLAIM', senderAddress: STAKING_POOL_ADDRESS,
+      recipientAddress: user.wallet_address, senderId: 'staking_pool', recipientId: tgId, amount: pending,
+    });
+
+    await identityClient.query(`
+      UPDATE identity.users SET balance = balance + $1, pending_unstake_amount = 0,
+        pending_unstake_claimable_at = 0, updated_at = NOW()
+      WHERE telegram_id = $2
+    `, [pending, tgId]);
+
+    return { success: true, data: { txHash: hash, blockIndex, blockHash, claimed: pending } };
   }
 
   if (functionName === 'claimStakingReward') {

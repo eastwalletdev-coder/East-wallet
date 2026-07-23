@@ -37,6 +37,24 @@ export async function unstakeEastContract(tgId: string, initData?: string) {
   return res;
 }
 
+// New flexible-amount stake widget: request unstake (any amount up to what's
+// staked, takes effect immediately) then claim the funds after a 24h delay.
+export async function requestUnstakeContract(tgId: string, amount?: number, initData?: string) {
+  const res = await callContract({
+    tgId, initData, contractAddress: CONTRACTS.STAKING, functionName: 'requestUnstake', params: { amount },
+  });
+  if (res.success) await invalidateCachedUser(tgId);
+  return res;
+}
+
+export async function claimUnstakeContract(tgId: string, initData?: string) {
+  const res = await callContract({
+    tgId, initData, contractAddress: CONTRACTS.STAKING, functionName: 'claimUnstake', params: {},
+  });
+  if (res.success) await invalidateCachedUser(tgId);
+  return res;
+}
+
 export async function claimStakingRewardContract(tgId: string, initData?: string) {
   const res = await callContract({
     tgId, initData, contractAddress: CONTRACTS.STAKING, functionName: 'claimStakingReward', params: {},

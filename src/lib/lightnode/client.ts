@@ -1,7 +1,7 @@
 "use client"
 
 import { verifyMessage } from "ethers";
-import type { BlockHeader, InboundMessage } from "./protocol";
+import type { BlockHeader, InboundMessage, NodeTier } from "./protocol";
 import { EAST_CHAIN_ID } from "@/lib/contracts/registry";
 import { PeerMesh } from "./webrtc-peer";
 import { putBlock } from "./block-store";
@@ -91,8 +91,8 @@ export interface LightNodeState {
   log: { time: number; message: string; level?: "info" | "warn" | "error" }[];
   // WebRTC peer mesh — Railway is still the only introduction point; this
   // is just which peers we've since connected to directly. See webrtc-peer.ts.
-  isRelay: boolean;               // did Railway promote US into the top-N this round?
-  relayRoster: string[];          // last known top-N relay nodeIds, from Railway
+  tier: NodeTier;                 // our position in Railway's Leader/Guardian/Broadcaster/Vision hierarchy
+  parentNodeId: string | null;    // the ONE peer we dial to receive gossip (null for leader/none — see runCatchUp)
   connectedPeerIds: string[];     // peers we currently have an OPEN DataChannel with
 }
 
@@ -108,7 +108,8 @@ function loadState(): LightNodeState {
       connectionStatus: "disconnected", // never trust a persisted "connected"
       syncPhase: "idle",
       syncProgress: { current: 0, total: 0 },
-      isRelay: false,
+      tier: "none",
+      parentNodeId: null,
       connectedPeerIds: [],
     };
   } catch {
@@ -132,8 +133,8 @@ function freshState(): LightNodeState {
     latencyMs: null,
     eligible: false,
     log: [],
-    isRelay: false,
-    relayRoster: [],
+    tier: "none",
+    parentNodeId: null,
     connectedPeerIds: [],
   };
 }
@@ -341,31 +342,29 @@ export class LightNodeClient {
           this.log(`Error: ${msg.message}`, "error");
           break;
 
-        // ── Relay mesh signaling — Railway is the intro point only ───
-        case "relay:roster": {
-          this.set({ relayRoster: msg.relayNodeIds });
-          // Dial anyone new in the roster who isn't us and isn't already
-          // connected/connecting. Small roster (top-5) keeps this cheap.
-          msg.relayNodeIds
-            .filter((id) => id !== this.state.nodeId && !this.peerMesh.connectedPeerIds.includes(id))
-            .forEach((id) => this.peerMesh.connectTo(id).catch(() => {
-              // Common and expected — symmetric NAT on one side, peer went
+        // ── Tier hierarchy signaling — Railway is the intro point only ──
+        case "tier:assign": {
+          const previousParent = this.state.parentNodeId;
+          this.set({ tier: msg.tier, parentNodeId: msg.parentNodeId });
+          this.log(`Tier assigned: ${msg.tier}${msg.parentNodeId ? ` (parent: ${msg.parentNodeId.slice(0, 8)}…)` : ""}`);
+
+          if (previousParent && previousParent !== msg.parentNodeId) {
+            // Our position in the tree moved — the old parent link is no
+            // longer meaningful, drop it rather than keep an idle socket.
+            this.peerMesh.disconnect(previousParent);
+          }
+          if (msg.parentNodeId && !this.peerMesh.connectedPeerIds.includes(msg.parentNodeId)) {
+            this.peerMesh.connectTo(msg.parentNodeId).catch(() => {
+              // Common and expected — symmetric NAT on one side, parent went
               // offline mid-dial, etc. No TURN fallback by design (see
-              // webrtc-peer.ts); this pair just keeps using Railway directly.
-              this.log(`Peer mesh: couldn't reach ${id.slice(0, 8)}… — falling back to hub`, "warn");
-            }));
+              // webrtc-peer.ts); we fall back to Railway/archive directly
+              // per runCatchUp()'s "zero peers" bootstrap path until the
+              // next rescore assigns a reachable parent.
+              this.log(`Tier mesh: couldn't reach parent ${msg.parentNodeId!.slice(0, 8)}… — falling back to hub`, "warn");
+            });
+          }
           break;
         }
-
-        case "relay:promoted":
-          this.set({ isRelay: true });
-          this.log("Promoted to relay node by Railway (best latency/uptime tier)");
-          break;
-
-        case "relay:demoted":
-          this.set({ isRelay: false });
-          this.log("Demoted from relay node (fell out of Railway's top tier)");
-          break;
 
         case "full_sync_providers":
           this.fullSyncProviders = msg.nodeIds || [];
@@ -390,7 +389,7 @@ export class LightNodeClient {
     };
 
     ws.onclose = () => {
-      this.set({ connectionStatus: "disconnected", isRelay: false, connectedPeerIds: [] });
+      this.set({ connectionStatus: "disconnected", tier: "none", parentNodeId: null, connectedPeerIds: [] });
       this.log("Disconnected");
       this.stopHeartbeat();
       this.stopParticipationClock();
@@ -421,6 +420,24 @@ export class LightNodeClient {
   // would silently drift behind forever, "noticing" only when something
   // forced a reconnect. This is the browser-side equivalent of
   // full-node-sync.js's _recheckDrift() on the validator/Termux side.
+  //
+  // TIER HIERARCHY: steps 2-3 (validator eksternal, archive, Railway's own
+  // sync_request) are gated to Leader-tier nodes only (see tier:assign
+  // above and railway-server's recomputeTiers). Railway ranks every
+  // connected lightnode by score+latency into Leader(1) -> Guardian(20) ->
+  // Broadcaster(400) -> Vision(8000), each node dialing exactly ONE parent
+  // via WebRTC. So instead of every one of however many thousand
+  // lightnodes independently hitting Railway/the validator/the Postgres
+  // archive, only the single Leader does — a new block flows Leader ->
+  // its 20 Guardians -> their 400 Broadcasters -> their 8000 Visions, 3
+  // WebRTC hops instead of thousands of direct hits. "none" tier (unranked
+  // — brand new, or more nodes than the ~8421 tree currently holds) also
+  // falls through to Railway/archive/validator directly, same as before
+  // tiers existed — there's nobody assigned for them to wait on yet. A
+  // brand-new node needing #0-latest asks the SAME requestRange() as
+  // anyone else, which broadcasts to every connected peer, not just its
+  // parent — so it can be answered by whichever peer(s) happen to have
+  // that range.
   private async runCatchUp(latestHeight: number) {
     if (latestHeight >= 0) {
       this.log(`Network tip is block #${latestHeight}`);
@@ -431,13 +448,13 @@ export class LightNodeClient {
 
     if (gap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1) {
       // Step 1 of 3: other lightnodes first (WebRTC mesh, see
-      // webrtc-peer.ts's requestRange + block-store.ts). Spreads
-      // catch-up load across whoever's already connected and
-      // happens to have this range in their own last-1000-block
-      // IndexedDB cache — costs Railway/Vercel nothing at all.
-      // Only the contiguous run from currentHeight+1 is applied;
-      // the loop stops at the first hole so whatever's still
-      // missing correctly falls through to the next step below.
+      // webrtc-peer.ts's requestRange + block-store.ts) — tried by
+      // EVERY node regardless of relay status. Spreads catch-up load
+      // across whoever's already connected and happens to have this
+      // range in their own last-5000-block IndexedDB cache — costs
+      // Railway/Vercel nothing at all. Only the contiguous run from
+      // currentHeight+1 is applied; the loop stops at the first hole
+      // so whatever's still missing correctly falls through below.
       const peerBlocks = await this.peerMesh.requestRange(
         this.state.currentHeight + 1, latestHeight, LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS
       );
@@ -455,6 +472,23 @@ export class LightNodeClient {
         }
       }
 
+      const stillBehindAfterPeers = latestHeight - this.state.currentHeight > 0;
+      const hasPeers = this.peerMesh.connectedPeerIds.length > 0;
+      if (stillBehindAfterPeers && !this.canGoDirectToRailway() && hasPeers) {
+        // Not our job: we're a Guardian/Broadcaster/Vision connected to our
+        // parent (or other peers) but they don't have this range yet
+        // either — only the Leader (or an unranked "none" node with nobody
+        // to wait on) goes further, so load stays concentrated on the top
+        // of the tree instead of every connected lightnode. We'll pick up
+        // the rest via peer gossip on the next drift recheck once our
+        // parent has it.
+        this.log(`Still ${latestHeight - this.state.currentHeight} block(s) behind — waiting for tier ${this.state.tier}'s parent to catch up (not hitting Railway/archive/validator directly)`);
+        return;
+      }
+      // Reached only if we're Leader/none-tier (this is our job), or we
+      // have zero connected peers at all (bootstrap — nobody else to wait
+      // on, e.g. we're among the very first nodes on the network).
+
       // Step 2 of 3: a validator's full node (Termux/VPS,
       // full-node-sync.js) over Vercel — spreads whatever's still
       // missing across the network instead of every node with a
@@ -466,8 +500,11 @@ export class LightNodeClient {
     }
 
     // Step 3 of 3: the archive (or Railway's own small ring
-    // buffer for whatever's left) — same as before.
+    // buffer for whatever's left) — same tier gate as step 2.
     const remainingGap = latestHeight - this.state.currentHeight;
+    if (remainingGap > 0 && !this.canGoDirectToRailway() && this.peerMesh.connectedPeerIds.length > 0) {
+      return; // same reasoning as above
+    }
     if (remainingGap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1 && archiveUrl) {
       this.catchUpFromArchive(archiveUrl, latestHeight);
     } else if (remainingGap > 0) {
@@ -514,6 +551,15 @@ export class LightNodeClient {
         this.driftRecheckInFlight = false;
       }
     }, DRIFT_RECHECK_INTERVAL_MS);
+  }
+
+  // Only the Leader (top of the tier tree, no parent to wait on by
+  // definition) and "none" (unranked — brand new, or overflow past the
+  // ~8421-node tree) are allowed to hit Railway/the validator/the archive
+  // directly. Guardian/Broadcaster/Vision wait on their single parent
+  // instead — see runCatchUp()'s two gate checks that call this.
+  private canGoDirectToRailway(): boolean {
+    return this.state.tier === "leader" || this.state.tier === "none";
   }
 
   private stopDriftRecheck() {

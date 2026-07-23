@@ -31,6 +31,20 @@ const ICE_SERVERS: RTCIceServer[] = [
 
 const DATACHANNEL_LABEL = "headers";
 
+// Hard cap on simultaneous WebRTC peer connections per node. Without this,
+// Railway's existing top-N relay promotion (RELAY_ROSTER_SIZE=5 in
+// railway-server) means EVERY connected lightnode dials ALL 5 relay nodes
+// directly — at real scale (MAX_LIGHT_NODES=5000) that's up to 5000 direct
+// connections landing on just 5 sockets, nowhere near the ~20-30 a single
+// browser tab can hold up reliably. Capping here bounds it: once at the
+// cap, connectTo() and handleOffer() both decline further connections —
+// callers fall back to Railway directly for that pair, same graceful
+// degradation as a failed NAT traversal (see file header). True multi-tier
+// fan-out (relay → tier-2 → tier-3, so load actually spreads instead of
+// just being refused past the cap) is a bigger change for later; this cap
+// is the safety net in the meantime.
+const MAX_MESH_PEERS = 20;
+
 export interface PeerMeshCallbacks {
   /** Send a signaling message out over the existing Railway WS connection. */
   sendSignal: (msg: { type: "webrtc_offer" | "webrtc_answer" | "ice_candidate"; toNodeId: string; sdp?: string; candidate?: string }) => void;
@@ -69,6 +83,7 @@ export class PeerMesh {
   /** Initiate a connection to a promoted relay node (we are the offerer). */
   async connectTo(peerNodeId: string) {
     if (this.peers.has(peerNodeId)) return; // already connecting/connected
+    if (this.peers.size >= MAX_MESH_PEERS) return; // at cap — this pair falls back to Railway directly instead
     const pc = this.createConnection(peerNodeId);
     const channel = pc.createDataChannel(DATACHANNEL_LABEL);
     this.wireChannel(peerNodeId, channel);
@@ -81,6 +96,7 @@ export class PeerMesh {
 
   /** Someone offered us a connection (we are the answerer). */
   async handleOffer(fromNodeId: string, sdp: string) {
+    if (!this.peers.has(fromNodeId) && this.peers.size >= MAX_MESH_PEERS) return; // at cap — decline, offerer falls back to Railway
     const pc = this.createConnection(fromNodeId);
     pc.ondatachannel = (ev) => this.wireChannel(fromNodeId, ev.channel);
     this.peers.set(fromNodeId, { connection: pc, channel: null });

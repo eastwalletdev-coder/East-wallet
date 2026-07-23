@@ -18,6 +18,8 @@ interface EastUser {
   username: string;
   balance: number;
   stakedAmount: number;
+  pendingUnstakeAmount: number;
+  pendingUnstakeClaimableAt: number;
   eastpassTier: number;
   isFounder: boolean;
   referredBy: string;
@@ -92,6 +94,8 @@ export function useTelegram() {
           username: tg.username || tg.first_name || 'miner',
           balance: 0,
           stakedAmount: 0,
+          pendingUnstakeAmount: 0,
+          pendingUnstakeClaimableAt: 0,
           eastpassTier: 0,
           isFounder: false,
           referredBy: '',

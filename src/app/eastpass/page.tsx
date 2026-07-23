@@ -1,16 +1,26 @@
 "use client"
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Zap, Shield, TrendingUp, Lock, CheckCircle2, Fingerprint, QrCode } from 'lucide-react';
+import { Slider } from '@/components/ui/slider';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Zap, Shield, TrendingUp, Lock, CheckCircle2, Fingerprint, QrCode, Coins, ArrowDownToLine, Clock } from 'lucide-react';
 import { EASTPASS_TIERS, getTierFromStaked } from '@/lib/ledger';
-import { stakeEast } from '@/actions/mining-actions';
+import { stakeEast, requestUnstake, claimUnstake } from '@/actions/mining-actions';
 import { useToast } from '@/hooks/use-toast';
 import { useTelegram } from '@/hooks/use-telegram';
 import { generateEastId, getPassStatusLabel, isPassActive } from '@/lib/east-id';
 import { SignatureDialog } from '@/components/SignatureDialog';
+
+function formatCountdown(secs: number) {
+  if (secs <= 0) return '00:00:00';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = Math.floor(secs % 60);
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
 
 export default function EastpassPage() {
   const { toast } = useToast();
@@ -18,6 +28,75 @@ export default function EastpassPage() {
   const [loadingStake, setLoadingStake] = useState(false);
   const [sigOpen, setSigOpen] = useState(false);
   const [pendingTier, setPendingTier] = useState<any>(null);
+
+  // ── Flexible-amount stake widget ──────────────────────────────────
+  const [stakeMode, setStakeMode] = useState<'stake' | 'unstake'>('stake');
+  const [sliderAmount, setSliderAmount] = useState(0);
+  const [widgetSigOpen, setWidgetSigOpen] = useState(false);
+  const [widgetLoading, setWidgetLoading] = useState(false);
+  const [claimLoading, setClaimLoading] = useState(false);
+  const [claimCountdown, setClaimCountdown] = useState(0);
+
+  const availableBalance = user?.balance || 0;
+  const pendingUnstake = user?.pendingUnstakeAmount || 0;
+  const pendingClaimableAt = user?.pendingUnstakeClaimableAt || 0;
+  const widgetMax = stakeMode === 'stake' ? availableBalance : (user?.stakedAmount || 0);
+
+  useEffect(() => {
+    setSliderAmount(0);
+  }, [stakeMode]);
+
+  useEffect(() => {
+    if (pendingUnstake <= 0 || pendingClaimableAt <= 0) { setClaimCountdown(0); return; }
+    const tick = () => setClaimCountdown(Math.max(0, Math.ceil((pendingClaimableAt - Date.now()) / 1000)));
+    tick();
+    const t = setInterval(tick, 1000);
+    return () => clearInterval(t);
+  }, [pendingUnstake, pendingClaimableAt]);
+
+  const setPercent = (pct: number) => {
+    setSliderAmount(Math.floor(widgetMax * pct) );
+  };
+
+  const handleWidgetConfirm = async () => {
+    if (sliderAmount <= 0) return;
+    setWidgetLoading(true);
+    if (stakeMode === 'stake') {
+      const res = await stakeEast(userId, sliderAmount, initData);
+      if (res.success) {
+        toast({ title: "Stake Confirmed", description: `${sliderAmount} EAST staked.` });
+        refreshUser();
+        setSliderAmount(0);
+      } else {
+        toast({ variant: "destructive", title: "Stake Failed", description: res.error });
+      }
+    } else {
+      const res = await requestUnstake(userId, sliderAmount, initData);
+      if (res.success) {
+        toast({ title: "Unstake Requested", description: `${sliderAmount} EAST will be claimable in 24h.` });
+        refreshUser();
+        setSliderAmount(0);
+      } else {
+        toast({ variant: "destructive", title: "Unstake Failed", description: res.error });
+      }
+    }
+    setWidgetLoading(false);
+    setWidgetSigOpen(false);
+  };
+
+  const handleClaimUnstake = async () => {
+    setClaimLoading(true);
+    const res = await claimUnstake(userId, initData);
+    if (res.success) {
+      toast({ title: "Claimed", description: `${res.claimed} EAST added to your balance.` });
+      refreshUser();
+    } else if (res.error?.startsWith('CLAIM_DELAY_ACTIVE')) {
+      toast({ variant: "destructive", title: "Still Locked", description: "The 24h claim delay hasn't passed yet." });
+    } else {
+      toast({ variant: "destructive", title: "Claim Failed", description: res.error });
+    }
+    setClaimLoading(false);
+  };
 
   const currentStaked = user?.stakedAmount || 0;
   const currentTier = getTierFromStaked(currentStaked);
@@ -161,6 +240,116 @@ export default function EastpassPage() {
         })}
       </div>
 
+      {/* ── Flexible Stake Widget — its own section, separate from tier cards ── */}
+      <div className="space-y-3 pt-2">
+        <p className="text-white/40 text-[10px] uppercase font-bold px-1">Stake / Unstake EAST</p>
+
+        <Card className="bg-white/[0.03] border-white/5 rounded-2xl overflow-hidden">
+          <CardContent className="p-4 space-y-4">
+            {/* Active stake summary */}
+            <div className="flex items-center justify-between p-3 rounded-xl bg-primary/[0.06] border border-primary/10">
+              <div className="flex items-center gap-2">
+                <Coins className="w-4 h-4 text-primary" />
+                <div>
+                  <p className="text-[8px] text-white/30 uppercase font-bold">Active Stake</p>
+                  <p className="text-white font-mono font-bold text-sm">{currentStaked.toLocaleString()} EAST</p>
+                </div>
+              </div>
+              <Badge className="text-[9px] font-black uppercase px-2 py-0.5 bg-primary/20 text-primary border-primary/30">
+                {currentTier.name}
+              </Badge>
+            </div>
+
+            {/* Pending unstake / claim */}
+            {pendingUnstake > 0 && (
+              <div className="flex items-center justify-between p-3 rounded-xl bg-white/[0.04] border border-white/10">
+                <div className="flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-amber-400" />
+                  <div>
+                    <p className="text-[8px] text-white/30 uppercase font-bold">Pending Unstake</p>
+                    <p className="text-white font-mono font-bold text-sm">{pendingUnstake.toLocaleString()} EAST</p>
+                  </div>
+                </div>
+                {claimCountdown > 0 ? (
+                  <div className="text-right">
+                    <p className="text-[8px] text-white/30 uppercase font-bold">Claimable In</p>
+                    <p className="text-amber-400 font-mono font-bold text-xs">{formatCountdown(claimCountdown)}</p>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    disabled={claimLoading}
+                    onClick={handleClaimUnstake}
+                    className="h-8 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 text-[9px] font-black uppercase tracking-widest"
+                  >
+                    <ArrowDownToLine className="w-3 h-3 mr-1" /> Claim Now
+                  </Button>
+                )}
+              </div>
+            )}
+
+            {/* Stake / Unstake mode toggle */}
+            <Tabs value={stakeMode} onValueChange={(v) => setStakeMode(v as 'stake' | 'unstake')}>
+              <TabsList className="grid grid-cols-2 w-full bg-white/[0.04] border border-white/5 rounded-xl h-10">
+                <TabsTrigger value="stake" className="text-[10px] font-black uppercase tracking-widest data-[state=active]:bg-primary/20 data-[state=active]:text-primary rounded-lg">
+                  Stake
+                </TabsTrigger>
+                <TabsTrigger value="unstake" className="text-[10px] font-black uppercase tracking-widest data-[state=active]:bg-primary/20 data-[state=active]:text-primary rounded-lg">
+                  Unstake
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+
+            {/* Amount display */}
+            <div className="text-center py-2">
+              <p className="text-3xl font-mono font-bold text-white">{sliderAmount.toLocaleString()}</p>
+              <p className="text-[9px] text-white/30 uppercase font-bold tracking-widest mt-1">
+                EAST · {stakeMode === 'stake' ? `Balance: ${availableBalance.toLocaleString()}` : `Staked: ${currentStaked.toLocaleString()}`}
+              </p>
+            </div>
+
+            {/* Manual slider */}
+            <Slider
+              value={[sliderAmount]}
+              max={Math.max(widgetMax, 1)}
+              step={1}
+              disabled={widgetMax <= 0}
+              onValueChange={(v) => setSliderAmount(v[0])}
+              className="py-1"
+            />
+
+            {/* Percentage quick-select buttons */}
+            <div className="grid grid-cols-4 gap-2">
+              {[25, 50, 75, 100].map((pct) => (
+                <Button
+                  key={pct}
+                  variant="outline"
+                  disabled={widgetMax <= 0}
+                  onClick={() => setPercent(pct / 100)}
+                  className="h-9 rounded-xl bg-white/[0.03] border-white/10 text-white/60 hover:bg-primary/10 hover:text-primary hover:border-primary/20 text-[10px] font-black uppercase"
+                >
+                  {pct}%
+                </Button>
+              ))}
+            </div>
+
+            <Button
+              disabled={sliderAmount <= 0 || widgetLoading || sliderAmount > widgetMax}
+              onClick={() => setWidgetSigOpen(true)}
+              className="w-full h-11 rounded-xl bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 text-[10px] font-black uppercase tracking-widest"
+            >
+              {stakeMode === 'stake' ? `Stake ${sliderAmount.toLocaleString()} EAST` : `Request Unstake ${sliderAmount.toLocaleString()} EAST`}
+            </Button>
+
+            {stakeMode === 'unstake' && (
+              <p className="text-[9px] text-white/25 uppercase font-bold text-center leading-relaxed">
+                Unstaking takes effect immediately. Funds are claimable after a 24h delay.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
       <div className="p-4 bg-white/[0.02] border border-dashed border-white/10 rounded-2xl">
         <div className="flex items-start gap-3">
           <Shield className="w-4 h-4 text-primary shrink-0 mt-0.5" />
@@ -169,6 +358,19 @@ export default function EastpassPage() {
           </p>
         </div>
       </div>
+
+      {/* Flexible Stake Widget — Signature Dialog */}
+      <SignatureDialog
+        open={widgetSigOpen}
+        onOpenChange={setWidgetSigOpen}
+        txType={stakeMode === 'stake' ? 'STAKE' : 'UNSTAKE'}
+        from={stakeMode === 'stake' ? shortAddress : 'Staking Pool'}
+        to={stakeMode === 'stake' ? 'Staking Pool' : shortAddress}
+        amount={sliderAmount}
+        gasFee={0}
+        onConfirm={handleWidgetConfirm}
+        loading={widgetLoading}
+      />
 
       {/* Signature Dialog */}
       <SignatureDialog

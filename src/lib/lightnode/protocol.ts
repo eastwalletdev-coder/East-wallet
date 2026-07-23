@@ -60,7 +60,13 @@ export interface AckMessage {
   timestamp: number;
 }
 
-// ── Relay scoring & promotion (see railway-server's recomputeRelayRoster) ──
+// ── Tiered gossip hierarchy (see railway-server's recomputeTiers) ─────
+// Leader(1) -> Guardian(20) -> Broadcaster(400) -> Vision(8000), each node
+// told its own tier + single parent to dial — replaces the old flat top-5
+// roster that everyone dialed directly (didn't scale past ~100 nodes).
+export type NodeTier = "leader" | "guardian" | "broadcaster" | "vision" | "none";
+export interface TierAssignMessage { type: "tier:assign"; tier: NodeTier; parentNodeId: string | null; }
+
 export interface RelayStatsMessage {
   type: "relay_stats";
   nodeId: string;
@@ -68,9 +74,6 @@ export interface RelayStatsMessage {
   participationSeconds: number;
   verifiedHeaderCount: number;
 }
-export interface RelayRosterMessage { type: "relay:roster"; relayNodeIds: string[]; }
-export interface RelayPromotedMessage { type: "relay:promoted"; }
-export interface RelayDemotedMessage { type: "relay:demoted"; }
 
 // ── WebRTC signaling passthrough — Railway forwards these blind ────────
 export interface WebrtcOfferMessage { type: "webrtc_offer"; fromNodeId?: string; toNodeId: string; sdp: string; }
@@ -87,7 +90,7 @@ export interface FullSyncResponseMessage { type: "full_sync_response"; fromNodeI
 
 export type InboundMessage =
   | WelcomeMessage | BlockNewMessage | BlockBackfillMessage | PongMessage | ErrorMessage
-  | RelayRosterMessage | RelayPromotedMessage | RelayDemotedMessage
+  | TierAssignMessage
   | FullSyncProvidersMessage | FullSyncResponseMessage
   | WebrtcOfferMessage | WebrtcAnswerMessage | IceCandidateMessage;
 

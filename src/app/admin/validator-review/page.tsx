@@ -34,6 +34,9 @@ export default function ValidatorReviewPage() {
   const [reviewNotes, setReviewNotes] = useState('');
   const [migrating, setMigrating] = useState<string | null>(null);
   const [migrationResult, setMigrationResult] = useState<{ endpoint: string; success: boolean; message: string } | null>(null);
+  const [backfillTelegramId, setBackfillTelegramId] = useState('');
+  const [backfillRunning, setBackfillRunning] = useState(false);
+  const [backfillResult, setBackfillResult] = useState<any>(null);
   const widgetContainerRef = useRef<HTMLDivElement>(null);
 
   const fetchCandidates = useCallback(async () => {
@@ -179,6 +182,7 @@ export default function ValidatorReviewPage() {
     { path: '/api/admin/migrate-lightnode-epoch', label: 'Light Node Epoch Reward (v12)' },
     { path: '/api/admin/migrate-evm-link', label: 'EVM Link Column (v5) — secp256k1 dual-path auth' },
     { path: '/api/admin/migrate-evm-self-custody', label: 'EVM Self-Custody Columns (v13) — wallet_type/evm_public_key' },
+    { path: '/api/admin/migrate-unstake-delay', label: 'Unstake Claim Delay Columns (v14) — pending_unstake_amount/claimable_at' },
   ];
 
   const runMigration = async (path: string) => {
@@ -192,6 +196,30 @@ export default function ValidatorReviewPage() {
       setMigrationResult({ endpoint: path, success: false, message: err.message });
     } finally {
       setMigrating(null);
+    }
+  };
+
+  // Backfill orphaned Recent Activity rows for a user who upgraded to
+  // self-custody EVM (see /api/admin/backfill-tx-addresses). Always runs
+  // dryRun first so you see what WOULD change before writing anything.
+  const runBackfill = async (dryRun: boolean) => {
+    setBackfillRunning(true);
+    if (dryRun) setBackfillResult(null);
+    try {
+      const res = await fetch('/api/admin/backfill-tx-addresses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          telegramId: backfillTelegramId.trim() || undefined,
+          dryRun,
+        }),
+      });
+      const data = await res.json();
+      setBackfillResult(data);
+    } catch (err: any) {
+      setBackfillResult({ success: false, error: err.message });
+    } finally {
+      setBackfillRunning(false);
     }
   };
 
@@ -248,6 +276,59 @@ export default function ValidatorReviewPage() {
           <div className={`text-xs p-2 rounded ${migrationResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
             <p className="font-mono text-[10px] opacity-70">{migrationResult.endpoint}</p>
             <p>{migrationResult.message}</p>
+          </div>
+        )}
+      </div>
+
+      <div className="border rounded-lg p-4 space-y-3 bg-gray-50">
+        <h2 className="text-sm font-semibold text-gray-700">Backfill Recent Activity (post-EVM-migration)</h2>
+        <p className="text-xs text-gray-500">
+          Fixes old send/receive history disappearing after a user upgrades to self-custody EVM.
+          Leave Telegram ID empty to run against every migrated user. Always run "Dry Run" first
+          and check the result before "Apply".
+        </p>
+        <input
+          type="text"
+          placeholder="Telegram ID (optional — empty = all users)"
+          value={backfillTelegramId}
+          onChange={(e) => setBackfillTelegramId(e.target.value)}
+          className="w-full px-3 py-2 text-xs border rounded font-mono"
+        />
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={backfillRunning}
+            onClick={() => runBackfill(true)}
+            className="text-xs"
+          >
+            {backfillRunning ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : null}
+            Dry Run
+          </Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={backfillRunning || !backfillResult?.dryRun}
+            onClick={() => runBackfill(false)}
+            className="text-xs"
+            title={!backfillResult?.dryRun ? 'Run Dry Run first' : ''}
+          >
+            {backfillRunning ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : null}
+            Apply (writes to DB)
+          </Button>
+        </div>
+        {backfillResult && (
+          <div className={`text-xs p-2 rounded space-y-1 ${backfillResult.success ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'}`}>
+            <p>
+              {backfillResult.dryRun ? 'DRY RUN — nothing written yet.' : 'APPLIED — written to DB.'}{' '}
+              {backfillResult.usersWithMatches ?? 0} user(s) affected, {backfillResult.totalRowsMatched ?? backfillResult.totalRowsUpdated ?? 0} row(s) matched.
+            </p>
+            {backfillResult.error && <p className="font-mono text-[10px]">{backfillResult.error}</p>}
+            {backfillResult.details?.length > 0 && (
+              <pre className="text-[9px] overflow-x-auto bg-white/50 p-2 rounded max-h-40 overflow-y-auto">
+                {JSON.stringify(backfillResult.details, null, 2)}
+              </pre>
+            )}
           </div>
         )}
       </div>

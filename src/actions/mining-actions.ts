@@ -144,7 +144,6 @@ export async function registerOrUpdateUser(
 
   const walletAddress = generateWalletFromTelegramId(telegramId);
   const isFounder = FOUNDER_IDS.includes(telegramId);
-  const eastId = generateEastId(walletAddress);
 
   // ── Level 1: Redis cache read (< 50ms) ──────────────────────────
   // For returning users with no startParam, serve from cache immediately
@@ -216,10 +215,19 @@ export async function registerOrUpdateUser(
     await client.query('COMMIT');
 
     const user = userRes.rows[0];
+    // eastId must derive from the user's ACTUAL current wallet_address
+    // (user.wallet_address), not the `walletAddress` var computed at the
+    // top of this function — that one is always the deterministic
+    // custodial_hash address, used only for the initial INSERT. For a
+    // user who has upgraded to self-custody EVM, using it here would
+    // silently show an EastID tied to an address they no longer use,
+    // right after the very cache invalidation that upgrade triggers.
+    const currentEastId = generateEastId(user.wallet_address);
     const userData = {
       telegramId: user.telegram_id,
       walletAddress: user.wallet_address,
-      eastId,
+      walletType: user.wallet_type || 'custodial_hash',
+      eastId: currentEastId,
       username: user.username,
       balance: Number(user.balance),
       stakedAmount: Number(user.staked_amount),

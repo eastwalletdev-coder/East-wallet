@@ -2,21 +2,24 @@
 
 import { useState, useCallback } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { User, Shield, Globe, Award, Settings, FileText, ChevronRight, Crown, Copy, CheckCheck, Users, KeyRound, Coins } from 'lucide-react';
+import { User, Shield, Globe, Award, Settings, FileText, ChevronRight, Crown, Copy, CheckCheck, Users, KeyRound, Coins, ShieldCheck } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import Link from 'next/link';
 import { useTelegram } from '@/hooks/use-telegram';
 import { ExportEastWalletSheet } from '@/components/ExportEastWalletSheet';
+import { CreateWalletDialog } from '@/components/CreateWalletDialog';
 
 export default function ProfilePage() {
-  const { userId, user, loading, initData } = useTelegram();
+  const { userId, user, loading, initData, refreshUser } = useTelegram();
   const [copied, setCopied] = useState(false);
   const [copiedRef, setCopiedRef] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   const walletAddress = user?.walletAddress || '0x...';
   const isFounder = user?.isFounder === true;
+  const isSelfCustody = user?.walletType === 'self_custody_evm';
   const referralLink = `https://t.me/${process.env.NEXT_PUBLIC_BOT_USERNAME || 'Eastwallet_bot'}?start=${userId}`;
 
   const handleCopyAddress = useCallback(async () => {
@@ -155,6 +158,32 @@ export default function ProfilePage() {
 
           <div className="p-4 flex items-center justify-between">
             <div className="flex items-center gap-3">
+              <ShieldCheck className="w-4 h-4 text-primary" />
+              <div>
+                <span className="text-white text-sm block">Wallet Custody</span>
+                <span className="text-white/30 text-[10px] uppercase">
+                  {isSelfCustody ? 'You control the private key' : 'Server-derived (legacy)'}
+                </span>
+              </div>
+            </div>
+            {isSelfCustody ? (
+              <Badge className="bg-primary/20 text-primary border-primary/30 text-[9px] font-black uppercase">
+                Self-Custody
+              </Badge>
+            ) : (
+              <Button
+                size="sm"
+                disabled={!userId}
+                onClick={() => setUpgradeOpen(true)}
+                className="h-8 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 text-[9px] font-black uppercase tracking-widest"
+              >
+                Upgrade
+              </Button>
+            )}
+          </div>
+
+          <div className="p-4 flex items-center justify-between">
+            <div className="flex items-center gap-3">
               <User className="w-4 h-4 text-primary" />
               <span className="text-white text-sm">Consensus Role</span>
             </div>
@@ -214,6 +243,21 @@ export default function ProfilePage() {
       <p className="text-white/20 text-[10px] text-center leading-relaxed">
         Your identity is cryptographically mapped to the EASTCHAIN ledger.
       </p>
+
+      {userId && (
+        <CreateWalletDialog
+          open={upgradeOpen}
+          onOpenChange={setUpgradeOpen}
+          mode="upgrade"
+          telegramId={userId}
+          username={user?.username || 'miner'}
+          initData={initData}
+          onSuccess={() => {
+            setUpgradeOpen(false);
+            refreshUser();
+          }}
+        />
+      )}
     </div>
   );
 }

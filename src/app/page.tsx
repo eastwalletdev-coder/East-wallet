@@ -1,7 +1,8 @@
 "use client"
 
 import { useState, useEffect } from "react";
-import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Check, Activity, RefreshCcw, Archive, ShieldCheck, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, Radio, ChevronDown, X, Loader2 } from "lucide-react";
+import Link from "next/link";
+import { Zap, Globe, Send, ArrowDownLeft, Copy, CheckCheck, Check, Activity, RefreshCcw, Archive, ShieldCheck, ShieldAlert, CheckCircle2, Cpu, Store, ArrowUpRight, Lock, Clock, Radio, ChevronDown, X, Loader2 } from "lucide-react";
 import { LightNodePanel } from "@/components/LightNodePanel";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { TradingTerminal } from "@/components/p2p/TradingTerminal";
@@ -55,6 +56,26 @@ function CopyTxButton({ text }: { text: string }) {
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const { userId, user, initData, loading: userLoading, refreshUser } = useTelegram();
+
+  // Upgrade-to-self-custody reminder banner: dismissible, remembered per
+  // Telegram account (not just per-device) via a userId-scoped localStorage
+  // key. Only relevant for users who aren't self-custody EVM yet.
+  useEffect(() => {
+    if (!userId) return;
+    try {
+      const dismissed = localStorage.getItem(`eastchain_upgrade_banner_dismissed_${userId}`);
+      setUpgradeBannerDismissed(dismissed === '1');
+    } catch {
+      setUpgradeBannerDismissed(false); // localStorage unavailable (e.g. private mode) — default to showing it
+    }
+  }, [userId]);
+
+  const dismissUpgradeBanner = () => {
+    setUpgradeBannerDismissed(true);
+    if (userId) {
+      try { localStorage.setItem(`eastchain_upgrade_banner_dismissed_${userId}`, '1'); } catch {}
+    }
+  };
   const { toast } = useToast();
 
   const [nodeState, setNodeState] = useState<LightNodeState | null>(null);
@@ -67,6 +88,7 @@ export default function Home() {
   const [sendOpen, setSendOpen] = useState(false);
   const [receiveOpen, setReceiveOpen] = useState(false);
   const [countdown, setCountdown] = useState(0); // remaining seconds
+  const [upgradeBannerDismissed, setUpgradeBannerDismissed] = useState(true); // default true until we know userId, avoids a flash
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [pendingTransactions, setPendingTransactions] = useState<PendingTransaction[]>([]);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
@@ -316,6 +338,27 @@ export default function Home() {
 
       {/* ── CONTENT SECTION — cards below globe ── */}
       <div className="flex flex-col gap-3 px-3">
+
+        {/* Self-custody upgrade reminder — non-blocking, dismissible, only
+            shown to users still on the legacy server-derived wallet. */}
+        {!userLoading && user && user.walletType !== 'self_custody_evm' && !upgradeBannerDismissed && (
+          <Link href="/profile">
+            <div className="flex items-center gap-3 p-3 rounded-2xl bg-amber-500/10 border border-amber-500/20">
+              <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+              <div className="flex-1 min-w-0">
+                <p className="text-amber-400 text-[10px] font-black uppercase tracking-widest">Secure Your Wallet</p>
+                <p className="text-white/50 text-[10px] leading-tight">Upgrade to self-custody — you hold the private key, not the server.</p>
+              </div>
+              <button
+                onClick={(e) => { e.preventDefault(); e.stopPropagation(); dismissUpgradeBanner(); }}
+                className="shrink-0 p-1 text-white/30 hover:text-white/60"
+                aria-label="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </Link>
+        )}
 
         {/* Mining Balance Card */}
         <Card className="glass-card overflow-hidden border-white/5 w-full">

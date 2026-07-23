@@ -14,6 +14,7 @@ interface TelegramUser {
 interface EastUser {
   telegramId: string;
   walletAddress: string;
+  walletType: string;
   eastId?: string;
   username: string;
   balance: number;
@@ -91,6 +92,7 @@ export function useTelegram() {
         setUser(prev => prev ?? {
           telegramId: String(tg.id),
           walletAddress: '',
+          walletType: 'custodial_hash',
           username: tg.username || tg.first_name || 'miner',
           balance: 0,
           stakedAmount: 0,

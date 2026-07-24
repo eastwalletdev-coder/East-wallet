@@ -44,6 +44,8 @@ function mapUserRow(row: any, eastId: string) {
     username: row.username,
     balance: Number(row.balance),
     stakedAmount: Number(row.staked_amount),
+    pendingUnstakeAmount: Number(row.pending_unstake_amount || 0),
+    pendingUnstakeClaimableAt: Number(row.pending_unstake_claimable_at || 0),
     eastpassTier: Number(row.eastpass_tier),
     isFounder: row.is_founder,
     referredBy: row.referred_by,

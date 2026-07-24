@@ -19,7 +19,7 @@ import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveVali
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
 import { generateEastId } from '@/lib/east-id';
-import { stakeEastContract, claimMiningRewardContract, claimVestedContract } from '@/actions/contract-actions';
+import { stakeEastContract, requestUnstakeContract, claimUnstakeContract, claimMiningRewardContract, claimVestedContract } from '@/actions/contract-actions';
 import crypto from 'crypto';
 
 const FOUNDER_IDS = (process.env.FOUNDER_IDS || '').split(',').map(id => id.trim()).filter(Boolean);
@@ -223,6 +223,8 @@ export async function registerOrUpdateUser(
       username: user.username,
       balance: Number(user.balance),
       stakedAmount: Number(user.staked_amount),
+      pendingUnstakeAmount: Number(user.pending_unstake_amount || 0),
+      pendingUnstakeClaimableAt: Number(user.pending_unstake_claimable_at || 0),
       eastpassTier: Number(user.eastpass_tier),
       isFounder: user.is_founder,
       referredBy: user.referred_by,
@@ -406,6 +408,37 @@ export async function stakeEast(
     blockHash: res.blockHash,
     gasFee: res.gasFee,
     callHash: res.callHash,
+  };
+}
+
+// ── EastPass stake widget: request-then-claim unstake flow ─────────
+// Distinct from the tier-card 'unstake' contract function (instant, but
+// locked behind the 30-day stake_locked_until) — this lets someone unstake
+// any amount up to what's staked, effective immediately, then wait
+// UNSTAKE_CLAIM_DELAY_MS (24h, see staking-contract.ts) before the funds
+// land back in their balance via claimUnstake below.
+export async function requestUnstake(tgId: string, amount: number, initData?: string) {
+  if (amount <= 0) return { success: false, error: 'INVALID_AMOUNT' };
+  const res = await requestUnstakeContract(tgId, amount, initData);
+  if (!res.success) return { success: false, error: res.error };
+  return {
+    success: true,
+    proofHash: res.txHash,
+    claimableAt: res.claimableAt,
+    blockIndex: res.blockIndex,
+    blockHash: res.blockHash,
+  };
+}
+
+export async function claimUnstake(tgId: string, initData?: string) {
+  const res = await claimUnstakeContract(tgId, initData);
+  if (!res.success) return { success: false, error: res.error };
+  return {
+    success: true,
+    claimed: res.claimed,
+    proofHash: res.txHash,
+    blockIndex: res.blockIndex,
+    blockHash: res.blockHash,
   };
 }
 

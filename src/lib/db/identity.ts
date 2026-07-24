@@ -727,6 +727,33 @@ export async function migrateIdentityV13() {
 }
 
 /**
+ * Migration v14 — pending_unstake_amount / pending_unstake_claimable_at.
+ *
+ * Adds identity.users.pending_unstake_amount (NUMERIC) and
+ * pending_unstake_claimable_at (BIGINT epoch ms) — needed for the EastPass
+ * stake widget's "request unstake now, claim after a 24h delay" flow (see
+ * lib/contracts/staking-contract.ts's requestUnstake/claimUnstake, and
+ * src/app/api/admin/migrate-unstake-delay/route.ts which triggers this).
+ * Purely additive, idempotent (ADD COLUMN IF NOT EXISTS) — safe to call
+ * repeatedly, same pattern as migrateIdentityV13 above.
+ */
+export async function migrateIdentityV14() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`
+      ALTER TABLE identity.users
+        ADD COLUMN IF NOT EXISTS pending_unstake_amount NUMERIC NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS pending_unstake_claimable_at BIGINT NOT NULL DEFAULT 0;
+    `);
+    console.log('[EASTCHAIN] Identity schema migration v14 completed (pending_unstake_amount, pending_unstake_claimable_at columns)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Identity migration v14 error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Claim message builders live in src/lib/east-claim-messages.ts — a plain
  * isomorphic module importable from client components too (needed so the
  * browser can sign the exact same string this server verifies against).

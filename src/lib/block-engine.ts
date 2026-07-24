@@ -450,7 +450,7 @@ export async function sealPendingBatch(): Promise<{ sealed: boolean; blockIndex?
     const handlers = getDispatchHandlers(r.tx_type);
     return {
       txHash: r.tx_hash, txType: r.tx_type,
-      senderAddress: '', recipientAddress: '',
+      senderAddress: row.senderAddress, recipientAddress: row.recipientAddress,
       senderId: r.sender_id, recipientId: r.recipient_id,
       amount: Number(r.amount), gasFee: Number(r.gas_fee), payload: r.payload,
       commitFn: async () => {

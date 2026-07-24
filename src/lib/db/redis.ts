@@ -171,7 +171,40 @@ export async function setCachedRecentVotes(limit: number, votes: any[]): Promise
   await r.set(`explorer:votes:${limit}`, votes, { ex: CHAIN_STATE_CACHE_TTL });
 }
 
-// Top validators cache (refreshed every 24h epoch)
+// ─── Mempool-pending flag ──────────────────────────────────────────
+// sealPendingBatch() (see block-engine.ts) is triggered by QStash on a
+// short fixed interval regardless of whether there's actually anything
+// to seal — every tick was unconditionally opening a Postgres connection
+// and running a SELECT even when the mempool is empty (the overwhelming
+// majority of ticks on a quiet testnet), which is exactly the kind of
+// constant, low-value traffic that keeps Neon from ever auto-suspending.
+// This flag lets sealPendingBatch() skip Postgres entirely on an empty
+// tick. Fails OPEN (returns true / "assume pending") if Redis is
+// unreachable — a false positive just costs one harmless extra Postgres
+// query; a false negative would mean a real pending tx gets silently
+// skipped, which is the wrong direction to fail in for something
+// handling money.
+export async function markMempoolPending(): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  await r.set('mempool:pending', '1');
+}
+
+export async function hasMempoolPending(): Promise<boolean> {
+  const r = getRedis();
+  if (!r) return true; // fail open — see comment above
+  try {
+    return (await r.get('mempool:pending')) !== null;
+  } catch {
+    return true;
+  }
+}
+
+export async function clearMempoolPending(): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  await r.del('mempool:pending');
+}
 export async function getCachedValidators(): Promise<any[] | null> {
   const r = getRedis();
   if (!r) return null;

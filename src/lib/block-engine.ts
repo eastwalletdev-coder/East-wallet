@@ -10,6 +10,7 @@ import { signChainHeader } from './consensus/chain-signing';
 import { getDispatchHandlers, type MempoolRow } from './consensus/tx-dispatch';
 import { planBlockProduction, finalizeProposal, getValidatedProduction } from './consensus/leader-schedule';
 import { computeSequenceHash, computeBlockHash, computeMerkleRoot } from './consensus/block-math';
+import { markMempoolPending, hasMempoolPending, clearMempoolPending } from './db/redis';
 
 const BATCH_WINDOW_MS = 5_000;       // 5 seconds batch window
 const MAX_TX_PER_BLOCK = 10;         // max tx per block
@@ -330,6 +331,7 @@ export async function addToMempool(tx: PendingTx): Promise<void> {
   } finally {
     client.release();
   }
+  await markMempoolPending();
 
   // If mempool full (10 tx) — seal immediately, highest gas_fee first
   if (mempool.length >= MAX_TX_PER_BLOCK) {
@@ -384,6 +386,7 @@ export async function queueTransaction(row: MempoolRow): Promise<void> {
   } finally {
     client.release();
   }
+  await markMempoolPending();
 
   // Best-effort fast path: try to seal right away if it's safe to do so.
   // Purely an optimization — if this instance dies before sealPendingBatch()
@@ -403,6 +406,13 @@ const STALE_PENDING_MS = 2 * 60 * 1000; // flag anything stuck >2 min for visibi
  * makes sealing reliable regardless of which process/instance triggers it.
  */
 export async function sealPendingBatch(): Promise<{ sealed: boolean; blockIndex?: number; count?: number }> {
+  // Skip Postgres entirely on a tick where nothing's actually pending —
+  // see markMempoolPending()/hasMempoolPending() in redis.ts for why this
+  // exists. This is the common case: queueTransaction() already tries an
+  // immediate opportunistic seal, so by the time QStash's next tick comes
+  // around moments later, the mempool is usually already empty.
+  if (!(await hasMempoolPending())) return { sealed: false };
+
   const client = await ledgerPool.connect();
   let rows: any[];
   try {
@@ -416,7 +426,10 @@ export async function sealPendingBatch(): Promise<{ sealed: boolean; blockIndex?
     client.release();
   }
 
-  if (rows.length === 0) return { sealed: false };
+  if (rows.length === 0) {
+    await clearMempoolPending(); // confirmed genuinely empty — next insert re-sets this
+    return { sealed: false };
+  }
 
   // Visibility for CRITICAL fix #1's remaining edge case: if a dispatch
   // handler itself is missing/erroring repeatedly, rows would still go

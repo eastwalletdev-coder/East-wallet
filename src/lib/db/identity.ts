@@ -367,7 +367,7 @@ export async function migrateIdentityV8() {
 /**
  * Migration v9 — contract governance: new contract functions ship in code
  * already (the handler in e.g. staking-contract.ts exists) but stay
- * UNCALLABLE — isKnownCall() in registry.ts rejects them exactly like a
+ * UNCALLABLE — isKnownCall() in abi-gate.ts rejects them exactly like a
  * truly-unknown function — until a quorum of active validators approves
  * the specific (contractAddress, functionName) pair via
  * governance-contract.ts. This is a strict allow-list extension: nothing

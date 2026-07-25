@@ -1,14 +1,16 @@
 /**
- * EASTCHAIN — Contract Registry
+ * EASTCHAIN — Contract Registry (CLIENT-SAFE — no server-only imports)
  * ─────────────────────────────────────────────────────────────────────
- * Fixed, EVM-style 0x... addresses for each internal "contract".
- * The ABI map below is a WHITELIST: the engine (engine.ts) rejects any
- * (contractAddress, functionName, params) combination that isn't listed
- * here. This closes off the most common injection vector — a client
- * calling an internal function that was never meant to be exposed, or
- * smuggling extra fields into `params` that a handler wasn't expecting.
+ * Fixed, EVM-style 0x... addresses for each internal "contract", plus the
+ * ABI whitelist map. Imported by BOTH client components (e.g.
+ * WalletConnectRequestHandler.tsx needs EAST_CHAIN_ID) and server code
+ * (engine.ts, contract-actions.ts) — so this file must never import
+ * anything that pulls in Node-only modules (the 'pg' driver, etc.). The
+ * DB-backed half of the whitelist check (isKnownCall/paramsMatchAbi) lives
+ * in ./abi-gate.ts instead, imported only by engine.ts (server-only).
  *
- * TWO TIERS of whitelist, checked by isKnownCall()/paramsMatchAbi():
+ * TWO TIERS of whitelist, checked by isKnownCall()/paramsMatchAbi() in
+ * ./abi-gate.ts:
  *  1. CONTRACT_ABI below — static, launch-time functions. Reviewed by a
  *     human at merge time, not by on-chain vote (there's no bootstrapping
  *     a vote before any voting mechanism exists).
@@ -20,7 +22,6 @@
  *     UNKNOWN_CONTRACT_FUNCTION error as if it didn't exist — until it's
  *     approved here.
  */
-import { identityPool } from '@/lib/db/identity';
 
 // EIP-155 chain ID for EAST, reserved on ChainList/ethereum-lists ahead of
 // mainnet. NOT enforced anywhere yet — evm-signature.ts currently only does
@@ -66,33 +67,3 @@ export const CONTRACT_ABI: Record<string, Record<string, string[]>> = {
     voteOnProposal: ['proposalId', 'vote'],
   },
 };
-
-export async function isKnownCall(contractAddress: string, functionName: string): Promise<boolean> {
-  const abi = CONTRACT_ABI[contractAddress];
-  if (abi && functionName in abi) return true;
-  // Tier 2 — governance-approved functions (see module doc comment above).
-  const res = await identityPool.query(
-    'SELECT 1 FROM identity.approved_contract_functions WHERE contract_address = $1 AND function_name = $2',
-    [contractAddress, functionName]
-  );
-  return res.rows.length > 0;
-}
-
-export async function paramsMatchAbi(
-  contractAddress: string,
-  functionName: string,
-  params: Record<string, any>
-): Promise<boolean> {
-  let expected = CONTRACT_ABI[contractAddress]?.[functionName];
-  if (!expected) {
-    const res = await identityPool.query(
-      'SELECT param_keys FROM identity.approved_contract_functions WHERE contract_address = $1 AND function_name = $2',
-      [contractAddress, functionName]
-    );
-    if (!res.rows.length) return false;
-    expected = res.rows[0].param_keys as string[]; // JSONB — pg already parses this to a JS array
-  }
-  const given = Object.keys(params);
-  if (given.length !== expected.length) return false;
-  return expected.every((k) => given.includes(k));
-}

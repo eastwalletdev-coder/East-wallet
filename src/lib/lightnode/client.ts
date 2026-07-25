@@ -63,6 +63,7 @@ const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long before fallin
 const SYNC_REQUEST_WATCHDOG_MS = 10_000; // if a plain sync_request hasn't closed the gap by then, Railway's buffer likely didn't have it — fall back to the archive instead of hanging forever
 const LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS = 5_000; // how long to wait for other lightnodes (WebRTC mesh) to answer a gap request before moving on to a validator/archive
 const DRIFT_RECHECK_INTERVAL_MS = 3 * 60_000; // browser-side equivalent of full-node-sync.js's periodic recheck — a missed live push self-heals within this interval instead of requiring a manual reconnect
+const PEER_EXCHANGE_INTERVAL_MS = 90_000; // how often we ask connected peers "who else do you know?" — deliberately NOT stopped when Railway disconnects, see startPeerExchange()
 
 // Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
 // EIP-191) signature — no more "accepted but not cryptographically
@@ -311,6 +312,7 @@ export class LightNodeClient {
       this.startParticipationClock();
       this.startRelayStats();
       this.startDriftRecheck();
+      if (!this.pexTimer) this.startPeerExchange(); // only start once — a reconnect shouldn't reset an already-running PEX cycle
     };
 
     ws.onmessage = (ev) => {
@@ -414,13 +416,26 @@ export class LightNodeClient {
     };
 
     ws.onclose = () => {
-      this.set({ connectionStatus: "disconnected", tier: "none", parentNodeId: null, connectedPeerIds: [] });
-      this.log("Disconnected");
+      // Only the Railway signaling/relay connection is gone here — NOT the
+      // WebRTC peer mesh. Those DataChannels are already direct P2P links
+      // (see webrtc-peer.ts's header comment) that never route through
+      // Railway once established, so there's no technical reason to kill
+      // them just because Railway had a hiccup. Previously this called
+      // peerMesh.disconnectAll() unconditionally, which meant a single
+      // Railway outage instantly dropped every peer too — the opposite of
+      // what a resilient mesh should do. Peers we're still actually
+      // connected to keep gossiping headers, serving backfill, etc. the
+      // entire time Railway is down; only a genuinely failed/closed RTCPeerConnection
+      // (handled independently in webrtc-peer.ts's onconnectionstatechange)
+      // removes a peer now. tier/parentNodeId/connectedPeerIds are left as
+      // they were for the same reason — they still describe the mesh
+      // that's still alive, Railway just isn't here to confirm it anymore.
+      this.set({ connectionStatus: "disconnected" });
+      this.log("Disconnected from hub — peer mesh stays up if any peers are still connected", "warn");
       this.stopHeartbeat();
       this.stopParticipationClock();
       this.stopRelayStats();
       this.stopDriftRecheck();
-      this.peerMesh.disconnectAll();
       if (this.syncRequestWatchdog) { clearTimeout(this.syncRequestWatchdog); this.syncRequestWatchdog = null; }
 
       if (this.manualDisconnect) return; // user closed it — don't fight that
@@ -559,6 +574,7 @@ export class LightNodeClient {
   }
 
   private driftRecheckTimer: ReturnType<typeof setInterval> | null = null;
+  private pexTimer: ReturnType<typeof setInterval> | null = null;
   private driftRecheckInFlight = false;
 
   // Called right when a new WebRTC peer connection opens (see
@@ -598,8 +614,8 @@ export class LightNodeClient {
 
   // Only the Leader (top of the tier tree, no parent to wait on by
   // definition) and "none" (unranked — brand new, or overflow past the
-  // ~8421-node tree) are allowed to hit Railway/the validator/the archive
-  // directly. Guardian/Broadcaster/Vision wait on their single parent
+  // ~168421-node tree) are allowed to hit Railway/the validator/the archive
+  // directly. Guardian/Broadcaster/Vision/Echo wait on their single parent
   // instead — see runCatchUp()'s two gate checks that call this.
   private canGoDirectToRailway(): boolean {
     return this.state.tier === "leader" || this.state.tier === "none";
@@ -614,6 +630,7 @@ export class LightNodeClient {
     this.manualDisconnect = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.stopDriftRecheck();
+    this.stopPeerExchange();
     this.ws?.close();
     this.ws = null;
     this.peerMesh.disconnectAll();
@@ -856,6 +873,26 @@ export class LightNodeClient {
   private stopRelayStats() {
     if (this.relayStatsTimer) clearInterval(this.relayStatsTimer);
     this.relayStatsTimer = null;
+  }
+
+  // Peer Exchange (see webrtc-peer.ts's header comment) — purely a
+  // DataChannel operation between already-connected peers, so unlike every
+  // other startX()/stopX() pair here, this one is deliberately NOT stopped
+  // in ws.onclose. The whole point is that the mesh keeps discovering/
+  // confirming its own shape independent of whether Railway is reachable
+  // right now. Only the intentional, user-initiated disconnect() call
+  // below stops it.
+  private startPeerExchange() {
+    this.stopPeerExchange();
+    this.pexTimer = setInterval(() => {
+      if (this.peerMesh.connectedPeerIds.length === 0) return; // nobody to ask, nothing to do
+      this.peerMesh.requestPeerList();
+    }, PEER_EXCHANGE_INTERVAL_MS);
+  }
+
+  private stopPeerExchange() {
+    if (this.pexTimer) clearInterval(this.pexTimer);
+    this.pexTimer = null;
   }
 
   private startHeartbeat() {

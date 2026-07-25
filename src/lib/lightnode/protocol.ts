@@ -61,10 +61,10 @@ export interface AckMessage {
 }
 
 // ── Tiered gossip hierarchy (see railway-server's recomputeTiers) ─────
-// Leader(1) -> Guardian(20) -> Broadcaster(400) -> Vision(8000), each node
-// told its own tier + single parent to dial — replaces the old flat top-5
-// roster that everyone dialed directly (didn't scale past ~100 nodes).
-export type NodeTier = "leader" | "guardian" | "broadcaster" | "vision" | "none";
+// Leader(1) -> Guardian(20) -> Broadcaster(400) -> Vision(8000) -> Echo(160000),
+// each node told its own tier + single parent to dial — replaces the old
+// flat top-5 roster that everyone dialed directly (didn't scale past ~100 nodes).
+export type NodeTier = "leader" | "guardian" | "broadcaster" | "vision" | "echo" | "none";
 export interface TierAssignMessage { type: "tier:assign"; tier: NodeTier; parentNodeId: string | null; }
 
 export interface RelayStatsMessage {

@@ -67,6 +67,7 @@ import * as stakingContract from './staking-contract';
 import * as vestingContract from './vesting-contract';
 import * as miningContract from './mining-contract';
 import * as validatorContract from './validator-contract';
+import * as governanceContract from './governance-contract';
 
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
 const CHAIN_DOMAIN = 'EASTCHAIN_CONTRACT_CALL_V1';
@@ -78,6 +79,7 @@ const CONTRACT_MODULES: Record<string, { execute: typeof stakingContract.execute
   [CONTRACTS.VESTING]: vestingContract,
   [CONTRACTS.MINING]: miningContract,
   [CONTRACTS.VALIDATOR]: validatorContract,
+  [CONTRACTS.GOVERNANCE]: governanceContract,
 };
 
 export interface CallContractParams {
@@ -194,8 +196,8 @@ export async function callContract(
   }
 
   // ── 3. ABI whitelist — reject unknown function or param mismatch ──
-  if (!isKnownCall(contractAddress, functionName)) return { success: false, error: 'UNKNOWN_CONTRACT_FUNCTION' };
-  if (!paramsMatchAbi(contractAddress, functionName, params)) return { success: false, error: 'PARAM_MISMATCH' };
+  if (!(await isKnownCall(contractAddress, functionName))) return { success: false, error: 'UNKNOWN_CONTRACT_FUNCTION' };
+  if (!(await paramsMatchAbi(contractAddress, functionName, params))) return { success: false, error: 'PARAM_MISMATCH' };
 
   const contractModule = CONTRACT_MODULES[contractAddress];
   if (!contractModule) return { success: false, error: 'UNKNOWN_CONTRACT' };

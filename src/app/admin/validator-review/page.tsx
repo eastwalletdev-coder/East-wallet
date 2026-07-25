@@ -37,6 +37,9 @@ export default function ValidatorReviewPage() {
   const [backfillTelegramId, setBackfillTelegramId] = useState('');
   const [backfillRunning, setBackfillRunning] = useState(false);
   const [backfillResult, setBackfillResult] = useState<any>(null);
+  const [resetConfirmInput, setResetConfirmInput] = useState('');
+  const [resetRunning, setResetRunning] = useState(false);
+  const [resetResult, setResetResult] = useState<any>(null);
   const widgetContainerRef = useRef<HTMLDivElement>(null);
 
   const fetchCandidates = useCallback(async () => {
@@ -183,6 +186,7 @@ export default function ValidatorReviewPage() {
     { path: '/api/admin/migrate-evm-link', label: 'EVM Link Column (v5) — secp256k1 dual-path auth' },
     { path: '/api/admin/migrate-evm-self-custody', label: 'EVM Self-Custody Columns (v13) — wallet_type/evm_public_key' },
     { path: '/api/admin/migrate-unstake-delay', label: 'Unstake Claim Delay Columns (v14) — pending_unstake_amount/claimable_at' },
+    { path: '/api/admin/migrate-governance-schema', label: 'Contract Governance Schema — proposals/votes/approved_functions' },
   ];
 
   const runMigration = async (path: string) => {
@@ -220,6 +224,37 @@ export default function ValidatorReviewPage() {
       setBackfillResult({ success: false, error: err.message });
     } finally {
       setBackfillRunning(false);
+    }
+  };
+
+  // Extremely destructive — must match /api/admin/genesis-reset's CONFIRM_PHRASE
+  // exactly (server re-checks it too, this is just so the button can't be
+  // clicked by accident before the phrase is even typed).
+  const RESET_CONFIRM_PHRASE = 'RESET_EVERYTHING_I_UNDERSTAND';
+
+  const runGenesisReset = async () => {
+    if (resetConfirmInput !== RESET_CONFIRM_PHRASE) return;
+    if (!window.confirm(
+      'This wipes ALL blocks, transactions, mempool, staking positions, and mint counters, ' +
+      'then restores balances from a snapshot. Founder vesting resets to a fresh 12-month cliff. ' +
+      'This cannot be undone. Proceed?'
+    )) return;
+
+    setResetRunning(true);
+    setResetResult(null);
+    try {
+      const res = await fetch('/api/admin/genesis-reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirm: resetConfirmInput }), // browser sends the session cookie automatically
+      });
+      const data = await res.json();
+      setResetResult({ success: res.ok && data.success, message: data.message || data.error || 'Unknown response', raw: data });
+      if (res.ok && data.success) setResetConfirmInput('');
+    } catch (err: any) {
+      setResetResult({ success: false, message: err.message });
+    } finally {
+      setResetRunning(false);
     }
   };
 
@@ -327,6 +362,42 @@ export default function ValidatorReviewPage() {
             {backfillResult.details?.length > 0 && (
               <pre className="text-[9px] overflow-x-auto bg-white/50 p-2 rounded max-h-40 overflow-y-auto">
                 {JSON.stringify(backfillResult.details, null, 2)}
+              </pre>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div className="border-2 border-red-300 rounded-lg p-4 space-y-3 bg-red-50">
+        <h2 className="text-sm font-semibold text-red-700">⚠ Danger Zone — Genesis Reset</h2>
+        <p className="text-xs text-red-600">
+          Wipes ALL blocks, transactions, mempool, staking positions, and mint counters, then
+          restores every balance from a snapshot. Founder vesting resets to a fresh 12-month cliff.
+          <strong> This cannot be undone.</strong> Type <code className="font-mono bg-red-100 px-1 rounded">{RESET_CONFIRM_PHRASE}</code> below to enable the button.
+        </p>
+        <input
+          type="text"
+          placeholder={RESET_CONFIRM_PHRASE}
+          value={resetConfirmInput}
+          onChange={(e) => setResetConfirmInput(e.target.value)}
+          className="w-full px-3 py-2 text-xs border border-red-300 rounded font-mono"
+        />
+        <Button
+          variant="destructive"
+          size="sm"
+          disabled={resetRunning || resetConfirmInput !== RESET_CONFIRM_PHRASE}
+          onClick={runGenesisReset}
+          className="text-xs"
+        >
+          {resetRunning ? <Loader2 className="w-3 h-3 mr-2 animate-spin" /> : null}
+          Execute Genesis Reset
+        </Button>
+        {resetResult && (
+          <div className={`text-xs p-2 rounded ${resetResult.success ? 'bg-green-50 text-green-700' : 'bg-red-100 text-red-700'}`}>
+            <p>{resetResult.message}</p>
+            {resetResult.raw && (
+              <pre className="text-[9px] overflow-x-auto bg-white/50 p-2 rounded max-h-40 overflow-y-auto mt-1">
+                {JSON.stringify(resetResult.raw, null, 2)}
               </pre>
             )}
           </div>

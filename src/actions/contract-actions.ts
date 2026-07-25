@@ -129,3 +129,34 @@ export async function getMyValidatorVote(tgId: string, roundId: string) {
     client.release();
   }
 }
+
+// ─── Contract governance (propose/vote on new contract functions) ──
+// Founder or any active validator may propose; only active validators vote.
+// See governance-contract.ts for the full rules.
+export async function proposeContractFunctionAction(
+  tgId: string,
+  contractAddress: string,
+  functionName: string,
+  paramKeys: string[],
+  initData?: string
+) {
+  return callContract({
+    tgId, initData, contractAddress: CONTRACTS.GOVERNANCE, functionName: 'proposeFunction',
+    params: { contractAddress, functionName, paramKeys },
+  });
+}
+
+export async function voteOnContractProposalAction(
+  tgId: string, proposalId: number, vote: 'approve' | 'reject', initData?: string
+) {
+  return callContract({
+    tgId, initData, contractAddress: CONTRACTS.GOVERNANCE, functionName: 'voteOnProposal',
+    params: { proposalId, vote },
+  });
+}
+
+// Read-only: list proposals for the review UI (status defaults to 'pending').
+export async function listContractProposalsAction(status: string = 'pending') {
+  const { listContractProposals } = await import('@/lib/db/identity');
+  return listContractProposals(status);
+}

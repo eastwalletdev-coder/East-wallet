@@ -365,6 +365,113 @@ export async function migrateIdentityV8() {
 }
 
 /**
+ * Migration v9 — contract governance: new contract functions ship in code
+ * already (the handler in e.g. staking-contract.ts exists) but stay
+ * UNCALLABLE — isKnownCall() in registry.ts rejects them exactly like a
+ * truly-unknown function — until a quorum of active validators approves
+ * the specific (contractAddress, functionName) pair via
+ * governance-contract.ts. This is a strict allow-list extension: nothing
+ * here ever widens what a function can access, it only gates whether the
+ * ABI whitelist recognizes it at all. See governance-contract.ts for the
+ * propose/vote flow.
+ */
+export async function migrateGovernanceSchema() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.contract_proposals (
+        id               SERIAL PRIMARY KEY,
+        contract_address VARCHAR(42) NOT NULL,
+        function_name    VARCHAR(100) NOT NULL,
+        param_keys       JSONB NOT NULL DEFAULT '[]',
+        proposed_by      VARCHAR(50) NOT NULL,
+        status           VARCHAR(20) NOT NULL DEFAULT 'pending', -- pending | approved | rejected
+        quorum_required  INT NOT NULL,
+        created_at       TIMESTAMPTZ DEFAULT NOW(),
+        decided_at       TIMESTAMPTZ DEFAULT NULL
+      );
+    `);
+    // Only one PENDING proposal per (contract, function) at a time — a
+    // rejected one can be re-proposed later (e.g. with different params),
+    // which is why this is a partial index, not a plain UNIQUE constraint.
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_contract_proposals_pending_unique
+      ON identity.contract_proposals (contract_address, function_name)
+      WHERE status = 'pending';
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.contract_proposal_votes (
+        id          SERIAL PRIMARY KEY,
+        proposal_id INT NOT NULL REFERENCES identity.contract_proposals(id),
+        voter_id    VARCHAR(50) NOT NULL,
+        vote        VARCHAR(10) NOT NULL, -- approve | reject
+        created_at  TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (proposal_id, voter_id)
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.approved_contract_functions (
+        contract_address VARCHAR(42) NOT NULL,
+        function_name    VARCHAR(100) NOT NULL,
+        param_keys       JSONB NOT NULL DEFAULT '[]',
+        approved_at      TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (contract_address, function_name)
+      );
+    `);
+
+    console.log('[EASTCHAIN] Governance schema migration completed (contract_proposals + contract_proposal_votes + approved_contract_functions)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Governance schema migration error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+/** Read-only — for a future validator-facing review UI, mirrors listValidatorCandidates. */
+export async function listContractProposals(status?: string) {
+  const client = await identityPool.connect();
+  try {
+    const res = status
+      ? await client.query(
+          `SELECT p.*, 
+             COALESCE(SUM(CASE WHEN v.vote = 'approve' THEN 1 ELSE 0 END), 0)::int AS approve_count,
+             COALESCE(SUM(CASE WHEN v.vote = 'reject' THEN 1 ELSE 0 END), 0)::int AS reject_count
+           FROM identity.contract_proposals p
+           LEFT JOIN identity.contract_proposal_votes v ON v.proposal_id = p.id
+           WHERE p.status = $1 GROUP BY p.id ORDER BY p.created_at ASC`,
+          [status]
+        )
+      : await client.query(
+          `SELECT p.*, 
+             COALESCE(SUM(CASE WHEN v.vote = 'approve' THEN 1 ELSE 0 END), 0)::int AS approve_count,
+             COALESCE(SUM(CASE WHEN v.vote = 'reject' THEN 1 ELSE 0 END), 0)::int AS reject_count
+           FROM identity.contract_proposals p
+           LEFT JOIN identity.contract_proposal_votes v ON v.proposal_id = p.id
+           GROUP BY p.id ORDER BY p.created_at ASC`
+        );
+    return res.rows;
+  } finally {
+    client.release();
+  }
+}
+
+/** Read-only — the live extension of the static CONTRACT_ABI whitelist. */
+export async function getApprovedContractFunctions() {
+  const client = await identityPool.connect();
+  try {
+    const res = await client.query(
+      `SELECT contract_address, function_name, param_keys, approved_at
+       FROM identity.approved_contract_functions ORDER BY approved_at DESC`
+    );
+    return res.rows;
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Migration v9 — real node liveness tracking, distinct from PoC score.
  *
  * `identity.validators` is elected purely by runEpoch()'s scoring (stake +

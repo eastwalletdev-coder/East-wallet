@@ -12,6 +12,37 @@ const ledgerPool = new Pool({
 
 export { ledgerPool };
 
+// Hard cap — EAST will never exist in a quantity above this, enforced by
+// assertSupplyIntegrity() below (fails boot on drift) and by mintFromBucket()
+// (fails every individual mint that would push a bucket over its cap).
+export const TOTAL_MAX_SUPPLY = 1_000_000_000;
+
+// Fails loudly at boot if supply_buckets.cap no longer sums to exactly
+// TOTAL_MAX_SUPPLY — e.g. a bucket added/edited without adjusting the
+// others. Also warns (does not throw — the deployment already exists and
+// crashing would only make things worse) if any bucket's minted amount
+// has drifted above its own cap, which can happen if a cap is lowered
+// below what a bucket had already distributed; that needs a human
+// decision, not a boot-time crash.
+export async function assertSupplyIntegrity(client: any) {
+  const totalRes = await client.query('SELECT COALESCE(SUM(cap), 0) AS total FROM ledger.supply_buckets');
+  const total = Number(totalRes.rows[0].total);
+  if (total !== TOTAL_MAX_SUPPLY) {
+    throw new Error(
+      `[EASTCHAIN] SUPPLY INTEGRITY FAILURE: ledger.supply_buckets caps sum to ${total}, ` +
+      `expected exactly ${TOTAL_MAX_SUPPLY}. Refusing to boot — fix the bucket list before deploying.`
+    );
+  }
+  const overRes = await client.query('SELECT bucket, cap, minted FROM ledger.supply_buckets WHERE minted > cap');
+  for (const row of overRes.rows) {
+    console.error(
+      `[EASTCHAIN] SUPPLY WARNING: bucket "${row.bucket}" has minted ${row.minted} but cap is now ${row.cap} ` +
+      `(over by ${Number(row.minted) - Number(row.cap)}). That bucket is fully exhausted — no further mints ` +
+      `will succeed until this is resolved. Investigate before relying on it.`
+    );
+  }
+}
+
 export async function initLedgerSchema() {
   const client = await ledgerPool.connect();
   try {
@@ -37,19 +68,27 @@ export async function initLedgerSchema() {
     `);
 
     const buckets = [
-      // Whitepaper exact: total = 1,000,000,000 EAST
-      // Mining & Community 65% = 650M split into 4 sub-buckets:
-      ['mining',    400_000_000], // Mobile Mining Rewards
-      ['staking',   100_000_000], // EAST PASS APY & Staking
-      ['validator', 100_000_000], // Mobile Validator Rewards (reserved)
-      ['campaign',   50_000_000], // Community Campaigns + Referral bonuses
-      // Remaining 35%:
-      ['liquidity', 100_000_000], // Liquidity Pool (reserved)
-      ['treasury',  100_000_000], // Treasury & Ecosystem Reserve
+      // MUST mirror /tokenomics page exactly — see assertSupplyIntegrity()
+      // below, which fails loudly at boot if this list ever drifts from
+      // TOTAL_MAX_SUPPLY. Total = 1,000,000,000 EAST.
+      // Ecosystem Rewards 50% = 500M, split into 4 sub-buckets:
+      ['mining',    300_000_000], // Mobile Mining Rewards (PoC)
+      ['staking',    80_000_000], // EAST PASS APY & Staking
+      ['validator',  80_000_000], // Mobile Validator Rewards (reserved)
+      ['campaign',   40_000_000], // Community Campaigns + Referral bonuses
+      // Remaining 50%, per tokenomics roadmap:
+      ['liquidity', 150_000_000], // Liquidity Pool (reserved)
+      ['treasury',  100_000_000], // Treasury (reserved)
+      ['emergency',  70_000_000], // Emergency Reserve (reserved, governance-only)
+      ['marketing',  70_000_000], // Marketing & Growth (reserved)
+      ['team',       60_000_000], // Team & Development (reserved)
       ['founder',    50_000_000], // Founder Allocation (vesting)
-      ['marketing',  50_000_000], // Marketing & Growth
-      ['team',       50_000_000], // Team & Development
-      // Total: 400+100+100+50+100+100+50+50+50 = 1,000,000,000 ✓
+      // Total: 300+80+80+40+150+100+70+70+60+50 = 1,000,000,000 ✓
+      // "(reserved)" buckets have a cap but NO mintFromBucket() caller yet —
+      // distribution mechanism (one-time system-wallet mint vs its own
+      // vesting contract) is a per-bucket decision still pending. Do not
+      // wire a mint path for these without an explicit decision — see
+      // vesting-contract.ts for the pattern once one is picked.
     ];
     for (const [bucket, cap] of buckets) {
       await client.query(`
@@ -57,6 +96,7 @@ export async function initLedgerSchema() {
         VALUES ($1, $2) ON CONFLICT (bucket) DO UPDATE SET cap = $2
       `, [bucket, cap]);
     }
+    await assertSupplyIntegrity(client);
 
     // Blocks table — supports batch tx + VSH + empty blocks
     await client.query(`
@@ -212,13 +252,15 @@ export async function migrateSchemaV2() {
     // Fix wrong buckets from old schema
     // Remove referral bucket (not in whitepaper)
     await client.query(`DELETE FROM ledger.supply_buckets WHERE bucket = 'referral';`);
-    // Remove wrong mining=650M (split into sub-buckets)
-    // Keep existing if already correct
+    // Correct caps — MUST mirror /tokenomics page exactly, same list as
+    // initLedgerSchema() above. Runs on every boot (idempotent UPDATE),
+    // so bumping numbers here is how you correct a live deployment.
     const correctBuckets: [string, number][] = [
-      ['mining', 400_000_000], ['staking', 100_000_000],
-      ['validator', 100_000_000], ['campaign', 50_000_000],
-      ['liquidity', 100_000_000], ['treasury', 100_000_000],
-      ['founder', 50_000_000], ['marketing', 50_000_000], ['team', 50_000_000],
+      ['mining', 300_000_000], ['staking', 80_000_000],
+      ['validator', 80_000_000], ['campaign', 40_000_000],
+      ['liquidity', 150_000_000], ['treasury', 100_000_000],
+      ['emergency', 70_000_000], ['marketing', 70_000_000],
+      ['team', 60_000_000], ['founder', 50_000_000],
     ];
     for (const [bucket, cap] of correctBuckets) {
       await client.query(`
@@ -226,6 +268,7 @@ export async function migrateSchemaV2() {
         VALUES ($1, $2) ON CONFLICT (bucket) DO UPDATE SET cap = $2
       `, [bucket, cap]);
     }
+    await assertSupplyIntegrity(client);
 
     // Create transactions table if missing
     await client.query(`

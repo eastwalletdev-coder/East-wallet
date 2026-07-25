@@ -8,8 +8,22 @@ import { ShieldCheck, ShieldAlert, Loader2, Crown, CheckCircle2, XCircle, Refres
 import { useTelegram } from "@/hooks/use-telegram";
 import { useToast } from "@/hooks/use-toast";
 import { getValidators, getChainState } from "@/actions/mining-actions";
-import { voteValidatorContract, getMyValidatorVote } from "@/actions/contract-actions";
+import { voteValidatorContract, getMyValidatorVote, proposeContractFunctionAction, voteOnContractProposalAction, listContractProposalsAction } from "@/actions/contract-actions";
 import { SignatureDialog } from "@/components/SignatureDialog";
+
+// Mirrors CONTRACTS in lib/contracts/registry.ts — duplicated here (not
+// imported) because registry.ts pulls in the 'pg' driver, which must never
+// end up in a client bundle.
+const PROPOSAL_TARGET_CONTRACTS = [
+  { label: "Staking", address: "0x0000000000000000000000000000000000c001" },
+  { label: "Vesting", address: "0x0000000000000000000000000000000000c002" },
+  { label: "Mining", address: "0x0000000000000000000000000000000000c003" },
+  { label: "Validator", address: "0x0000000000000000000000000000000000c004" },
+];
+function contractLabel(address: string) {
+  return PROPOSAL_TARGET_CONTRACTS.find(c => c.address === address)?.label
+    || `${address.slice(0, 8)}...${address.slice(-4)}`;
+}
 
 // Same default the contract uses when no roundId is supplied — one round
 // per calendar day, so all validators voting "today" land in the same
@@ -31,6 +45,14 @@ export default function ValidatorPage() {
   const [lastResult, setLastResult] = useState<any>(null);
   const [myVote, setMyVote] = useState<{ vote: "approve" | "reject"; votedAt: string } | null>(null);
 
+  // ── Governance (contract-function proposals) ──
+  const [proposals, setProposals] = useState<any[]>([]);
+  const [showProposeForm, setShowProposeForm] = useState(false);
+  const [proposeForm, setProposeForm] = useState({ contractAddress: PROPOSAL_TARGET_CONTRACTS[0].address, functionName: "", paramKeys: "" });
+  const [govAction, setGovAction] = useState<{ type: "propose" } | { type: "vote"; proposalId: number; vote: "approve" | "reject" } | null>(null);
+  const [govSigOpen, setGovSigOpen] = useState(false);
+  const [govLoading, setGovLoading] = useState(false);
+
   const fetchData = async () => {
     try {
       const [vList, chain] = await Promise.all([getValidators(), getChainState()]);
@@ -40,6 +62,8 @@ export default function ValidatorPage() {
         const existing = await getMyValidatorVote(userId, todayRoundId());
         setMyVote(existing);
       }
+      const pending = await listContractProposalsAction("pending");
+      setProposals(pending || []);
     } catch {
       // non-fatal — page still renders with whatever we have
     } finally {
@@ -86,6 +110,59 @@ export default function ValidatorPage() {
       setVoting(false);
       setSigOpen(false);
       setPendingVote(null);
+    }
+  };
+
+  const requestGovVote = (proposalId: number, vote: "approve" | "reject") => {
+    setGovAction({ type: "vote", proposalId, vote });
+    setGovSigOpen(true);
+  };
+
+  const requestPropose = () => {
+    if (!proposeForm.functionName.trim()) {
+      toast({ variant: "destructive", title: "Missing function name", description: "Enter a function name to propose." });
+      return;
+    }
+    setGovAction({ type: "propose" });
+    setGovSigOpen(true);
+  };
+
+  const confirmGovAction = async () => {
+    if (!govAction || !userId) return;
+    setGovLoading(true);
+    try {
+      if (govAction.type === "propose") {
+        const paramKeys = proposeForm.paramKeys.split(",").map(s => s.trim()).filter(Boolean);
+        const res = await proposeContractFunctionAction(userId, proposeForm.contractAddress, proposeForm.functionName.trim(), paramKeys, initData);
+        if (res.success) {
+          toast({ title: "Proposal Submitted", description: `Needs ${res.data?.quorumRequired ?? "?"} validator approvals.` });
+          setProposeForm({ contractAddress: PROPOSAL_TARGET_CONTRACTS[0].address, functionName: "", paramKeys: "" });
+          setShowProposeForm(false);
+        } else {
+          toast({ variant: "destructive", title: "Proposal Rejected", description: res.error });
+        }
+      } else {
+        const res = await voteOnContractProposalAction(userId, govAction.proposalId, govAction.vote, initData);
+        if (res.success) {
+          toast({
+            title: "Vote Broadcast",
+            description: res.data?.status === "approved"
+              ? "Quorum reached — function is now live."
+              : res.data?.status === "rejected"
+                ? "Quorum reached — proposal rejected."
+                : `Vote recorded: ${res.data?.approveCount ?? 0}/${res.data?.quorum ?? "?"} approvals so far.`,
+          });
+        } else {
+          toast({ variant: "destructive", title: "Vote Rejected", description: res.error });
+        }
+      }
+      fetchData();
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Error", description: err?.message || "Request failed" });
+    } finally {
+      setGovLoading(false);
+      setGovSigOpen(false);
+      setGovAction(null);
     }
   };
 
@@ -192,6 +269,96 @@ export default function ValidatorPage() {
         </CardContent>
       </Card>
 
+      {/* Contract governance — new contract functions stay UNKNOWN_CONTRACT_FUNCTION
+          until a validator quorum approves them here. See governance-contract.ts. */}
+      <Card className="bg-card/40 border-border/30">
+        <CardContent className="p-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-[10px] text-muted-foreground uppercase font-black">Contract Proposals</p>
+            {(isValidator || user?.isFounder) && (
+              <Button
+                variant="ghost" size="sm"
+                onClick={() => setShowProposeForm(v => !v)}
+                className="h-6 text-[9px] uppercase font-black text-primary"
+              >
+                {showProposeForm ? "Cancel" : "+ Propose"}
+              </Button>
+            )}
+          </div>
+
+          {showProposeForm && (
+            <div className="rounded-xl border border-border/30 p-3 space-y-2">
+              <select
+                value={proposeForm.contractAddress}
+                onChange={e => setProposeForm(f => ({ ...f, contractAddress: e.target.value }))}
+                className="w-full bg-black/30 border border-border/30 rounded-lg text-white text-xs p-2"
+              >
+                {PROPOSAL_TARGET_CONTRACTS.map(c => (
+                  <option key={c.address} value={c.address}>{c.label}</option>
+                ))}
+              </select>
+              <input
+                value={proposeForm.functionName}
+                onChange={e => setProposeForm(f => ({ ...f, functionName: e.target.value }))}
+                placeholder="functionName (e.g. emergencyWithdraw)"
+                className="w-full bg-black/30 border border-border/30 rounded-lg text-white text-xs p-2 font-code"
+              />
+              <input
+                value={proposeForm.paramKeys}
+                onChange={e => setProposeForm(f => ({ ...f, paramKeys: e.target.value }))}
+                placeholder="param keys, comma-separated (e.g. amount, reason)"
+                className="w-full bg-black/30 border border-border/30 rounded-lg text-white text-xs p-2 font-code"
+              />
+              <Button
+                onClick={requestPropose}
+                disabled={govLoading}
+                className="w-full h-9 rounded-lg text-[10px] uppercase font-black"
+              >
+                Submit Proposal
+              </Button>
+            </div>
+          )}
+
+          {proposals.length === 0 ? (
+            <p className="text-white/20 text-xs text-center py-3">No pending proposals.</p>
+          ) : (
+            proposals.map((p) => (
+              <div key={p.id} className="rounded-xl border border-border/30 p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-white text-xs font-bold font-code">
+                    {contractLabel(p.contract_address)}.{p.function_name}()
+                  </span>
+                  <Badge variant="outline" className="text-white/40 border-white/10 text-[9px]">
+                    {p.approve_count}/{p.quorum_required} approve
+                  </Badge>
+                </div>
+                {isValidator && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      onClick={() => requestGovVote(p.id, "approve")}
+                      disabled={govLoading}
+                      size="sm"
+                      className="h-8 rounded-lg bg-green-600 hover:bg-green-500 text-white font-black uppercase text-[9px]"
+                    >
+                      Approve
+                    </Button>
+                    <Button
+                      onClick={() => requestGovVote(p.id, "reject")}
+                      disabled={govLoading}
+                      size="sm"
+                      variant="outline"
+                      className="h-8 rounded-lg border-red-500/30 text-red-400 hover:bg-red-500/10 font-black uppercase text-[9px]"
+                    >
+                      Reject
+                    </Button>
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
+
       {/* Validator ranking */}
       <div className="space-y-2">
         <p className="text-[9px] text-white/30 uppercase font-black px-1">Top Validators — by PoC score</p>
@@ -230,6 +397,22 @@ export default function ValidatorPage() {
         gasFee={0}
         onConfirm={confirmVote}
         loading={voting}
+      />
+
+      <SignatureDialog
+        open={govSigOpen}
+        onOpenChange={(v) => { if (!govLoading) { setGovSigOpen(v); if (!v) setGovAction(null); } }}
+        txType={
+          govAction?.type === "propose" ? "GOVERNANCE_PROPOSE_FUNCTION"
+            : govAction?.type === "vote" && govAction.vote === "reject" ? "GOVERNANCE_VOTE_REJECT"
+              : "GOVERNANCE_VOTE_APPROVE"
+        }
+        from={userId ? `Validator #${myRank}` : "—"}
+        to="EASTCHAIN Governance"
+        amount={0}
+        gasFee={0}
+        onConfirm={confirmGovAction}
+        loading={govLoading}
       />
     </div>
   );

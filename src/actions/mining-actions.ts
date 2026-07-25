@@ -333,7 +333,7 @@ export async function sendEast(
     if (Number(sender.balance) < totalDebit) { await identityClient.query('ROLLBACK'); return { success: false, error: 'INSUFFICIENT_BALANCE' }; }
 
     const recipientRes = await identityClient.query(
-      'SELECT telegram_id, wallet_address FROM identity.users WHERE wallet_address = $1 FOR UPDATE',
+      'SELECT telegram_id, wallet_address FROM identity.users WHERE LOWER(wallet_address) = $1 FOR UPDATE',
       [recipientAddress.toLowerCase()]
     );
     if (!recipientRes.rows.length) { await identityClient.query('ROLLBACK'); return { success: false, error: 'RECIPIENT_NOT_FOUND' }; }

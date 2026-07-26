@@ -271,10 +271,10 @@ export default function Home() {
             </div>
           </h2>
           <p className="text-[13px] uppercase font-black tracking-[0.1em] text-white leading-tight mt-2">
-            First Non-custodial Web 3.0 Wallet
+            One Smartphone. One Node. One Future.
           </p>
           <p className="text-[10px] uppercase font-extrabold tracking-[0.2em] text-primary mt-1">
-            Secure With Hybrid Consensus Ledger
+            Blockchain Layer 1 Secured With Millions Of Mobile Light Nodes
           </p>
         </div>
 

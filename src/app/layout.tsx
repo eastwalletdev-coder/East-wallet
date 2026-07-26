@@ -11,7 +11,7 @@ import { SpeedInsights } from '@vercel/speed-insights/next';
 
 export const metadata: Metadata = {
   title: 'EAST Wallet',
-  description: 'First Non-custodial Web3 Wallet — Secure With Hybrid Consensus Ledger',
+  description: 'One Smartphone. One Node. One Future. — Blockchain Layer 1 Secured With Millions Of Mobile Light Nodes',
 };
 
 export default function RootLayout({

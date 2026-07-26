@@ -7,7 +7,6 @@ import { Button } from '@/components/ui/button';
 import { Search, X } from 'lucide-react';
 import LedgerContent from './_ledger';
 import VestingContent from './_vesting';
-import ContractsContent from './_contracts';
 import { SearchResults } from './_search-results';
 import { searchExplorer } from '@/actions/mining-actions';
 
@@ -79,21 +78,17 @@ export default function ExplorerPage() {
       {!results && (
         <Tabs defaultValue="ledger" className="flex flex-col flex-1">
           <div className="px-3 pb-3">
-            <TabsList className="w-full grid grid-cols-3 bg-white/[0.04] rounded-xl p-1 h-11">
+            <TabsList className="w-full grid grid-cols-2 bg-white/[0.04] rounded-xl p-1 h-11">
               <TabsTrigger value="ledger" className="text-[10px] font-black uppercase tracking-wider rounded-lg data-[state=active]:bg-primary data-[state=active]:text-white">
                 Ledger
               </TabsTrigger>
               <TabsTrigger value="vesting" className="text-[10px] font-black uppercase tracking-wider rounded-lg data-[state=active]:bg-primary data-[state=active]:text-white">
                 Vesting
               </TabsTrigger>
-              <TabsTrigger value="contracts" className="text-[10px] font-black uppercase tracking-wider rounded-lg data-[state=active]:bg-primary data-[state=active]:text-white">
-                Contracts
-              </TabsTrigger>
             </TabsList>
           </div>
           <TabsContent value="ledger" className="outline-none mt-0"><LedgerContent /></TabsContent>
           <TabsContent value="vesting" className="outline-none mt-0"><VestingContent /></TabsContent>
-          <TabsContent value="contracts" className="outline-none mt-0"><ContractsContent /></TabsContent>
         </Tabs>
       )}
     </div>

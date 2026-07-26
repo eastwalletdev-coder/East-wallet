@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Lock, Unlock, Calendar, TrendingUp, Clock, Loader2 } from "lucide-react";
+import { Lock, Unlock, Calendar, TrendingUp, Clock, Loader2, Hourglass } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { useTelegram } from "@/hooks/use-telegram";
@@ -20,6 +20,15 @@ interface VestingData {
   cliff_months: number;
   is_completed: boolean;
 }
+
+// Fallbacks only for the brief window before /api/vesting responds —
+// must match FOUNDER_VESTING_TOTAL/CLIFF_MONTHS/RELEASE_MONTHS in
+// genesis-reset-actions.ts. Once `vesting` loads, everything below reads
+// from the live row instead — no separate "genesis unlock %" anymore,
+// because there isn't one: the whole allocation is cliff-gated.
+const FALLBACK_TOTAL = 50_000_000;
+const FALLBACK_CLIFF_MONTHS = 12;
+const FALLBACK_RELEASE_MONTHS = 36;
 
 export default function VestingContent() {
   const [vesting, setVesting] = useState<VestingData | null>(null);
@@ -63,20 +72,26 @@ export default function VestingContent() {
     }
   };
 
+  const totalAmount = vesting?.total_amount ?? FALLBACK_TOTAL;
+  const cliffMonths = vesting?.cliff_months ?? FALLBACK_CLIFF_MONTHS;
+  const totalMonths = vesting?.total_months ?? FALLBACK_RELEASE_MONTHS;
+  const unlockedAmount = vesting?.unlocked_amount ?? 0;
+  const monthsReleased = vesting?.months_released ?? 0;
+
+  // Still inside the cliff: nothing has unlocked yet by design — no
+  // separate "genesis %" carve-out anymore. next_unlock during the cliff
+  // points at the cliff end date (set by genesis-reset-actions.ts).
+  const inCliff = monthsReleased === 0 && unlockedAmount === 0 && !vesting?.is_completed;
+
   const canClaim = !!user?.isFounder && !!vesting && !vesting.is_completed
     && new Date(vesting.next_unlock).getTime() <= Date.now();
 
-  const DEV_ALLOCATION = 5_000_000;
-  const TOTAL_FOUNDER  = 50_000_000;
-
-  const unlockedPct = vesting
-    ? Math.round(((vesting.unlocked_amount + DEV_ALLOCATION) / TOTAL_FOUNDER) * 100)
-    : 10;
+  const unlockedPct = totalAmount > 0 ? Math.round((unlockedAmount / totalAmount) * 100) : 0;
 
   const nextUnlock = vesting ? new Date(vesting.next_unlock) : null;
   const daysLeft   = nextUnlock
     ? Math.max(0, Math.ceil((nextUnlock.getTime() - Date.now()) / 86400000))
-    : 30;
+    : cliffMonths * 30;
 
   if (loading) {
     return (
@@ -105,7 +120,7 @@ export default function VestingContent() {
           <div>
             <p className="text-[10px] text-white/40 uppercase tracking-wider font-bold">Total Allocation</p>
             <p className="text-xl font-black text-white mt-0.5">
-              {TOTAL_FOUNDER.toLocaleString()} <span className="text-primary text-sm">EAST</span>
+              {totalAmount.toLocaleString()} <span className="text-primary text-sm">EAST</span>
             </p>
           </div>
           <div className="text-right">
@@ -124,36 +139,53 @@ export default function VestingContent() {
           </div>
           <div className="flex justify-between mt-1.5">
             <span className="text-[9px] text-white/30">0</span>
-            <span className="text-[9px] text-white/30">50,000,000 EAST</span>
+            <span className="text-[9px] text-white/30">{totalAmount.toLocaleString()} EAST</span>
           </div>
         </div>
       </div>
 
-      {/* Dev allocation — unlocked */}
-      <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-3 flex items-center gap-3">
-        <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center shrink-0">
-          <Unlock className="w-4 h-4 text-green-400" />
+      {/* Cliff notice — nothing unlocks until this passes, no genesis carve-out */}
+      {inCliff && (
+        <div className="bg-yellow-400/10 border border-yellow-400/20 rounded-xl p-3 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-yellow-400/20 flex items-center justify-center shrink-0">
+            <Hourglass className="w-4 h-4 text-yellow-400" />
+          </div>
+          <div className="flex-1">
+            <p className="text-[10px] text-white/40 uppercase tracking-wider font-bold">Cliff Period</p>
+            <p className="text-sm font-black text-white">{cliffMonths}-month cliff — 0 EAST unlocked</p>
+            <p className="text-[9px] text-yellow-400/80 font-bold">
+              {nextUnlock ? `Ends ${nextUnlock.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` : `No unlocks for ${cliffMonths} months from genesis`}
+            </p>
+          </div>
         </div>
-        <div className="flex-1">
-          <p className="text-[10px] text-white/40 uppercase tracking-wider font-bold">Dev Allocation</p>
-          <p className="text-sm font-black text-white">5,000,000 EAST</p>
-          <p className="text-[9px] text-green-400 font-bold">Unlocked at Genesis ✓</p>
-        </div>
-        <span className="text-[10px] font-black text-green-400 bg-green-400/10 px-2 py-1 rounded-lg">10%</span>
-      </div>
+      )}
 
-      {/* Vesting locked */}
+      {/* Vesting pool remaining */}
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-3 flex items-center gap-3">
         <div className="w-8 h-8 rounded-lg bg-primary/20 flex items-center justify-center shrink-0">
           <Lock className="w-4 h-4 text-primary" />
         </div>
         <div className="flex-1">
-          <p className="text-[10px] text-white/40 uppercase tracking-wider font-bold">Vesting Pool</p>
-          <p className="text-sm font-black text-white">45,000,000 EAST</p>
-          <p className="text-[9px] text-white/40 font-bold">12 Month Linear Vesting</p>
+          <p className="text-[10px] text-white/40 uppercase tracking-wider font-bold">Locked</p>
+          <p className="text-sm font-black text-white">{(totalAmount - unlockedAmount).toLocaleString()} EAST</p>
+          <p className="text-[9px] text-white/40 font-bold">{cliffMonths}mo cliff, then {totalMonths} months linear release</p>
         </div>
-        <span className="text-[10px] font-black text-primary bg-primary/10 px-2 py-1 rounded-lg">90%</span>
+        <span className="text-[10px] font-black text-primary bg-primary/10 px-2 py-1 rounded-lg">{100 - unlockedPct}%</span>
       </div>
+
+      {unlockedAmount > 0 && (
+        <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-3 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-green-500/20 flex items-center justify-center shrink-0">
+            <Unlock className="w-4 h-4 text-green-400" />
+          </div>
+          <div className="flex-1">
+            <p className="text-[10px] text-white/40 uppercase tracking-wider font-bold">Unlocked So Far</p>
+            <p className="text-sm font-black text-white">{unlockedAmount.toLocaleString()} EAST</p>
+            <p className="text-[9px] text-green-400 font-bold">{monthsReleased} / {totalMonths} monthly releases claimed</p>
+          </div>
+          <span className="text-[10px] font-black text-green-400 bg-green-400/10 px-2 py-1 rounded-lg">{unlockedPct}%</span>
+        </div>
+      )}
 
       {/* Monthly release info */}
       <div className="grid grid-cols-2 gap-2">
@@ -162,8 +194,10 @@ export default function VestingContent() {
             <TrendingUp className="w-3 h-3 text-primary" />
             <p className="text-[9px] text-white/40 uppercase tracking-wider font-bold">Monthly Release</p>
           </div>
-          <p className="text-sm font-black text-white">3,750,000</p>
-          <p className="text-[9px] text-white/30">EAST / month</p>
+          <p className="text-sm font-black text-white">
+            {vesting?.monthly_release ? Math.round(vesting.monthly_release).toLocaleString() : Math.round(totalAmount / totalMonths).toLocaleString()}
+          </p>
+          <p className="text-[9px] text-white/30">EAST / month (after cliff)</p>
         </div>
 
         <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-3">
@@ -178,19 +212,18 @@ export default function VestingContent() {
         </div>
       </div>
 
-      {/* Month timeline */}
+      {/* Month timeline — post-cliff release months only */}
       <div className="bg-white/[0.04] border border-white/[0.08] rounded-xl p-3">
         <div className="flex items-center gap-1.5 mb-3">
           <Calendar className="w-3 h-3 text-primary" />
           <p className="text-[9px] text-white/40 uppercase tracking-wider font-bold">
-            {vesting?.cliff_months ? `${vesting.cliff_months}mo Cliff + ` : ""}{vesting?.total_months ?? 12} Month Release Timeline
+            {cliffMonths}mo Cliff + {totalMonths} Month Release Timeline
           </p>
         </div>
         <div className="grid grid-cols-6 gap-1.5">
-          {Array.from({ length: vesting?.total_months ?? 12 }, (_, i) => {
-            const released = vesting?.months_released ?? 0;
-            const isDone   = i < released;
-            const isCurrent = i === released;
+          {Array.from({ length: totalMonths }, (_, i) => {
+            const isDone   = i < monthsReleased;
+            const isCurrent = i === monthsReleased && !inCliff;
             return (
               <div
                 key={i}
@@ -214,7 +247,7 @@ export default function VestingContent() {
           })}
         </div>
         <p className="text-[9px] text-white/30 mt-2 text-center">
-          {vesting?.months_released ?? 0} / {vesting?.total_months ?? 12} months released
+          {monthsReleased} / {totalMonths} months released{inCliff ? ` — still in ${cliffMonths}mo cliff` : ''}
         </p>
       </div>
 
@@ -227,7 +260,9 @@ export default function VestingContent() {
           {claiming ? (
             <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Claiming…</>
           ) : canClaim ? (
-            `Claim ${vesting?.monthly_release?.toLocaleString() ?? ''} EAST`
+            `Claim ${vesting?.monthly_release ? Math.round(vesting.monthly_release).toLocaleString() : ''} EAST`
+          ) : inCliff ? (
+            `Locked — ${cliffMonths}mo Cliff`
           ) : (
             "Next Unlock Not Yet Available"
           )}

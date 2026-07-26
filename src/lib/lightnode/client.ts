@@ -7,8 +7,15 @@ import { PeerMesh } from "./webrtc-peer";
 import { putBlock } from "./block-store";
 
 const STORAGE_KEY = "east_lightnode_state_v1";
-const HEARTBEAT_MS = 20_000;
-const RELAY_STATS_INTERVAL_MS = 30_000; // how often we self-report score inputs to Railway
+// Separate key (not part of the main state blob, which persist()s on every
+// single set() call) for a small cross-restart peer cache — see
+// loadPeerCache()/savePeerCache() below. Written on its own, coarser
+// cadence instead, since it doesn't need to track every state change.
+const PEER_CACHE_STORAGE_KEY = "east_lightnode_peer_cache_v1";
+const PEER_CACHE_MAX_ENTRIES = 20;
+const HEARTBEAT_MS = 5 * 60_000; // was 20s — that was the real bandwidth driver at scale (see the "1.15 miliar pesan/hari" math), not tier assignment. 5 min is still frequent enough for reward/participation tracking; the native WS ping/pong on the hub side (30s) still catches a genuinely-dead socket long before this would.
+const RELAY_STATS_INTERVAL_MS = 5 * 60_000; // was 30s — same reasoning as HEARTBEAT_MS above
+const REBOOTSTRAP_COOLDOWN_MS = 2 * 60_000; // minimum gap between bootstrap_request re-asks when the mesh is empty
 
 // Reconnect backoff — matters more now that Railway's hub can sleep after
 // 10 min with zero connections (Serverless mode). The FIRST connection
@@ -63,6 +70,8 @@ const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long before fallin
 const SYNC_REQUEST_WATCHDOG_MS = 10_000; // if a plain sync_request hasn't closed the gap by then, Railway's buffer likely didn't have it — fall back to the archive instead of hanging forever
 const LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS = 5_000; // how long to wait for other lightnodes (WebRTC mesh) to answer a gap request before moving on to a validator/archive
 const DRIFT_RECHECK_INTERVAL_MS = 3 * 60_000; // browser-side equivalent of full-node-sync.js's periodic recheck — a missed live push self-heals within this interval instead of requiring a manual reconnect
+const PEER_EXCHANGE_INTERVAL_MS = 90_000; // how often we ask connected peers "who else do you know?" — deliberately NOT stopped when Railway disconnects, see startPeerExchange()
+const MESH_EXPANSION_INTERVAL_MS = 45_000; // how often we try turning a knownPeers hint into an actual connection — see startMeshExpansion()
 
 // Blocks at or above this height MUST carry a valid secp256k1 (EVM-style
 // EIP-191) signature — no more "accepted but not cryptographically
@@ -142,6 +151,40 @@ function freshState(): LightNodeState {
 function persist(state: LightNodeState) {
   if (typeof window === "undefined") return;
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch {}
+}
+
+// Cross-restart peer cache: without this, PeerMesh's knownPeers (and the
+// connections it took a live PEX round or two to build) are pure in-memory
+// state — gone the instant the Telegram Mini App WebView reloads, which
+// (per the disconnect/reconnect investigation earlier) happens often on
+// mobile. Every fresh launch would otherwise start from zero peer
+// knowledge every single time, relying entirely on Railway's bootstrap_peers
+// being reachable at that exact moment. This doesn't remove that
+// dependency for a genuinely first-ever launch (there's nothing to seed
+// from yet) — it only helps a RETURNING node skip straight to trying
+// peers it already had some relationship with, in parallel with whatever
+// fresh sample Railway hands it this time.
+function loadPeerCache(): { nodeId: string; viaPeerId: string }[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PEER_CACHE_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((e) => e && typeof e.nodeId === "string")
+      .slice(0, PEER_CACHE_MAX_ENTRIES)
+      .map((e) => ({ nodeId: e.nodeId, viaPeerId: typeof e.viaPeerId === "string" ? e.viaPeerId : "" }));
+  } catch {
+    return [];
+  }
+}
+
+function savePeerCache(entries: { nodeId: string; viaPeerId: string }[]) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(PEER_CACHE_STORAGE_KEY, JSON.stringify(entries.slice(0, PEER_CACHE_MAX_ENTRIES)));
+  } catch {}
 }
 
 // ── Header verification (mirrors railway-server's intent, runs client-side
@@ -227,12 +270,19 @@ export class LightNodeClient {
   private fullSyncProviders: string[] = [];
   private pendingFullSyncRequest: { fromNodeId: string; resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> } | null = null;
   private syncRequestWatchdog: ReturnType<typeof setTimeout> | null = null;
+  private turnRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(url: string) {
     this.url = url;
     this.state = loadState();
-    this.peerMesh = new PeerMesh({
-      sendSignal: (msg) => this.ws?.send(JSON.stringify(msg)),
+    this.peerMesh = new PeerMesh(this.state.nodeId, {
+      // Guarded on readyState now (not just ws existing) — mesh expansion
+      // (see startMeshExpansion()) can attempt connectTo() with no relay
+      // hint available while Railway is down, in which case this is the
+      // path that would otherwise throw trying to send on a closed socket.
+      // A no-op here is correct: the offer just never reaches anyone and
+      // that attempt quietly times out, same as any other unreachable peer.
+      sendSignal: (msg) => { if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg)); },
       onPeerHeader: (peerNodeId, header) => {
         // Same trust boundary as a Railway-sourced header — verifyHeader()
         // inside applyHeader() doesn't know or care which transport it came
@@ -246,6 +296,7 @@ export class LightNodeClient {
       onPeerConnected: (peerNodeId) => {
         this.log(`Peer mesh: connected to ${peerNodeId.slice(0, 8)}…`);
         this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
+        this.savePeerCacheSnapshot();
         // Without this, a freshly-dialed parent (e.g. right after a
         // tier:assign) only helps once it happens to broadcast its NEXT
         // new live block — anything it already has from before the
@@ -261,6 +312,47 @@ export class LightNodeClient {
         this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
       },
     });
+
+    // Rehydrate from the last session's peer cache immediately — before
+    // Railway has even had a chance to respond to "hello" with its own
+    // bootstrap_peers sample. If Railway happens to be unreachable right
+    // at this launch, these are the only candidates mesh-expansion has to
+    // try; if Railway IS reachable, this just means a couple of extra
+    // (likely-still-good) connection attempts run in parallel with the
+    // fresh sample, which is harmless.
+    this.peerMesh.seedKnownPeers(loadPeerCache());
+
+    // TURN credentials come from Vercel, not Railway — fetch them right
+    // away regardless of the hub's connection state, so a NAT-restricted
+    // peer pair has the best chance of actually establishing, including
+    // during peer-relayed signaling while Railway is down.
+    this.fetchIceServers();
+  }
+
+  // Fetches short-lived TURN credentials (see /api/turn-credentials) and
+  // hands them to peerMesh. If TURN isn't configured on this deployment,
+  // `configured: false` comes back and this quietly does nothing — every
+  // RTCPeerConnection stays STUN-only, exactly as before this existed.
+  // Reschedules itself before the minted credential expires so a
+  // long-running session never tries a fresh connection with a stale one.
+  private async fetchIceServers() {
+    if (typeof window === "undefined" || typeof fetch === "undefined") return;
+    const appUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+    try {
+      const res = await fetch(`${appUrl.replace(/\/$/, "")}/api/turn-credentials`);
+      if (!res.ok) return;
+      const body = await res.json();
+      if (!body?.configured) return; // no TURN server set up on this deployment — stay STUN-only
+      // Route already returns an RTCIceServer[] (Metered hands back the
+      // whole array pre-shaped) — pass it straight through.
+      this.peerMesh.setTurnServers(Array.isArray(body.iceServers) ? body.iceServers : []);
+      const refreshInMs = Math.max((body.ttlSeconds ?? 3600) * 1000 * 0.8, 60_000);
+      if (this.turnRefreshTimer) clearTimeout(this.turnRefreshTimer);
+      this.turnRefreshTimer = setTimeout(() => this.fetchIceServers(), refreshInMs);
+    } catch {
+      // Network hiccup fetching TURN creds — harmless. This session just
+      // stays STUN-only until the next attempt; nothing else depends on it.
+    }
   }
 
   getState(): LightNodeState { return this.state; }
@@ -311,6 +403,8 @@ export class LightNodeClient {
       this.startParticipationClock();
       this.startRelayStats();
       this.startDriftRecheck();
+      if (!this.pexTimer) this.startPeerExchange(); // only start once — a reconnect shouldn't reset an already-running PEX cycle
+      if (!this.meshExpansionTimer) this.startMeshExpansion(); // same — runs independent of Railway's own up/down state
     };
 
     ws.onmessage = (ev) => {
@@ -367,6 +461,11 @@ export class LightNodeClient {
             this.peerMesh.disconnect(previousParent);
           }
           if (msg.parentNodeId && !this.peerMesh.connectedPeerIds.includes(msg.parentNodeId)) {
+            // Railway just told us this over the WS, so it's up right now —
+            // no relay hint needed here, this is the normal path. The relay
+            // path (see startMeshExpansion) is for reaching knownPeers WHILE
+            // Railway is down, which by definition can't be how we just
+            // received a tier:assign.
             this.peerMesh.connectTo(msg.parentNodeId).catch(() => {
               // Common and expected — symmetric NAT on one side, parent went
               // offline mid-dial, etc. No TURN fallback by design (see
@@ -395,6 +494,29 @@ export class LightNodeClient {
           this.fullSyncProviders = msg.nodeIds || [];
           break;
 
+        // ── Bootstrap discovery — see railway-server's sampleBootstrapPeers() ──
+        // Arrives right after "welcome" (or after we explicitly re-ask, see
+        // maybeRebootstrap()). Dial a handful in parallel rather than one at
+        // a time — some will be unreachable (NAT, since gone offline), and
+        // having several attempts in flight means we still end up with
+        // peers even if most of them fail, without waiting out each one
+        // sequentially first. Once any of these opens, PEX + mesh expansion
+        // take over growing the mesh further on their own.
+        case "bootstrap_peers": {
+          const candidates = (msg.nodeIds || [])
+            .filter((id) => !this.peerMesh.connectedPeerIds.includes(id))
+            .slice(0, 3);
+          if (candidates.length > 0) {
+            this.log(`Bootstrap: dialing ${candidates.length} peer(s) from Railway's sample`);
+          }
+          for (const nodeId of candidates) {
+            this.peerMesh.connectTo(nodeId).catch(() => {
+              this.log(`Bootstrap: couldn't reach ${nodeId.slice(0, 8)}…`, "warn");
+            });
+          }
+          break;
+        }
+
         case "full_sync_response":
           this.handleFullSyncResponse(msg.fromNodeId, msg.blocks || []);
           break;
@@ -414,13 +536,26 @@ export class LightNodeClient {
     };
 
     ws.onclose = () => {
-      this.set({ connectionStatus: "disconnected", tier: "none", parentNodeId: null, connectedPeerIds: [] });
-      this.log("Disconnected");
+      // Only the Railway signaling/relay connection is gone here — NOT the
+      // WebRTC peer mesh. Those DataChannels are already direct P2P links
+      // (see webrtc-peer.ts's header comment) that never route through
+      // Railway once established, so there's no technical reason to kill
+      // them just because Railway had a hiccup. Previously this called
+      // peerMesh.disconnectAll() unconditionally, which meant a single
+      // Railway outage instantly dropped every peer too — the opposite of
+      // what a resilient mesh should do. Peers we're still actually
+      // connected to keep gossiping headers, serving backfill, etc. the
+      // entire time Railway is down; only a genuinely failed/closed RTCPeerConnection
+      // (handled independently in webrtc-peer.ts's onconnectionstatechange)
+      // removes a peer now. tier/parentNodeId/connectedPeerIds are left as
+      // they were for the same reason — they still describe the mesh
+      // that's still alive, Railway just isn't here to confirm it anymore.
+      this.set({ connectionStatus: "disconnected" });
+      this.log("Disconnected from hub — peer mesh stays up if any peers are still connected", "warn");
       this.stopHeartbeat();
       this.stopParticipationClock();
       this.stopRelayStats();
       this.stopDriftRecheck();
-      this.peerMesh.disconnectAll();
       if (this.syncRequestWatchdog) { clearTimeout(this.syncRequestWatchdog); this.syncRequestWatchdog = null; }
 
       if (this.manualDisconnect) return; // user closed it — don't fight that
@@ -490,7 +625,7 @@ export class LightNodeClient {
         for (let h = this.state.currentHeight + 1; h <= latestHeight; h++) {
           const header = byHeight.get(h);
           if (!header) break;
-          this.applyHeader(header, true);
+          this.applyHeader(header, true, undefined, undefined, true); // force-propagate: this is closing a real gap toward the tip, not quiet initial backfill
           appliedFromPeers++;
         }
         if (appliedFromPeers > 0) {
@@ -560,6 +695,8 @@ export class LightNodeClient {
   }
 
   private driftRecheckTimer: ReturnType<typeof setInterval> | null = null;
+  private pexTimer: ReturnType<typeof setInterval> | null = null;
+  private meshExpansionTimer: ReturnType<typeof setInterval> | null = null;
   private driftRecheckInFlight = false;
 
   // Called right when a new WebRTC peer connection opens (see
@@ -599,8 +736,8 @@ export class LightNodeClient {
 
   // Only the Leader (top of the tier tree, no parent to wait on by
   // definition) and "none" (unranked — brand new, or overflow past the
-  // ~8421-node tree) are allowed to hit Railway/the validator/the archive
-  // directly. Guardian/Broadcaster/Vision wait on their single parent
+  // ~168421-node tree) are allowed to hit Railway/the validator/the archive
+  // directly. Guardian/Broadcaster/Vision/Echo wait on their single parent
   // instead — see runCatchUp()'s two gate checks that call this.
   private canGoDirectToRailway(): boolean {
     return this.state.tier === "leader" || this.state.tier === "none";
@@ -615,6 +752,9 @@ export class LightNodeClient {
     this.manualDisconnect = true;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
     this.stopDriftRecheck();
+    this.stopPeerExchange();
+    this.stopMeshExpansion();
+    if (this.turnRefreshTimer) { clearTimeout(this.turnRefreshTimer); this.turnRefreshTimer = null; }
     this.ws?.close();
     this.ws = null;
     this.peerMesh.disconnectAll();
@@ -622,7 +762,27 @@ export class LightNodeClient {
 
   // Verifies + applies exactly one header, then calls onDone. Shared by
   // both the initial backfill (5 blocks, paced) and live block:new events.
-  private applyHeader(header: any, silent: boolean = false, onDone?: () => void, sourcePeerId?: string) {
+  // propagate defaults from (silent, sourcePeerId) so every existing call
+  // site keeps behaving exactly as before without being touched — only the
+  // catch-up call sites below (archive fetch, peer range-request, Railway-
+  // mediated full_sync_response) now pass it explicitly. Those three are
+  // "we were behind the real tip and just closed the gap via some indirect
+  // path" — genuinely new information relative to when this run started,
+  // worth gossiping onward — as opposed to processBackfill()'s initial
+  // 5-block sync on connect, which stays quiet (everyone's mesh peers were
+  // likely already at that height ages ago, so re-broadcasting it is just
+  // noise). Without this, a node that only learned of new blocks via
+  // archive/peer catch-up (e.g. because Railway was down) never passed
+  // that knowledge on to ITS OWN connected peers — each node had to
+  // rediscover the same gap independently, which defeated the entire
+  // point of the peer mesh during a Railway outage.
+  private applyHeader(
+    header: any,
+    silent: boolean = false,
+    onDone?: () => void,
+    sourcePeerId?: string,
+    propagate: boolean = !silent || !!sourcePeerId
+  ) {
     const result = verifyHeader(header, this.state.currentHeight, this.lastHash);
     if (!result.valid) {
       // "Stale or duplicate" is the EXPECTED outcome when two lightnodes
@@ -648,20 +808,11 @@ export class LightNodeClient {
     this.set({ verifiedHeaderCount: this.state.verifiedHeaderCount + 1 });
     if (!silent) this.log("Local Ledger Updated");
     this.checkEligibility();
-    if (!silent || sourcePeerId) {
-      // Forward onward down the tree (Leader -> Guardian -> Broadcaster ->
-      // Vision) whenever this is a genuinely new live header — whether it
-      // arrived straight from Railway (silent:false, no sourcePeerId) or
-      // from our own parent via gossip (sourcePeerId set). Previously a
-      // peer-received header was always applied silent:true and NEVER
-      // re-broadcast at all, so live blocks only ever reached the Leader's
-      // immediate children (Guardians) and never propagated further down —
-      // Broadcasters and Visions could only ever get anything via their own
-      // requestRange() pull, never the live push. excludePeerId stops this
-      // from echoing straight back to whoever we just got it from (that's
-      // the redundant-echo/duplicate-reject problem from before) while
-      // still reaching every OTHER connected peer (our other children,
-      // if any — a Guardian is also a Broadcaster's-worth of fan-out).
+    if (propagate) {
+      // Forward onward to our connected peers (Leader -> Guardian ->
+      // Broadcaster -> Vision fan-out, or just "whoever else I'm connected
+      // to" outside the tier tree). sourcePeerId, when set, is excluded so
+      // this doesn't echo straight back to whoever just sent it to us.
       this.peerMesh.broadcastHeader(header, sourcePeerId);
     }
     putBlock(header); // fire-and-forget — see block-store.ts. Not awaited: a slow/failed IndexedDB write must never stall sync.
@@ -731,7 +882,7 @@ export class LightNodeClient {
     const sorted = [...blocks].sort((a, b) => a.height - b.height);
     for (const block of sorted) {
       if (block.height !== this.state.currentHeight + 1) continue; // not next — skip, don't break the chain
-      this.applyHeader(block, true);
+      this.applyHeader(block, true, undefined, fromNodeId); // sourcePeerId set -> propagates onward (default), excluding an echo back to fromNodeId
     }
     this.log(`Peer ${fromNodeId.slice(0, 8)}… sent ${blocks.length} block(s), now at #${this.state.currentHeight}`);
 
@@ -831,7 +982,7 @@ export class LightNodeClient {
         }
         this.set({ syncPhase: "validating" });
         const { success, ...rest } = header;
-        this.applyHeader(rest, true);
+        this.applyHeader(rest, true, undefined, undefined, true); // force-propagate — same reasoning as the peer-range case above: this closes a gap to the real tip via archive precisely because Railway/peers couldn't, so it's this node's turn to be the one that hands it to ITS mesh peers
         fetchedCount++;
         this.set({ syncProgress: { current: fetchedCount, total: totalToFetch }, syncPhase: "downloading" });
       }
@@ -857,6 +1008,91 @@ export class LightNodeClient {
   private stopRelayStats() {
     if (this.relayStatsTimer) clearInterval(this.relayStatsTimer);
     this.relayStatsTimer = null;
+  }
+
+  // Peer Exchange (see webrtc-peer.ts's header comment) — purely a
+  // DataChannel operation between already-connected peers, so unlike every
+  // other startX()/stopX() pair here, this one is deliberately NOT stopped
+  // in ws.onclose. The whole point is that the mesh keeps discovering/
+  // confirming its own shape independent of whether Railway is reachable
+  // right now. Only the intentional, user-initiated disconnect() call
+  // below stops it.
+  private startPeerExchange() {
+    this.stopPeerExchange();
+    this.pexTimer = setInterval(() => {
+      if (this.peerMesh.connectedPeerIds.length === 0) return; // nobody to ask, nothing to do
+      this.peerMesh.requestPeerList();
+      this.savePeerCacheSnapshot(); // periodic refresh even if no connect/disconnect event fired this cycle (e.g. knownPeers grew via gossip alone)
+    }, PEER_EXCHANGE_INTERVAL_MS);
+  }
+
+  // Snapshots current connected peers + knownPeers hints into the
+  // cross-restart cache (see loadPeerCache() for why). Directly-connected
+  // peers are listed first (viaPeerId "" — no relay needed, we're already
+  // talking to them) since they're the strongest candidates for next
+  // launch; knownPeers hints fill the remaining slots.
+  private savePeerCacheSnapshot() {
+    const connected = this.peerMesh.connectedPeerIds.map((nodeId) => ({ nodeId, viaPeerId: "" }));
+    const hints = this.peerMesh.knownPeerEntries.filter(
+      (kp) => !this.peerMesh.connectedPeerIds.includes(kp.nodeId)
+    );
+    savePeerCache([...connected, ...hints].slice(0, PEER_CACHE_MAX_ENTRIES));
+  }
+
+  private stopPeerExchange() {
+    if (this.pexTimer) clearInterval(this.pexTimer);
+    this.pexTimer = null;
+  }
+
+  // Turns a knownPeers hint (someone a connected peer vouched for) into an
+  // actual connection attempt. Like startPeerExchange, deliberately NOT
+  // stopped on ws.onclose — the whole point is that the mesh keeps
+  // discovering AND growing while Railway is down, not just holding onto
+  // the connections it already had. When Railway IS up, this still runs but
+  // without a relay hint, so it behaves like the old tier-only connection
+  // behavior for anything PEX happens to have surfaced early — harmless,
+  // just an extra path to the same graph Railway would've assigned anyway.
+  private startMeshExpansion() {
+    this.stopMeshExpansion();
+    this.meshExpansionTimer = setInterval(() => {
+      if (this.peerMesh.connectedPeerIds.length === 0) {
+        this.maybeRebootstrap();
+        return; // nothing in knownPeers is reachable either if we have zero direct links
+      }
+      const hubUp = this.ws?.readyState === WebSocket.OPEN;
+      const candidate = this.peerMesh.knownPeerEntries.find(
+        (kp) => !this.peerMesh.connectedPeerIds.includes(kp.nodeId)
+      );
+      if (!candidate) return;
+      // One attempt per tick on purpose — avoids a burst of simultaneous
+      // offers (and simultaneous relay traffic through the same voucher)
+      // the moment a bunch of knownPeers entries show up at once.
+      this.peerMesh
+        .connectTo(candidate.nodeId, hubUp ? undefined : candidate.viaPeerId)
+        .catch(() => {
+          this.log(`Mesh expansion: couldn't reach ${candidate.nodeId.slice(0, 8)}… via ${candidate.viaPeerId.slice(0, 8)}…`, "warn");
+        });
+    }, MESH_EXPANSION_INTERVAL_MS);
+  }
+
+  // Re-asks Railway for a fresh bootstrap sample once our peer mesh has
+  // fully collapsed to zero (knownPeers is empty too at that point, since
+  // it's only ever populated by peers we're — or were recently — connected
+  // to). Throttled: if the whole network genuinely has nobody else on it
+  // right now, retrying every 45s forever would just be noise on Railway
+  // for no benefit — REBOOTSTRAP_COOLDOWN_MS spaces attempts out instead.
+  private lastRebootstrapAt = 0;
+  private maybeRebootstrap() {
+    if (this.ws?.readyState !== WebSocket.OPEN) return; // needs Railway up, same as the original bootstrap
+    if (Date.now() - this.lastRebootstrapAt < REBOOTSTRAP_COOLDOWN_MS) return;
+    this.lastRebootstrapAt = Date.now();
+    this.log("Peer mesh empty — re-requesting a bootstrap sample");
+    this.ws.send(JSON.stringify({ type: "bootstrap_request" }));
+  }
+
+  private stopMeshExpansion() {
+    if (this.meshExpansionTimer) clearInterval(this.meshExpansionTimer);
+    this.meshExpansionTimer = null;
   }
 
   private startHeartbeat() {

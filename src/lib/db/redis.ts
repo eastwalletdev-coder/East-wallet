@@ -321,6 +321,64 @@ export async function checkHeartbeatRateLimit(telegramId: string) {
 export async function checkProposalPollRateLimit(telegramId: string) {
   return checkGenericRateLimit(`proposal_rl:${telegramId}`, 45, 60); // ~1 per 2s intended (30/min) → allow up to 45/min
 }
+// A minted credential is reusable for its whole TTL (see TURN_CREDENTIAL_TTL_SECONDS
+// in the route), so a light node only needs a small handful per session even
+// across several reconnects — capped well below that to blunt someone
+// script-hitting the endpoint just to mint TURN creds for relaying their own
+// unrelated traffic through the TURN server's bandwidth.
+export async function checkTurnCredentialsRateLimit(identifier: string) {
+  return checkGenericRateLimit(`turn_rl:${identifier}`, 20, 60);
+}
+
+// ─── Destructive admin action lockout (genesis reset, migrations) ──
+// Deliberately separate from checkGenericRateLimit above: that one fails
+// OPEN (allows the call) if Redis is unreachable, which is correct for
+// routine caching/cooldowns — availability matters more than a missed
+// rate-limit window there. Here it's the opposite: this guards actions
+// that can wipe the entire chain, so "can't verify the lockout state"
+// must mean DENY, not allow. See admin-auth.ts's verifyDestructivePassphrase.
+const DESTRUCTIVE_LOCKOUT_MAX_ATTEMPTS = 5;
+const DESTRUCTIVE_LOCKOUT_WINDOW_SEC = 15 * 60; // 15 minutes
+
+export async function checkDestructiveLockout(identifier: string): Promise<{
+  locked: boolean;
+  remainingSeconds?: number;
+}> {
+  const r = getRedis();
+  if (!r) return { locked: true, remainingSeconds: DESTRUCTIVE_LOCKOUT_WINDOW_SEC }; // fail CLOSED
+  try {
+    const key = `destructive_rl:${identifier}`;
+    const count = Number((await r.get(key)) ?? 0);
+    if (count >= DESTRUCTIVE_LOCKOUT_MAX_ATTEMPTS) {
+      const ttl = await r.ttl(key);
+      return { locked: true, remainingSeconds: ttl > 0 ? ttl : DESTRUCTIVE_LOCKOUT_WINDOW_SEC };
+    }
+    return { locked: false };
+  } catch {
+    return { locked: true, remainingSeconds: DESTRUCTIVE_LOCKOUT_WINDOW_SEC }; // fail CLOSED
+  }
+}
+
+// Call only on a WRONG passphrase — a correct one never increments this,
+// so the founder entering it right on the first try is never throttled.
+export async function recordDestructiveFailure(identifier: string): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  try {
+    const key = `destructive_rl:${identifier}`;
+    const count = await r.incr(key);
+    if (count === 1) await r.expire(key, DESTRUCTIVE_LOCKOUT_WINDOW_SEC);
+  } catch {
+    // best effort — checkDestructiveLockout's fail-closed default is the
+    // real backstop if this write fails
+  }
+}
+
+export async function clearDestructiveLockout(identifier: string): Promise<void> {
+  const r = getRedis();
+  if (!r) return;
+  try { await r.del(`destructive_rl:${identifier}`); } catch { /* best effort */ }
+}
 
 // Caches the identity.users/identity.validators JOIN that /api/node/heartbeat
 // needs to authorize a caller (self_custody_pubkey + is_active). This data

@@ -1,5 +1,7 @@
 import { NextRequest } from 'next/server';
 import { verifyAdminSessionToken } from '@/lib/telegram-login-widget';
+import crypto from 'crypto';
+import { checkDestructiveLockout, recordDestructiveFailure, clearDestructiveLockout } from '@/lib/db/redis';
 
 const FOUNDER_IDS = (process.env.FOUNDER_IDS || '').split(',').map((id) => id.trim()).filter(Boolean);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -64,4 +66,64 @@ export function requireFounderSessionOnly(req: NextRequest): AdminAuthResult {
   }
 
   return { ok: false, status: 401, error: 'FOUNDER_SESSION_REQUIRED' };
+}
+
+/**
+ * Second, INDEPENDENT factor required for genesis-reset and every
+ * /api/admin/migrate-* route — on top of requireFounderSessionOnly /
+ * requireFounderAuth, not instead of it.
+ *
+ * Why this exists: requireFounderSessionOnly is satisfied by nothing more
+ * than a valid Telegram Login Widget session. If the founder's Telegram
+ * account is ever compromised (SIM swap, session hijack, phishing), that
+ * alone was previously enough to trigger genesis-reset — the "type
+ * RESET_EVERYTHING_I_UNDERSTAND" confirm string doesn't help, because it's
+ * a public constant rendered right there as the input's placeholder text;
+ * anyone who loads the page can read it. It's a guard against fat-fingering
+ * the button, not a secret.
+ *
+ * DESTRUCTIVE_ADMIN_PASSPHRASE fixes that: it's a value that exists ONLY
+ * as a server-side env var, never sent to any client, never rendered
+ * anywhere in the UI (no placeholder hint). A hijacked Telegram session is
+ * no longer sufficient on its own — the attacker also needs this
+ * passphrase, which should live somewhere Telegram-independent (a password
+ * manager, not a note in Telegram Saved Messages).
+ *
+ * Fails CLOSED if the env var isn't set — an unconfigured secret must
+ * never silently mean "no barrier". Rate-limited via Redis, also fail
+ * closed (see checkDestructiveLockout's doc comment).
+ */
+export async function verifyDestructivePassphrase(
+  candidate: unknown,
+  rateLimitIdentifier: string
+): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  const secret = process.env.DESTRUCTIVE_ADMIN_PASSPHRASE;
+  if (!secret) {
+    console.error('[EASTCHAIN] DESTRUCTIVE_ADMIN_PASSPHRASE is not set — refusing genesis-reset/migration until it is configured.');
+    return { ok: false, status: 503, error: 'PASSPHRASE_NOT_CONFIGURED' };
+  }
+
+  const lockout = await checkDestructiveLockout(rateLimitIdentifier);
+  if (lockout.locked) {
+    return { ok: false, status: 429, error: `TOO_MANY_ATTEMPTS: locked for ${lockout.remainingSeconds}s` };
+  }
+
+  if (typeof candidate !== 'string' || candidate.length === 0) {
+    return { ok: false, status: 400, error: 'PASSPHRASE_REQUIRED' };
+  }
+
+  // Constant-time comparison via fixed-length SHA-256 digests — avoids
+  // both a length-based short-circuit and any timing side-channel on the
+  // raw passphrase bytes.
+  const a = crypto.createHash('sha256').update(candidate).digest();
+  const b = crypto.createHash('sha256').update(secret).digest();
+  const match = crypto.timingSafeEqual(a, b);
+
+  if (!match) {
+    await recordDestructiveFailure(rateLimitIdentifier);
+    return { ok: false, status: 403, error: 'INVALID_PASSPHRASE' };
+  }
+
+  await clearDestructiveLockout(rateLimitIdentifier);
+  return { ok: true };
 }

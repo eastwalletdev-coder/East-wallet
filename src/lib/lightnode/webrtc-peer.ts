@@ -13,8 +13,8 @@
 // keeps functioning and knows it's bigger than its own direct links even
 // if Railway goes down entirely (see client.ts's ws.onclose, which no
 // longer tears the mesh down). Actually connecting to a knownPeers entry
-// without going through Railway (peer-relayed signaling) is a deliberate
-// next step, not built here yet.
+// without going through Railway is now possible too — see the
+// PEER-RELAYED SIGNALING section below.
 //
 // SECURITY INVARIANT: a header arriving over a peer DataChannel goes
 // through the exact same verifyHeader() check in client.ts as one that
@@ -28,15 +28,34 @@
 // TTL'd — see MAX_KNOWN_PEERS/KNOWN_PEER_TTL_MS), never anything that
 // gets treated as verified data.
 //
-// STUN only, no TURN — connections that need a relay to traverse NAT
-// (symmetric NAT on both sides) simply won't establish, and that peer
-// pair silently falls back to Railway's own header stream. This is a
-// deliberate scope cut: TURN needs paid relay bandwidth, and losing a
-// P2P shortcut degrades gracefully to "no worse than today" rather than
-// breaking anything.
+// PEER-RELAYED SIGNALING: the "next step" flagged above is now built. A
+// knownPeers entry already tells us WHO vouched for a nodeId (viaPeerId) —
+// that voucher is, by construction, someone we're directly connected to
+// AND who is directly connected to the target. So instead of needing
+// Railway to carry offer/answer/ICE for a brand-new pair, we can ask that
+// voucher to carry it one hop over the DataChannel it already has open to
+// both sides ("signal_relay" message kind, below). Railway is still used
+// whenever it's available (it's simpler and doesn't cost a connected
+// peer's bandwidth) — the relay path only gets used as a fallback, and
+// only ever ONE hop (MAX_RELAY_HOPS) to keep it from turning into a flood
+// or a loop. Trust model is unchanged: a relay only ever moves opaque
+// SDP/ICE bytes blind, exactly like Railway does — it can't inspect or
+// tamper with what's inside any more than Railway could, and the eventual
+// header stream over the resulting DataChannel still goes through
+// verifyHeader() same as always.
+//
+// STUN by default. TURN is now supported but OPT-IN and fetched at runtime
+// (see client.ts's fetchIceServers(), which calls GET /api/turn-credentials)
+// rather than hardcoded here — a TURN server needs real relay bandwidth
+// budgeted for it and short-lived credentials rather than a secret baked
+// into the client bundle, so it's provisioned per-deployment, not by
+// default. With no TURN configured, behavior is unchanged from before:
+// peer pairs that need a relay to cross NAT (symmetric NAT on both sides)
+// just can't establish, and silently fall back to Railway's own header
+// stream — never worse than that.
 import { getRange } from "./block-store";
 
-const ICE_SERVERS: RTCIceServer[] = [
+const STUN_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
 ];
@@ -93,10 +112,32 @@ const MAX_PEER_LIST_ENTRIES_PER_RESPONSE = 50;
 const MAX_KNOWN_PEERS = 200;
 const KNOWN_PEER_TTL_MS = 10 * 60_000; // stale entries (peer probably long gone) get pruned on the next PEX round rather than lingering forever
 
+// A signal_relay message is only ever forwarded ONCE by whoever receives it
+// mid-flight (hops goes 0 -> 1, then it must be addressed to the receiver or
+// it's dropped). This is what keeps relaying to exactly the "voucher already
+// connected to both sides" case it's meant for, instead of letting a message
+// wander the mesh hop by hop.
+const MAX_RELAY_HOPS = 1;
+
 export class PeerMesh {
+  private selfNodeId: string;
   private peers = new Map<string, Peer>();
   private callbacks: PeerMeshCallbacks;
   private pendingRangeRequests = new Map<string, PendingRangeRequest>();
+  // targetNodeId -> relay peer nodeId. Set whenever we establish (or receive)
+  // a connection attempt through a relay rather than Railway, so every
+  // signal for that target (offer -> answer -> the ICE trickle after it)
+  // keeps using the same one-hop path instead of falling back to Railway
+  // mid-handshake. Cleared once the direct DataChannel to that target opens.
+  private relayViaPeer = new Map<string, string>();
+  // Starts STUN-only; setTurnServers() appends TURN entries once client.ts's
+  // fetchIceServers() resolves (or on its periodic refresh before the
+  // minted credential's TTL runs out). Any RTCPeerConnection created via
+  // createConnection() picks up whatever's current at that moment — an
+  // in-flight connection isn't retroactively updated, but that's fine:
+  // TURN candidates only matter during ICE gathering at connection setup,
+  // never mid-session.
+  private iceServers: RTCIceServer[] = [...STUN_SERVERS];
   // Peer Exchange (PEX) directory — nodeIds we've heard about from a
   // connected peer but aren't (yet) directly connected to ourselves. This
   // is deliberately just a hint list for now: without a signaling path to
@@ -107,7 +148,8 @@ export class PeerMesh {
   // its own list) without needing another protocol change to add that.
   private knownPeers = new Map<string, KnownPeer>();
 
-  constructor(callbacks: PeerMeshCallbacks) {
+  constructor(selfNodeId: string, callbacks: PeerMeshCallbacks) {
+    this.selfNodeId = selfNodeId;
     this.callbacks = callbacks;
   }
 
@@ -121,6 +163,33 @@ export class PeerMesh {
    *  directly connected to them ourselves — see the knownPeers field comment. */
   get knownPeerIds(): string[] {
     return [...this.knownPeers.keys()];
+  }
+
+  /** Same as knownPeerIds but with the voucher attached — the voucher is who
+   *  to ask for a relay if we want to reach this nodeId without Railway. */
+  get knownPeerEntries(): { nodeId: string; viaPeerId: string }[] {
+    return [...this.knownPeers.values()].map(({ nodeId, viaPeerId }) => ({ nodeId, viaPeerId }));
+  }
+
+  /** Hydrates knownPeers from a cross-restart cache (see client.ts's
+   *  PEER_CACHE_STORAGE_KEY) so mesh-expansion has candidates to try
+   *  immediately on a fresh app launch, instead of only whatever this
+   *  session's live PEX has surfaced so far. The viaPeerId in a persisted
+   *  entry is almost certainly stale (that voucher probably isn't even
+   *  connected in THIS session) — that's fine and not dangerous: emitSignal
+   *  already falls back to Railway whenever the relay channel isn't open,
+   *  so a dead viaPeerId just means "try Railway instead", same as having
+   *  no hint at all. lastSeenAt is reset to now rather than trusting the
+   *  persisted timestamp, so a rehydrated entry gets a full fresh TTL
+   *  window instead of being pruned on the very next PEX cycle. */
+  seedKnownPeers(entries: { nodeId: string; viaPeerId: string }[]) {
+    const now = Date.now();
+    for (const { nodeId, viaPeerId } of entries) {
+      if (this.knownPeers.size >= MAX_KNOWN_PEERS) break;
+      if (nodeId === this.selfNodeId) continue;
+      if (this.knownPeers.has(nodeId)) continue; // live PEX data (if any exists already) wins over a rehydrated guess
+      this.knownPeers.set(nodeId, { nodeId, viaPeerId, lastSeenAt: now });
+    }
   }
 
   // Asks every currently-connected peer "who else are you connected to?"
@@ -138,10 +207,14 @@ export class PeerMesh {
     });
   }
 
-  /** Initiate a connection to a promoted relay node (we are the offerer). */
-  async connectTo(peerNodeId: string) {
+  /** Initiate a connection to a promoted relay node (we are the offerer).
+   *  Pass viaPeerId (typically a knownPeers voucher) to carry the signaling
+   *  one hop through that peer's DataChannel instead of Railway — use this
+   *  when Railway is unreachable. Leave it undefined for the normal path. */
+  async connectTo(peerNodeId: string, viaPeerId?: string) {
     if (this.peers.has(peerNodeId)) return; // already connecting/connected
     if (this.peers.size >= MAX_MESH_PEERS) return; // at cap — this pair falls back to Railway directly instead
+    if (viaPeerId) this.relayViaPeer.set(peerNodeId, viaPeerId);
     const pc = this.createConnection(peerNodeId);
     const channel = pc.createDataChannel(DATACHANNEL_LABEL);
     this.wireChannel(peerNodeId, channel);
@@ -149,12 +222,16 @@ export class PeerMesh {
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    this.callbacks.sendSignal({ type: "webrtc_offer", toNodeId: peerNodeId, sdp: offer.sdp });
+    this.emitSignal(peerNodeId, { type: "webrtc_offer", sdp: offer.sdp });
   }
 
-  /** Someone offered us a connection (we are the answerer). */
-  async handleOffer(fromNodeId: string, sdp: string) {
+  /** Someone offered us a connection (we are the answerer). viaPeerId is set
+   *  when the offer itself arrived relayed through a peer rather than
+   *  Railway — see handleSignalRelay — so the answer/ICE going back use the
+   *  same one-hop path. */
+  async handleOffer(fromNodeId: string, sdp: string, viaPeerId?: string) {
     if (!this.peers.has(fromNodeId) && this.peers.size >= MAX_MESH_PEERS) return; // at cap — decline, offerer falls back to Railway
+    if (viaPeerId) this.relayViaPeer.set(fromNodeId, viaPeerId);
     const pc = this.createConnection(fromNodeId);
     pc.ondatachannel = (ev) => this.wireChannel(fromNodeId, ev.channel);
     this.peers.set(fromNodeId, { connection: pc, channel: null });
@@ -162,7 +239,7 @@ export class PeerMesh {
     await pc.setRemoteDescription({ type: "offer", sdp });
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-    this.callbacks.sendSignal({ type: "webrtc_answer", toNodeId: fromNodeId, sdp: answer.sdp });
+    this.emitSignal(fromNodeId, { type: "webrtc_answer", sdp: answer.sdp });
   }
 
   async handleAnswer(fromNodeId: string, sdp: string) {
@@ -222,19 +299,34 @@ export class PeerMesh {
     peer.channel?.close();
     peer.connection.close();
     this.peers.delete(peerNodeId);
+    // Anyone we were routing signals through this (now-gone) peer for has
+    // lost their relay path — drop those entries too so emitSignal falls
+    // back to Railway on the next attempt instead of quietly aiming at a
+    // dead relay every time.
+    for (const [target, via] of this.relayViaPeer) {
+      if (via === peerNodeId) this.relayViaPeer.delete(target);
+    }
   }
 
   disconnectAll() {
     [...this.peers.keys()].forEach((id) => this.disconnect(id));
   }
 
+  /** Adds TURN server(s) on top of the default STUN list — call once
+   *  fetchIceServers() resolves a configured TURN response, and again
+   *  whenever it refreshes with a new short-lived credential. Replaces any
+   *  previously-set TURN entries rather than accumulating them (each call
+   *  represents "these are the current valid credentials," not an addition
+   *  to a growing list). */
+  setTurnServers(turnServers: RTCIceServer[]) {
+    this.iceServers = [...STUN_SERVERS, ...turnServers];
+  }
+
   private createConnection(peerNodeId: string): RTCPeerConnection {
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
     pc.onicecandidate = (ev) => {
       if (ev.candidate) {
-        this.callbacks.sendSignal({
-          type: "ice_candidate", toNodeId: peerNodeId, candidate: JSON.stringify(ev.candidate),
-        });
+        this.emitSignal(peerNodeId, { type: "ice_candidate", candidate: JSON.stringify(ev.candidate) });
       }
     };
     pc.onconnectionstatechange = () => {
@@ -244,6 +336,61 @@ export class PeerMesh {
       }
     };
     return pc;
+  }
+
+  // Routes an outgoing signal (offer/answer/ICE) to its destination: through
+  // a relay peer's DataChannel if relayViaPeer has one for this target AND
+  // that relay's channel is actually open right now, otherwise through
+  // Railway (the callbacks.sendSignal path) same as before this feature
+  // existed. Falling through to Railway when the relay looks dead (rather
+  // than silently dropping the signal) means a mid-handshake relay
+  // disconnect degrades to "no worse than not having tried a relay", not a
+  // stuck connection attempt.
+  private emitSignal(toNodeId: string, payload: { type: "webrtc_offer" | "webrtc_answer" | "ice_candidate"; sdp?: string; candidate?: string }) {
+    const viaPeerId = this.relayViaPeer.get(toNodeId);
+    if (viaPeerId) {
+      const relay = this.peers.get(viaPeerId);
+      if (relay?.channel?.readyState === "open") {
+        relay.channel.send(JSON.stringify({
+          kind: "signal_relay", toNodeId, fromNodeId: this.selfNodeId, hops: 0, ...payload,
+        }));
+        return;
+      }
+    }
+    this.callbacks.sendSignal({ ...payload, toNodeId });
+  }
+
+  // Received on a relay's DataChannel. Two cases:
+  //   1. Addressed to us — this is signaling relayed on our behalf by
+  //      peerNodeId (our directly-connected voucher). Remember that path
+  //      (so our reply goes back the same one hop) and hand it to the same
+  //      handleOffer/handleAnswer/handleIceCandidate as a Railway-sourced
+  //      signal would get.
+  //   2. Addressed to someone else — we're the voucher being asked to carry
+  //      it the last hop. Only ever forwarded once (MAX_RELAY_HOPS) and only
+  //      if we actually have an open channel to that target; otherwise
+  //      dropped rather than searched further, so this never grows into a
+  //      multi-hop flood.
+  private handleSignalRelay(peerNodeId: string, msg: any) {
+    const { toNodeId, fromNodeId, type, sdp, candidate, hops } = msg;
+    if (typeof toNodeId !== "string" || typeof fromNodeId !== "string") return;
+
+    if (toNodeId === this.selfNodeId) {
+      if (type === "webrtc_offer" && typeof sdp === "string") {
+        this.handleOffer(fromNodeId, sdp, peerNodeId);
+      } else if (type === "webrtc_answer" && typeof sdp === "string") {
+        this.relayViaPeer.set(fromNodeId, peerNodeId);
+        this.handleAnswer(fromNodeId, sdp);
+      } else if (type === "ice_candidate" && typeof candidate === "string") {
+        this.handleIceCandidate(fromNodeId, candidate);
+      }
+      return;
+    }
+
+    if (typeof hops !== "number" || hops >= MAX_RELAY_HOPS) return; // one hop only
+    const target = this.peers.get(toNodeId);
+    if (target?.channel?.readyState !== "open") return; // we're not actually a voucher for this target — drop
+    target.channel.send(JSON.stringify({ kind: "signal_relay", toNodeId, fromNodeId, type, sdp, candidate, hops: hops + 1 }));
   }
 
   // Answers another peer's range_request from our OWN IndexedDB block-store
@@ -295,6 +442,7 @@ export class PeerMesh {
 
     channel.onopen = () => {
       this.knownPeers.delete(peerNodeId); // now directly connected — no longer just a hint
+      this.relayViaPeer.delete(peerNodeId); // direct path exists now, stop routing signals for it through a relay
       this.callbacks.onPeerConnected?.(peerNodeId);
     };
     channel.onclose = () => this.callbacks.onPeerDisconnected?.(peerNodeId);
@@ -316,6 +464,8 @@ export class PeerMesh {
           this.handlePeerListRequest(peerNodeId);
         } else if (parsed?.kind === "peer_list_response") {
           this.handlePeerListResponse(peerNodeId, parsed.peerIds);
+        } else if (parsed?.kind === "signal_relay") {
+          this.handleSignalRelay(peerNodeId, parsed);
         }
       } catch {
         // Malformed peer payload — drop it. Not our job to police the peer's

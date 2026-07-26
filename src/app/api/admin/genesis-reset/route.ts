@@ -9,7 +9,7 @@
 // x-cron-secret) AND an exact confirmation string in the body — a typo'd
 // confirm string is rejected, not fuzzy-matched, on purpose.
 import { NextRequest, NextResponse } from 'next/server';
-import { requireFounderSessionOnly } from '@/lib/admin-auth';
+import { requireFounderSessionOnly, verifyDestructivePassphrase } from '@/lib/admin-auth';
 import { resetGenesisChain } from '@/actions/genesis-reset-actions';
 import { identityPool } from '@/lib/db/identity';
 
@@ -23,6 +23,12 @@ export async function POST(req: NextRequest) {
 
   try {
     const body = await req.json().catch(() => ({}));
+
+    // Second, independent factor — see verifyDestructivePassphrase's doc
+    // comment. A hijacked Telegram session alone is no longer sufficient.
+    const passOk = await verifyDestructivePassphrase(body?.passphrase, auth.telegramId || 'unknown');
+    if (!passOk.ok) return NextResponse.json({ success: false, error: passOk.error }, { status: passOk.status });
+
     if (body?.confirm !== CONFIRM_PHRASE) {
       return NextResponse.json({
         success: false,

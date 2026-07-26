@@ -88,10 +88,18 @@ export interface ErrorMessage { type: "error"; message: string; }
 export interface FullSyncProvidersMessage { type: "full_sync_providers"; nodeIds: string[]; }
 export interface FullSyncResponseMessage { type: "full_sync_response"; fromNodeId: string; blocks: BlockHeader[]; }
 
+// ── Bootstrap discovery — see railway-server's sampleBootstrapPeers() ──
+// Arrives unprompted right after "welcome" so a brand-new node can start
+// dialing peers immediately instead of waiting for tier:assign. Also
+// re-requestable (bootstrap_request) if the peer mesh fully collapses.
+export interface BootstrapPeersMessage { type: "bootstrap_peers"; nodeIds: string[]; }
+export interface BootstrapRequestMessage { type: "bootstrap_request"; }
+
 export type InboundMessage =
   | WelcomeMessage | BlockNewMessage | BlockBackfillMessage | PongMessage | ErrorMessage
   | TierAssignMessage
   | FullSyncProvidersMessage | FullSyncResponseMessage
-  | WebrtcOfferMessage | WebrtcAnswerMessage | IceCandidateMessage;
+  | WebrtcOfferMessage | WebrtcAnswerMessage | IceCandidateMessage
+  | BootstrapPeersMessage;
 
 export { EAST_CHAIN_ID };

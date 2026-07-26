@@ -33,6 +33,11 @@ export default function ValidatorReviewPage() {
   const [reviewingId, setReviewingId] = useState<string | null>(null);
   const [reviewNotes, setReviewNotes] = useState('');
   const [migrating, setMigrating] = useState<string | null>(null);
+  // Second factor for genesis-reset AND every migration trigger — see
+  // verifyDestructivePassphrase's doc comment in admin-auth.ts. Kept as
+  // plain component state (never persisted, cleared on reload) — this is
+  // deliberately NOT saved to localStorage/cookies alongside the session.
+  const [destructivePassphrase, setDestructivePassphrase] = useState('');
   const [migrationResult, setMigrationResult] = useState<{ endpoint: string; success: boolean; message: string } | null>(null);
   const [backfillTelegramId, setBackfillTelegramId] = useState('');
   const [backfillRunning, setBackfillRunning] = useState(false);
@@ -190,10 +195,18 @@ export default function ValidatorReviewPage() {
   ];
 
   const runMigration = async (path: string) => {
+    if (!destructivePassphrase) {
+      setMigrationResult({ endpoint: path, success: false, message: 'Enter the admin passphrase first.' });
+      return;
+    }
     setMigrating(path);
     setMigrationResult(null);
     try {
-      const res = await fetch(path, { method: 'POST' }); // browser sends the session cookie automatically
+      const res = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ passphrase: destructivePassphrase }), // browser sends the session cookie automatically too
+      });
       const data = await res.json();
       setMigrationResult({ endpoint: path, success: res.ok && data.success, message: data.message || data.error || 'Unknown response' });
     } catch (err: any) {
@@ -234,6 +247,10 @@ export default function ValidatorReviewPage() {
 
   const runGenesisReset = async () => {
     if (resetConfirmInput !== RESET_CONFIRM_PHRASE) return;
+    if (!destructivePassphrase) {
+      setResetResult({ success: false, message: 'Enter the admin passphrase first.' });
+      return;
+    }
     if (!window.confirm(
       'This wipes ALL blocks, transactions, mempool, staking positions, and mint counters, ' +
       'then restores balances from a snapshot. Founder vesting resets to a fresh 12-month cliff. ' +
@@ -246,7 +263,7 @@ export default function ValidatorReviewPage() {
       const res = await fetch('/api/admin/genesis-reset', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ confirm: resetConfirmInput }), // browser sends the session cookie automatically
+        body: JSON.stringify({ confirm: resetConfirmInput, passphrase: destructivePassphrase }), // browser sends the session cookie automatically
       });
       const data = await res.json();
       setResetResult({ success: res.ok && data.success, message: data.message || data.error || 'Unknown response', raw: data });
@@ -281,6 +298,23 @@ export default function ValidatorReviewPage() {
             <LogOut className="w-4 h-4" />
           </Button>
         </div>
+      </div>
+
+      <div className="border-2 border-amber-300 rounded-lg p-3 bg-amber-50 space-y-2">
+        <h2 className="text-xs font-semibold text-amber-800">🔑 Admin Passphrase</h2>
+        <p className="text-[11px] text-amber-700">
+          Required for Migrations below and Genesis Reset further down — a second factor
+          independent of your Telegram login, so a compromised Telegram session alone
+          can't trigger either. Not saved anywhere; re-enter each visit.
+        </p>
+        <input
+          type="password"
+          placeholder="Admin passphrase"
+          value={destructivePassphrase}
+          onChange={(e) => setDestructivePassphrase(e.target.value)}
+          className="w-full px-3 py-2 text-xs border border-amber-300 rounded font-mono"
+          autoComplete="off"
+        />
       </div>
 
       <div className="border rounded-lg p-4 space-y-3 bg-gray-50">
@@ -385,7 +419,7 @@ export default function ValidatorReviewPage() {
         <Button
           variant="destructive"
           size="sm"
-          disabled={resetRunning || resetConfirmInput !== RESET_CONFIRM_PHRASE}
+          disabled={resetRunning || resetConfirmInput !== RESET_CONFIRM_PHRASE || !destructivePassphrase}
           onClick={runGenesisReset}
           className="text-xs"
         >

@@ -11,7 +11,7 @@ import { SpeedInsights } from '@vercel/speed-insights/next';
 
 export const metadata: Metadata = {
   title: 'EAST Wallet',
-  description: 'One Smartphone. One Node. One Future. — Blockchain Layer 1 Secured With Millions Of Mobile Light Nodes',
+  description: 'One Smartphone One Node One Future — Layer 1 Secure With P2P Mobile Browser Lightnode',
 };
 
 export default function RootLayout({

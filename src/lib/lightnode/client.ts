@@ -68,7 +68,7 @@ const RAILWAY_BACKFILL_LIMIT = 1000;
 const ARCHIVE_RANGE_CHUNK = 500; // matches MAX_RANGE server-side cap in /api/archive/blocks-range — one request covers this many heights instead of one request per height
 const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long before falling back to the archive
 const SYNC_REQUEST_WATCHDOG_MS = 10_000; // if a plain sync_request hasn't closed the gap by then, Railway's buffer likely didn't have it — fall back to the archive instead of hanging forever
-const LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS = 5_000; // how long to wait for other lightnodes (WebRTC mesh) to answer a gap request before moving on to a validator/archive
+const LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS = 15_000; // total budget to find AND hear back from a lightnode peer before falling back to a validator/Railway — covers both "search" (waiting for a WebRTC peer to connect at all) and the actual request/response
 const DRIFT_RECHECK_INTERVAL_MS = 3 * 60_000; // browser-side equivalent of full-node-sync.js's periodic recheck — a missed live push self-heals within this interval instead of requiring a manual reconnect
 const PEER_EXCHANGE_INTERVAL_MS = 90_000; // how often we ask connected peers "who else do you know?" — deliberately NOT stopped when Railway disconnects, see startPeerExchange()
 const MESH_EXPANSION_INTERVAL_MS = 45_000; // how often we try turning a knownPeers hint into an actual connection — see startMeshExpansion()
@@ -598,6 +598,25 @@ export class LightNodeClient {
   // anyone else, which broadcasts to every connected peer, not just its
   // parent — so it can be answered by whichever peer(s) happen to have
   // that range.
+  // Unlike a bare peerMesh.requestRange() call — which resolves empty
+  // IMMEDIATELY if 0 peers happen to be connected at this exact instant —
+  // this actively searches for one first. A WebRTC peer connection can
+  // still be mid-handshake right after tier:assign/PEX, so "0 peers right
+  // now" doesn't mean "nobody's coming", just "not yet". Polls every 500ms
+  // until either a peer connects (then hands whatever's LEFT of the
+  // budget to the actual range request) or the whole budget is spent with
+  // nobody online at all — only then does the caller fall back to a
+  // validator/Railway.
+  private async requestRangeWaitingForPeer(fromHeight: number, toHeight: number, totalTimeoutMs: number): Promise<any[]> {
+    const deadline = Date.now() + totalTimeoutMs;
+    while (this.peerMesh.connectedPeerIds.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    const remaining = deadline - Date.now();
+    if (this.peerMesh.connectedPeerIds.length === 0 || remaining <= 0) return [];
+    return this.peerMesh.requestRange(fromHeight, toHeight, remaining);
+  }
+
   private async runCatchUp(latestHeight: number) {
     if (latestHeight >= 0) {
       this.log(`Network tip is block #${latestHeight}`);
@@ -607,16 +626,32 @@ export class LightNodeClient {
     const gap = latestHeight - this.state.currentHeight;
     const archiveUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL;
 
-    if (gap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1) {
+    if (gap > 0) {
       // Step 1 of 3: other lightnodes first (WebRTC mesh, see
-      // webrtc-peer.ts's requestRange + block-store.ts) — tried by
-      // EVERY node regardless of relay status. Spreads catch-up load
-      // across whoever's already connected and happens to have this
-      // range in their own last-5000-block IndexedDB cache — costs
-      // Railway/Vercel nothing at all. Only the contiguous run from
-      // currentHeight+1 is applied; the loop stops at the first hole
-      // so whatever's still missing correctly falls through below.
-      const peerBlocks = await this.peerMesh.requestRange(
+      // webrtc-peer.ts's requestRange + block-store.ts) — tried by EVERY
+      // node regardless of relay status, and regardless of how far
+      // behind we are. This used to be gated behind a 20-block minimum
+      // gap, which meant the single most common case (just reopened the
+      // app, a few blocks behind) always skipped straight to Railway —
+      // exactly the traffic that matters most, since it happens on
+      // every reconnect for every user. Railway's ring buffer only
+      // holds the last 1000 headers (BACKFILL_SIZE in hub/server.ts);
+      // if every one of, say, 1000 concurrently reconnecting users hits
+      // it for even a modest backfill at once, that's traffic on
+      // Railway's own bandwidth bill/limits — the kind of spike that
+      // risks tripping a suspension. Peers cost Railway nothing, so
+      // they're worth waiting for no matter the gap size.
+      //
+      // requestRangeWaitingForPeer() actively searches for up to
+      // LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS (15s): a peer connection may
+      // still be mid-handshake right after tier:assign, so 0 connected
+      // peers RIGHT NOW doesn't mean nobody's coming — only after that
+      // whole budget is spent with nobody online (or nobody answering)
+      // does this fall through to validator/Railway below. Only the
+      // contiguous run from currentHeight+1 is applied; the loop stops
+      // at the first hole so whatever's still missing correctly falls
+      // through below.
+      const peerBlocks = await this.requestRangeWaitingForPeer(
         this.state.currentHeight + 1, latestHeight, LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS
       );
       if (peerBlocks.length > 0) {
@@ -647,17 +682,24 @@ export class LightNodeClient {
         return;
       }
       // Reached only if we're Leader/none-tier (this is our job), or we
-      // have zero connected peers at all (bootstrap — nobody else to wait
-      // on, e.g. we're among the very first nodes on the network).
+      // have zero connected peers at all after the full 15s search
+      // (bootstrap — nobody else to wait on, e.g. we're among the very
+      // first nodes on the network).
 
       // Step 2 of 3: a validator's full node (Termux/VPS,
       // full-node-sync.js) over Vercel — spreads whatever's still
       // missing across the network instead of every node with a
-      // gap hitting the same serverless endpoint. Best-effort:
-      // currentHeight advances as far as the peer's contiguous,
-      // verified response reaches, then whatever's still missing
-      // falls through below.
-      await this.tryPeerCatchUp(this.state.currentHeight + 1, latestHeight);
+      // gap hitting the same serverless endpoint. Still gated by
+      // PEER_AND_ARCHIVE_TRIGGER_GAP, but now checked against whatever
+      // gap REMAINS after peers already helped — a validator round-trip
+      // isn't worth it for the last couple of blocks Railway's own ring
+      // buffer handles fine in Step 3 below. Best-effort: currentHeight
+      // advances as far as the peer's contiguous, verified response
+      // reaches, then whatever's still missing falls through below.
+      const remainingAfterPeers = latestHeight - this.state.currentHeight;
+      if (remainingAfterPeers > PEER_AND_ARCHIVE_TRIGGER_GAP + 1) {
+        await this.tryPeerCatchUp(this.state.currentHeight + 1, latestHeight);
+      }
     }
 
     // Step 3 of 3: the archive (or Railway's own small ring

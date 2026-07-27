@@ -65,10 +65,10 @@ export function SplashScreen() {
           </h1>
           <div className="mt-4 flex flex-col items-center gap-1.5 w-full px-4">
             <p className="text-[14px] md:text-[16px] uppercase font-black tracking-[0.1em] text-white leading-tight text-center">
-              One Smartphone. One Node. One Future.
+              One Smartphone One Node One Future
             </p>
             <p className="text-[10px] md:text-[11px] uppercase font-extrabold tracking-[0.2em] text-primary leading-relaxed text-center">
-              Blockchain Layer 1 Secured With Millions Of Mobile Light Nodes
+              Layer 1 Secure With P2P Mobile Browser Lightnode
             </p>
           </div>
         </div>

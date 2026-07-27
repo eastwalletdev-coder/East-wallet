@@ -271,10 +271,10 @@ export default function Home() {
             </div>
           </h2>
           <p className="text-[13px] uppercase font-black tracking-[0.1em] text-white leading-tight mt-2">
-            One Smartphone. One Node. One Future.
+            One Smartphone One Node One Future
           </p>
           <p className="text-[10px] uppercase font-extrabold tracking-[0.2em] text-primary mt-1">
-            Blockchain Layer 1 Secured With Millions Of Mobile Light Nodes
+            Layer 1 Secure With P2P Mobile Browser Lightnode
           </p>
         </div>
 

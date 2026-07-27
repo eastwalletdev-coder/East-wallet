@@ -76,6 +76,18 @@ const DATACHANNEL_LABEL = "headers";
 // is the safety net in the meantime.
 const MAX_MESH_PEERS = 20;
 
+// ICE restart on IP change (WiFi<->cellular switch, NAT rebinding, etc.):
+// "disconnected" is often transient — WebRTC's own keepalives can recover
+// it within a couple seconds without any help. Give it this grace window
+// before doing anything, so a normal brief blip never triggers a restart.
+// "failed" means ICE has already given up trying by itself — no need to
+// wait there, restart immediately.
+const ICE_DISCONNECT_GRACE_MS = 4_000;
+// After sending an ICE-restart offer, how long to wait for it to actually
+// land (answer comes back, state flips to "connected") before giving up
+// and treating the peer as genuinely gone rather than just IP-shuffled.
+const ICE_RESTART_FAILSAFE_MS = 10_000;
+
 export interface PeerMeshCallbacks {
   /** Send a signaling message out over the existing Railway WS connection. */
   sendSignal: (msg: { type: "webrtc_offer" | "webrtc_answer" | "ice_candidate"; toNodeId: string; sdp?: string; candidate?: string }) => void;
@@ -83,6 +95,10 @@ export interface PeerMeshCallbacks {
   onPeerHeader: (peerNodeId: string, header: unknown) => void;
   onPeerConnected?: (peerNodeId: string) => void;
   onPeerDisconnected?: (peerNodeId: string) => void;
+  /** Connection dropped (IP change, NAT rebind, etc.) and we're attempting an ICE restart to resume the SAME session rather than tearing it down. */
+  onPeerReconnecting?: (peerNodeId: string) => void;
+  /** ICE restart succeeded — connection is back without ever having been torn down or re-dialed from scratch. */
+  onPeerRecovered?: (peerNodeId: string) => void;
 }
 
 interface Peer {
@@ -130,6 +146,13 @@ export class PeerMesh {
   // keeps using the same one-hop path instead of falling back to Railway
   // mid-handshake. Cleared once the direct DataChannel to that target opens.
   private relayViaPeer = new Map<string, string>();
+  // ICE-restart bookkeeping (IP change recovery — see ICE_DISCONNECT_GRACE_MS
+  // above). disconnectGraceTimers: waiting out a possibly-transient
+  // "disconnected" before trying anything. restartFailsafeTimers: an ICE
+  // restart offer went out, waiting to see if it actually lands before
+  // giving up for real. A peerNodeId is in at most one of these at a time.
+  private disconnectGraceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private restartFailsafeTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // Starts STUN-only; setTurnServers() appends TURN entries once client.ts's
   // fetchIceServers() resolves (or on its periodic refresh before the
   // minted credential's TTL runs out). Any RTCPeerConnection created via
@@ -231,6 +254,21 @@ export class PeerMesh {
    *  same one-hop path. */
   async handleOffer(fromNodeId: string, sdp: string, viaPeerId?: string) {
     const existing = this.peers.get(fromNodeId);
+    if (existing?.channel?.readyState === "open") {
+      // RENEGOTIATION: an offer arriving for a peer whose DataChannel is
+      // already open is (in practice) the other side's own ICE restart —
+      // see attemptIceRestart() above, same mechanism, just triggered by
+      // THEIR network change instead of ours. Answer on the SAME
+      // RTCPeerConnection/DataChannel; tearing anything down here would
+      // drop a channel that's still perfectly usable just to rebuild an
+      // identical one.
+      if (viaPeerId) this.relayViaPeer.set(fromNodeId, viaPeerId);
+      await existing.connection.setRemoteDescription({ type: "offer", sdp });
+      const answer = await existing.connection.createAnswer();
+      await existing.connection.setLocalDescription(answer);
+      this.emitSignal(fromNodeId, { type: "webrtc_answer", sdp: answer.sdp });
+      return;
+    }
     if (existing) {
       // GLARE: we already have an entry for this peer, meaning WE also
       // called connectTo() on them around the same time (mutual dial —
@@ -322,6 +360,7 @@ export class PeerMesh {
   disconnect(peerNodeId: string) {
     const peer = this.peers.get(peerNodeId);
     if (!peer) return;
+    this.clearRecoveryTimers(peerNodeId);
     peer.channel?.close();
     peer.connection.close();
     this.peers.delete(peerNodeId);
@@ -356,12 +395,71 @@ export class PeerMesh {
       }
     };
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+      const state = pc.connectionState;
+      if (state === "connected") {
+        const wasRecovering = this.disconnectGraceTimers.has(peerNodeId) || this.restartFailsafeTimers.has(peerNodeId);
+        this.clearRecoveryTimers(peerNodeId);
+        if (wasRecovering) this.callbacks.onPeerRecovered?.(peerNodeId);
+      } else if (state === "disconnected") {
+        // Don't stack a second grace timer if one's already ticking (or an
+        // ICE restart is already in flight) for this peer.
+        if (this.disconnectGraceTimers.has(peerNodeId) || this.restartFailsafeTimers.has(peerNodeId)) return;
+        const timer = setTimeout(() => {
+          this.disconnectGraceTimers.delete(peerNodeId);
+          if (pc.connectionState === "disconnected") this.attemptIceRestart(peerNodeId, pc);
+        }, ICE_DISCONNECT_GRACE_MS);
+        this.disconnectGraceTimers.set(peerNodeId, timer);
+      } else if (state === "failed") {
+        const graceTimer = this.disconnectGraceTimers.get(peerNodeId);
+        if (graceTimer) { clearTimeout(graceTimer); this.disconnectGraceTimers.delete(peerNodeId); }
+        if (!this.restartFailsafeTimers.has(peerNodeId)) this.attemptIceRestart(peerNodeId, pc);
+      } else if (state === "closed") {
+        this.clearRecoveryTimers(peerNodeId);
         this.disconnect(peerNodeId);
         this.callbacks.onPeerDisconnected?.(peerNodeId);
       }
     };
     return pc;
+  }
+
+  // Tries to resume the SAME RTCPeerConnection/DataChannel via ICE restart
+  // (fresh candidate gathering under a renegotiated SDP) instead of
+  // tearing the connection down and forcing a full re-dial from scratch —
+  // the fast path for the common case of an IP change (WiFi<->cellular,
+  // NAT rebind) rather than the peer actually being gone. If this doesn't
+  // land within ICE_RESTART_FAILSAFE_MS (peer genuinely offline, or it
+  // doesn't support/handle the restart), falls through to a real
+  // disconnect — never worse than today's immediate-teardown behavior,
+  // just gives recovery a chance first.
+  private async attemptIceRestart(peerNodeId: string, pc: RTCPeerConnection) {
+    const peer = this.peers.get(peerNodeId);
+    if (!peer || peer.connection !== pc) return; // stale timer firing for a pc that's since been replaced/removed
+    this.callbacks.onPeerReconnecting?.(peerNodeId);
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      this.emitSignal(peerNodeId, { type: "webrtc_offer", sdp: offer.sdp! });
+    } catch {
+      this.restartFailsafeTimers.delete(peerNodeId);
+      this.disconnect(peerNodeId);
+      this.callbacks.onPeerDisconnected?.(peerNodeId);
+      return;
+    }
+    const failsafe = setTimeout(() => {
+      this.restartFailsafeTimers.delete(peerNodeId);
+      if (pc.connectionState !== "connected") {
+        this.disconnect(peerNodeId);
+        this.callbacks.onPeerDisconnected?.(peerNodeId);
+      }
+    }, ICE_RESTART_FAILSAFE_MS);
+    this.restartFailsafeTimers.set(peerNodeId, failsafe);
+  }
+
+  private clearRecoveryTimers(peerNodeId: string) {
+    const grace = this.disconnectGraceTimers.get(peerNodeId);
+    if (grace) { clearTimeout(grace); this.disconnectGraceTimers.delete(peerNodeId); }
+    const failsafe = this.restartFailsafeTimers.get(peerNodeId);
+    if (failsafe) { clearTimeout(failsafe); this.restartFailsafeTimers.delete(peerNodeId); }
   }
 
   // Routes an outgoing signal (offer/answer/ICE) to its destination: through

@@ -311,6 +311,15 @@ export class LightNodeClient {
         this.log(`Peer mesh: disconnected from ${peerNodeId.slice(0, 8)}…`);
         this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
       },
+      onPeerReconnecting: (peerNodeId) => {
+        // IP changed (WiFi<->cellular, NAT rebind) or a transient network
+        // blip — trying to resume the same session via ICE restart before
+        // giving up and treating them as gone. See webrtc-peer.ts.
+        this.log(`Peer mesh: ${peerNodeId.slice(0, 8)}… connection interrupted — attempting ICE restart…`);
+      },
+      onPeerRecovered: (peerNodeId) => {
+        this.log(`Peer mesh: ${peerNodeId.slice(0, 8)}… reconnected via ICE restart (same session resumed)`);
+      },
     });
 
     // Rehydrate from the last session's peer cache immediately — before

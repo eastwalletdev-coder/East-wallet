@@ -338,20 +338,30 @@ export class LightNodeClient {
   private async fetchIceServers() {
     if (typeof window === "undefined" || typeof fetch === "undefined") return;
     const appUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "";
+    this.log("Trying TURN mode, please wait…");
     try {
       const res = await fetch(`${appUrl.replace(/\/$/, "")}/api/turn-credentials`);
-      if (!res.ok) return;
+      if (!res.ok) {
+        this.log(`TURN credential request failed (HTTP ${res.status}) — staying STUN-only`, "warn");
+        return;
+      }
       const body = await res.json();
-      if (!body?.configured) return; // no TURN server set up on this deployment — stay STUN-only
+      if (!body?.configured) {
+        this.log("TURN not configured on this deployment — staying STUN-only");
+        return; // no TURN server set up on this deployment — stay STUN-only
+      }
       // Route already returns an RTCIceServer[] (Metered hands back the
       // whole array pre-shaped) — pass it straight through.
-      this.peerMesh.setTurnServers(Array.isArray(body.iceServers) ? body.iceServers : []);
+      const iceServers = Array.isArray(body.iceServers) ? body.iceServers : [];
+      this.peerMesh.setTurnServers(iceServers);
+      this.log(`TURN configured — ${iceServers.length} ICE server(s) active as fallback`);
       const refreshInMs = Math.max((body.ttlSeconds ?? 3600) * 1000 * 0.8, 60_000);
       if (this.turnRefreshTimer) clearTimeout(this.turnRefreshTimer);
       this.turnRefreshTimer = setTimeout(() => this.fetchIceServers(), refreshInMs);
     } catch {
       // Network hiccup fetching TURN creds — harmless. This session just
       // stays STUN-only until the next attempt; nothing else depends on it.
+      this.log("TURN credential fetch errored — staying STUN-only", "warn");
     }
   }
 
@@ -507,7 +517,7 @@ export class LightNodeClient {
             .filter((id) => !this.peerMesh.connectedPeerIds.includes(id))
             .slice(0, 3);
           if (candidates.length > 0) {
-            this.log(`Bootstrap: dialing ${candidates.length} peer(s) from Railway's sample`);
+            this.log(`Bootstrap: dialing ${candidates.length} peer(s) from relay node's sample`);
           }
           for (const nodeId of candidates) {
             this.peerMesh.connectTo(nodeId).catch(() => {
@@ -609,11 +619,18 @@ export class LightNodeClient {
   // validator/Railway.
   private async requestRangeWaitingForPeer(fromHeight: number, toHeight: number, totalTimeoutMs: number): Promise<any[]> {
     const deadline = Date.now() + totalTimeoutMs;
+    if (this.peerMesh.connectedPeerIds.length === 0) {
+      this.log(`Searching for lightnode peer (up to ${Math.round(totalTimeoutMs / 1000)}s) to request #${fromHeight}–#${toHeight}…`);
+    }
     while (this.peerMesh.connectedPeerIds.length === 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 500));
     }
     const remaining = deadline - Date.now();
-    if (this.peerMesh.connectedPeerIds.length === 0 || remaining <= 0) return [];
+    if (this.peerMesh.connectedPeerIds.length === 0 || remaining <= 0) {
+      this.log(`No lightnode peer found after ${Math.round(totalTimeoutMs / 1000)}s — falling back to validator/relay node`, "warn");
+      return [];
+    }
+    this.log(`Peer found (${this.peerMesh.connectedPeerIds.length} connected) — requesting #${fromHeight}–#${toHeight}`);
     return this.peerMesh.requestRange(fromHeight, toHeight, remaining);
   }
 
@@ -678,7 +695,7 @@ export class LightNodeClient {
         // of the tree instead of every connected lightnode. We'll pick up
         // the rest via peer gossip on the next drift recheck once our
         // parent has it.
-        this.log(`Still ${latestHeight - this.state.currentHeight} block(s) behind — waiting for tier ${this.state.tier}'s parent to catch up (not hitting Railway/archive/validator directly)`);
+        this.log(`Still ${latestHeight - this.state.currentHeight} block(s) behind — waiting for tier ${this.state.tier}'s parent to catch up (not hitting relay node/archive/validator directly)`);
         return;
       }
       // Reached only if we're Leader/none-tier (this is our job), or we
@@ -1063,6 +1080,7 @@ export class LightNodeClient {
     this.stopPeerExchange();
     this.pexTimer = setInterval(() => {
       if (this.peerMesh.connectedPeerIds.length === 0) return; // nobody to ask, nothing to do
+      this.log(`PEX: asking ${this.peerMesh.connectedPeerIds.length} connected peer(s) who else they know`);
       this.peerMesh.requestPeerList();
       this.savePeerCacheSnapshot(); // periodic refresh even if no connect/disconnect event fired this cycle (e.g. knownPeers grew via gossip alone)
     }, PEER_EXCHANGE_INTERVAL_MS);
@@ -1109,8 +1127,12 @@ export class LightNodeClient {
       // One attempt per tick on purpose — avoids a burst of simultaneous
       // offers (and simultaneous relay traffic through the same voucher)
       // the moment a bunch of knownPeers entries show up at once.
+      this.log(`Mesh expansion: trying ${candidate.nodeId.slice(0, 8)}… ${candidate.viaPeerId ? `via ${candidate.viaPeerId.slice(0, 8)}…` : "directly"}`);
       this.peerMesh
         .connectTo(candidate.nodeId, hubUp ? undefined : candidate.viaPeerId)
+        .then(() => {
+          this.log(`Mesh expansion: offer sent to ${candidate.nodeId.slice(0, 8)}… — waiting for answer`);
+        })
         .catch(() => {
           this.log(`Mesh expansion: couldn't reach ${candidate.nodeId.slice(0, 8)}… via ${candidate.viaPeerId.slice(0, 8)}…`, "warn");
         });

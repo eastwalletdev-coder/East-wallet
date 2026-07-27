@@ -230,7 +230,33 @@ export class PeerMesh {
    *  Railway — see handleSignalRelay — so the answer/ICE going back use the
    *  same one-hop path. */
   async handleOffer(fromNodeId: string, sdp: string, viaPeerId?: string) {
-    if (!this.peers.has(fromNodeId) && this.peers.size >= MAX_MESH_PEERS) return; // at cap — decline, offerer falls back to Railway
+    const existing = this.peers.get(fromNodeId);
+    if (existing) {
+      // GLARE: we already have an entry for this peer, meaning WE also
+      // called connectTo() on them around the same time (mutual dial —
+      // both sides picked each other via bootstrap/PEX/tier assignment
+      // close enough in time that neither had heard back yet). Without
+      // this branch, we'd create a SECOND RTCPeerConnection right below
+      // and overwrite the map entry, orphaning the first pc (never
+      // closed — leaks) while its already-sent offer/ICE candidates end
+      // up aimed at a connection that no longer exists on our side. The
+      // channel then never opens on either end and the peer looks
+      // "connecting" forever.
+      //
+      // Resolve deterministically so exactly one attempt survives on
+      // BOTH sides: compare nodeIds. The lexicographically smaller one
+      // is "impolite" — it keeps its own outgoing offer in flight and
+      // ignores this incoming one. The other side is "polite" — it
+      // abandons its own half-open attempt and answers this offer
+      // instead. Both sides run the same comparison, so both always
+      // agree on who's who; no coordination message needed.
+      const weAreImpolite = this.selfNodeId < fromNodeId;
+      if (weAreImpolite) return; // ignore — they'll be polite and answer our offer instead
+      existing.connection.close();
+      this.peers.delete(fromNodeId);
+    } else if (this.peers.size >= MAX_MESH_PEERS) {
+      return; // at cap — decline, offerer falls back to Railway
+    }
     if (viaPeerId) this.relayViaPeer.set(fromNodeId, viaPeerId);
     const pc = this.createConnection(fromNodeId);
     pc.ondatachannel = (ev) => this.wireChannel(fromNodeId, ev.channel);

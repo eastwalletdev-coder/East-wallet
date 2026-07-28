@@ -142,6 +142,14 @@ function WalletPageContent() {
       });
       return;
     }
+    if (setupPassword.length < 8) {
+      toast({
+        variant: "destructive",
+        title: "Password Too Short",
+        description: "Use at least 8 characters.",
+      });
+      return;
+    }
     createWallet(setupPassword);
   };
 
@@ -164,7 +172,7 @@ function WalletPageContent() {
           <Sparkles className="absolute -top-1 -right-1 w-4 h-4 text-accent animate-pulse" />
         </div>
         <div className="space-y-1">
-          <p className="text-[10px] text-primary font-bold uppercase tracking-[0.3em]">Synchronizing Vaults</p>
+          <p className="text-[10px] text-primary font-bold uppercase tracking-[0.3em]">Synchronizing Wallet</p>
           <p className="text-[8px] text-muted-foreground uppercase font-medium">Accessing multi-chain registry...</p>
         </div>
       </div>
@@ -187,13 +195,13 @@ function WalletPageContent() {
           <div className="w-full max-w-[320px] space-y-8 animate-in slide-in-from-bottom-6 duration-500">
             <div className="space-y-2">
               <h2 className="text-3xl font-headline font-bold">Setup Security</h2>
-              <p className="text-xs text-muted-foreground leading-relaxed">This password will encrypt your local vault and authorize transactions on this device.</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">This password will encrypt your local wallet and authorize transactions on this device.</p>
             </div>
             <div className="space-y-4">
               <div className="space-y-3 text-left">
                 <Input 
                   type="password" 
-                  placeholder="Create Vault Password" 
+                  placeholder="Create Password" 
                   value={setupPassword}
                   onChange={(e) => setSetupPassword(e.target.value)}
                   className="h-14 bg-secondary/30 rounded-2xl border-white/5 px-6"
@@ -220,7 +228,7 @@ function WalletPageContent() {
         ) : (
           <>
             <div className="space-y-3">
-              <h1 className="text-4xl font-headline font-bold">No Vault Active</h1>
+              <h1 className="text-4xl font-headline font-bold">No Wallet Active</h1>
               <p className="text-sm text-muted-foreground max-w-[280px] mx-auto leading-relaxed">
                 Connect to the decentralized network by creating a new secure vault or importing your secret phrase.
               </p>
@@ -292,7 +300,7 @@ function WalletPageContent() {
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-center gap-1.5">
               <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-[0.2em]">Net Worth</p>
-              <Badge variant="outline" className="h-4 text-[7px] border-primary/20 text-primary px-1.5 font-bold uppercase">Private Vault</Badge>
+              <Badge variant="outline" className="h-4 text-[7px] border-primary/20 text-primary px-1.5 font-bold uppercase">Private Wallet</Badge>
             </div>
             <span className="text-[9px] font-mono text-muted-foreground opacity-60">
               {activeAccount?.address ? `${activeAccount.address.slice(0, 6)}...${activeAccount.address.slice(-4)}` : "0x..."}

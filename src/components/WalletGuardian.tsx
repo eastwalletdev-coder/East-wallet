@@ -17,7 +17,7 @@ export function WalletGuardian({ children }: { children: React.ReactNode }) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-4">
         <Loader2 className="w-8 h-8 text-primary animate-spin" />
-        <p className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Loading Vault...</p>
+        <p className="text-[10px] text-muted-foreground uppercase tracking-widest font-bold">Loading Wallet...</p>
       </div>
     );
   }
@@ -42,7 +42,7 @@ export function WalletGuardian({ children }: { children: React.ReactNode }) {
         <div className="w-20 h-20 rounded-[2rem] bg-primary/10 border border-primary/20 flex items-center justify-center mx-auto shadow-[0_0_40px_-5px_rgba(139,92,246,0.3)]">
           <Lock className="w-9 h-9 text-primary" />
         </div>
-        <h1 className="text-3xl font-headline font-bold">Vault Locked</h1>
+        <h1 className="text-3xl font-headline font-bold">Wallet Locked</h1>
         <p className="text-sm text-muted-foreground max-w-[260px] mx-auto leading-relaxed">
           Enter your password to unlock and access your wallet.
         </p>
@@ -51,7 +51,7 @@ export function WalletGuardian({ children }: { children: React.ReactNode }) {
       <div className="w-full max-w-[300px] space-y-4">
         <Input
           type="password"
-          placeholder="Vault Password"
+          placeholder="Password"
           value={password}
           onChange={(e) => { setPassword(e.target.value); setError(''); }}
           onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}
@@ -66,7 +66,7 @@ export function WalletGuardian({ children }: { children: React.ReactNode }) {
           disabled={!password || unlocking}
           className="w-full h-14 rounded-[2rem] bg-primary font-bold text-lg shadow-xl shadow-primary/20"
         >
-          {unlocking ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Unlock Vault'}
+          {unlocking ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Unlock Wallet'}
         </Button>
       </div>
 

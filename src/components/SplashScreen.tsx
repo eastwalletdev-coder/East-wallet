@@ -51,13 +51,13 @@ export function SplashScreen() {
         <div className="flex flex-col items-center text-center">
           <h1 className="text-5xl md:text-6xl font-bold tracking-tight uppercase flex items-center justify-center filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] relative">
             <div className="flex items-center relative z-10">
-              <span className="font-logo text-primary -mr-[0.1em]">E</span>
+              <span className="font-logo text-primary -mr-[0.03em]">E</span>
               <span className="font-logo mx-0.5 text-white text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
               <span className="font-logo text-primary">ST</span>
             </div>
             <div className="absolute inset-0 flex items-center justify-center mix-blend-screen pointer-events-none z-20">
                <div className="flex items-center animate-shimmer-shine bg-[linear-gradient(to_right,transparent_30%,white_50%,transparent_70%)] bg-[length:200%_auto] bg-clip-text text-transparent">
-                 <span className="font-logo -mr-[0.1em]">E</span>
+                 <span className="font-logo -mr-[0.03em]">E</span>
                  <span className="font-logo mx-0.5 text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
                  <span className="font-logo">ST</span>
                </div>

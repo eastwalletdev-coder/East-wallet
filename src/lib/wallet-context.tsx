@@ -12,13 +12,21 @@ import { toast } from '@/hooks/use-toast';
 
 // ── Crypto Helpers ────────────────────────────────────────────────────────────
 
-async function deriveKey(password: string, salt: BufferSource): Promise<CryptoKey> {
+// Iteration count isn't stored inside the encrypted blob (only salt + IV
+// are), so bumping it isn't just a one-line change — every vault already
+// created under the old count would stop decrypting. CURRENT is used for
+// all new encryptions; LEGACY is tried as a fallback on decrypt so existing
+// vaults keep working, and gets silently upgraded to CURRENT right after.
+const CURRENT_ITERATIONS = 600_000;
+const LEGACY_ITERATIONS = 100_000;
+
+async function deriveKey(password: string, salt: BufferSource, iterations: number): Promise<CryptoKey> {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey(
     'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
   );
   return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt, iterations, hash: 'SHA-256' },
     keyMaterial,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -29,7 +37,7 @@ async function deriveKey(password: string, salt: BufferSource): Promise<CryptoKe
 async function encryptMnemonic(mnemonic: string, password: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await deriveKey(password, salt);
+  const key = await deriveKey(password, salt, CURRENT_ITERATIONS);
   const enc = new TextEncoder();
   const ciphertext = await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv },
@@ -44,15 +52,33 @@ async function encryptMnemonic(mnemonic: string, password: string): Promise<stri
   return btoa(String.fromCharCode(...combined));
 }
 
-async function decryptMnemonic(encrypted: string, password: string): Promise<string> {
+async function decryptMnemonicWith(encrypted: string, password: string, iterations: number): Promise<string> {
   const combined = Uint8Array.from(atob(encrypted), c => c.charCodeAt(0));
   const salt = combined.slice(0, 16);
   const iv = combined.slice(16, 28);
   const ciphertext = combined.slice(28);
-  const key = await deriveKey(password, salt);
+  const key = await deriveKey(password, salt, iterations);
   const dec = new TextDecoder();
   const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
   return dec.decode(plain);
+}
+
+/**
+ * Decrypts a vault blob, trying the current (strong) iteration count first
+ * and falling back to the legacy count for vaults created before the PBKDF2
+ * bump. AES-GCM's auth tag makes this safe — a wrong key throws instead of
+ * silently returning garbage, so there's no ambiguity about which count is
+ * right. Returns whether the legacy path was used, so callers can silently
+ * re-encrypt (upgrade) the vault to the current iteration count right away.
+ */
+async function decryptMnemonic(encrypted: string, password: string): Promise<{ mnemonic: string; wasLegacy: boolean }> {
+  try {
+    const mnemonic = await decryptMnemonicWith(encrypted, password, CURRENT_ITERATIONS);
+    return { mnemonic, wasLegacy: false };
+  } catch {
+    const mnemonic = await decryptMnemonicWith(encrypted, password, LEGACY_ITERATIONS);
+    return { mnemonic, wasLegacy: true };
+  }
 }
 
 /**
@@ -66,7 +92,15 @@ async function decryptMnemonic(encrypted: string, password: string): Promise<str
 export async function decryptVaultMnemonic(password: string): Promise<string> {
   const encrypted = localStorage.getItem('east_vault');
   if (!encrypted) throw new Error('No local wallet vault found on this device.');
-  return decryptMnemonic(encrypted, password);
+  const { mnemonic, wasLegacy } = await decryptMnemonic(encrypted, password);
+  if (wasLegacy) {
+    try {
+      localStorage.setItem('east_vault', await encryptMnemonic(mnemonic, password));
+    } catch {
+      // Non-fatal — worst case it just re-upgrades on the next unlock/tx.
+    }
+  }
+  return mnemonic;
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -168,7 +202,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     try {
       const encrypted = localStorage.getItem('east_vault');
       if (!encrypted) return false;
-      const phrase = await decryptMnemonic(encrypted, password);
+      const { mnemonic: phrase, wasLegacy } = await decryptMnemonic(encrypted, password);
+      if (wasLegacy) {
+        try { localStorage.setItem('east_vault', await encryptMnemonic(phrase, password)); }
+        catch { /* non-fatal — retried on next unlock */ }
+      }
       setMnemonic(phrase);
       setIsLocked(false);
       await loadAccounts(phrase);

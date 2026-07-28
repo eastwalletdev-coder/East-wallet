@@ -158,7 +158,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
     setError(null);
     setLoading(true);
     try {
-      const unlockPassword = window.prompt('Enter your local vault password to sign the validator application:');
+      const unlockPassword = window.prompt('Enter your local wallet password to sign the validator application:');
       if (!unlockPassword) {
         setLoading(false);
         return;
@@ -178,7 +178,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
       }
     } catch {
       setLoading(false);
-      setError('Incorrect password or no local vault found on this device.');
+      setError('Incorrect password or no local wallet found on this device.');
     }
   };
 
@@ -220,7 +220,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
               </div>
               <p className="text-[10px] text-white/40 leading-relaxed px-1">
                 Your key is already registered as self-custody. To apply as a validator candidate,
-                you'll need to unlock the local vault on this device (vault password, not your Telegram password).
+                you'll need to unlock the local wallet on this device (local password, not your Telegram password).
               </p>
               <Button
                 className="w-full h-12 rounded-xl bg-primary text-white font-bold text-xs uppercase gap-2"
@@ -371,7 +371,7 @@ export function SelfCustodyMigrationSheet({ telegramId, initData, children }: Se
               ) : (
                 <>
                   <p className="text-[11px] text-white/60 px-1 leading-relaxed">
-                    This will ask for your local vault password to sign the validator candidate application.
+                    This will ask for your local wallet password to sign the validator candidate application.
                     The application goes in as <span className="font-mono text-white/80">pending_review</span> and
                     needs to be manually approved by an admin.
                   </p>

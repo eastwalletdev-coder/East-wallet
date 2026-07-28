@@ -76,7 +76,7 @@ export function ProducerPanel({ telegramId }: { telegramId: string }) {
           <>
             <Input
               type="password"
-              placeholder="Self-custody vault password"
+              placeholder="Self-custody password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="h-10 bg-secondary/30 rounded-xl text-[11px]"

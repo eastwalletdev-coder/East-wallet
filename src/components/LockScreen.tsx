@@ -50,14 +50,14 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
       </div>
       
       <div className="space-y-2 mb-8">
-        <h2 className="text-3xl font-headline font-bold tracking-tight text-foreground">Vault Locked</h2>
+        <h2 className="text-3xl font-headline font-bold tracking-tight text-foreground">Wallet Locked</h2>
         <p className="text-[10px] text-primary font-bold uppercase tracking-[0.4em] animate-pulse">Enter Password to Unlock</p>
       </div>
 
       <div className="w-full max-w-[300px] space-y-4">
         <Input 
           type="password"
-          placeholder="Vault Password"
+          placeholder="Password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleUnlock()}

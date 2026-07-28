@@ -50,6 +50,10 @@ export function SettingsSheet({ children }: SettingsSheetProps) {
       toast({ variant: "destructive", title: "Missing Fields", description: "Please enter mnemonic and password." });
       return;
     }
+    if (importPassword.length < 8) {
+      toast({ variant: "destructive", title: "Password Too Short", description: "Use at least 8 characters." });
+      return;
+    }
     const success = await importWallet(importText, importPassword);
     if (success) {
       setImportText("");
@@ -186,10 +190,10 @@ export function SettingsSheet({ children }: SettingsSheetProps) {
                       </div>
                     ) : revealConfirming ? (
                       <div className="space-y-3">
-                        <p className="text-[10px] text-muted-foreground text-center">Enter your vault password to reveal</p>
+                        <p className="text-[10px] text-muted-foreground text-center">Enter your password to reveal</p>
                         <Input
                           type="password"
-                          placeholder="Vault Password"
+                          placeholder="Password"
                           value={revealPassword}
                           onChange={(e) => { setRevealPassword(e.target.value); setRevealError(''); }}
                           className="h-11 bg-secondary/30 rounded-xl border-white/5"
@@ -234,13 +238,13 @@ export function SettingsSheet({ children }: SettingsSheetProps) {
                     />
                     <Input 
                       type="password"
-                      placeholder="New Vault Password"
+                      placeholder="New Password"
                       value={importPassword}
                       onChange={(e) => setImportPassword(e.target.value)}
                       className="h-12 bg-secondary/30 rounded-xl"
                     />
                     <Button className="w-full h-12 font-bold gap-2 rounded-xl bg-primary text-white" onClick={handleImportAction} disabled={!importText.trim() || !importPassword.trim()}>
-                      <Upload className="w-3.5 h-3.5" /> Restore Vault
+                      <Upload className="w-3.5 h-3.5" /> Restore Wallet
                     </Button>
                   </div>
                 </TabsContent>
@@ -261,7 +265,7 @@ export function SettingsSheet({ children }: SettingsSheetProps) {
                 }
               }}
             >
-              <LogOut className="w-4 h-4" /> Erase Local Vault
+              <LogOut className="w-4 h-4" /> Erase Local Wallet
             </Button>
           )}
 

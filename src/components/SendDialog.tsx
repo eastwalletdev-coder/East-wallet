@@ -10,7 +10,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useTelegram } from '@/hooks/use-telegram';
 import { sendEast } from '@/actions/mining-actions';
 import { type Token } from '@/lib/token-service';
-import { useWallet } from '@/lib/wallet-context';
+import { useWallet, decryptVaultMnemonic } from '@/lib/wallet-context';
 import { useRPC } from '@/lib/rpc-context';
 import { sendEvmTransaction, sendSolanaTransaction, estimateEvmFee, estimateSolanaFee, type FeeEstimate } from '@/lib/send-service';
 import { signEvmMessage } from '@/lib/wallet-service';
@@ -71,7 +71,7 @@ function CopyButton({ text, className = '' }: { text: string; className?: string
 export function SendDialog({ open, onOpenChange, startWithScanner = false, selectedToken }: SendDialogProps) {
   const { toast } = useToast();
   const { userId, initData, refreshUser } = useTelegram();
-  const { mnemonic, isLocked } = useWallet();
+  const { mnemonic } = useWallet();
   const { currentRPC } = useRPC();
   const [step, setStep] = useState<Step>('form');
   const [address, setAddress] = useState('');
@@ -82,6 +82,8 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
   const [feeEstimate, setFeeEstimate] = useState<FeeEstimate | null>(null);
   const [estimating, setEstimating] = useState(false);
   const [gasFeeEast, setGasFeeEast] = useState('0');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordError, setPasswordError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -92,6 +94,8 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
       setAmount('');
       setFeeEstimate(null);
       setGasFeeEast('0');
+      setConfirmPassword('');
+      setPasswordError(null);
     }
   }, [open, startWithScanner]);
 
@@ -155,9 +159,27 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
   };
 
   // Review step's "Approve" button — this is where the actual send happens.
+  // A correct password is required for every transaction, every time —
+  // it's re-verified against the local encrypted vault right here rather
+  // than trusting whatever unlock state is already cached in memory.
   const handleApprove = async () => {
-    const amt = parseFloat(amount);
+    if (!confirmPassword) {
+      setPasswordError('Enter your password to confirm this transaction.');
+      return;
+    }
     setSending(true);
+    setPasswordError(null);
+
+    let verifiedMnemonic: string;
+    try {
+      verifiedMnemonic = await decryptVaultMnemonic(confirmPassword);
+    } catch {
+      setPasswordError('Incorrect password.');
+      setSending(false);
+      return;
+    }
+
+    const amt = parseFloat(amount);
     try {
       if (isEastToken) {
         if (!userId) {
@@ -165,22 +187,16 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
           return;
         }
 
-        // If the user's self-custody EVM wallet is unlocked, sign the
-        // transfer with it too — see dual-mode-identity.ts's Path 2
-        // (secp256k1/EIP-191). Not required (Telegram initData alone is
-        // still sufficient), but this is what actually lets a signature
-        // reach the server instead of relying on Telegram every time —
-        // and it's the path that works if this dialog is ever opened
-        // outside Telegram (see src/app/browser/page.tsx). Purely
-        // additive: signing failure here just falls back to initData-only.
+        // Self-custody signature is now mandatory (password verified above),
+        // not just an optional add-on to Telegram initData.
         let signature: string | undefined;
-        if (!isLocked && mnemonic) {
-          try {
-            const payload = buildSendEastPayload(userId, address.trim(), amt);
-            signature = await signEvmMessage(mnemonic, payload);
-          } catch (err) {
-            console.error('[SendDialog] Self-custody signing failed (non-fatal, using Telegram auth):', err);
-          }
+        try {
+          const payload = buildSendEastPayload(userId, address.trim(), amt);
+          signature = await signEvmMessage(verifiedMnemonic, payload);
+        } catch (err) {
+          console.error('[SendDialog] Self-custody signing failed:', err);
+          toast({ variant: 'destructive', title: 'Signing failed', description: 'Could not sign this transaction. Please try again.' });
+          return;
         }
 
         const result = await sendEast(userId, address.trim(), amt, initData, signature, undefined, parseFloat(gasFeeEast) || 0);
@@ -205,11 +221,6 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
       }
 
       // ── Real multi-chain send (non-EAST) ──────────────────────────
-      if (isLocked || !mnemonic) {
-        toast({ variant: 'destructive', title: 'Wallet locked', description: 'Unlock your multi-chain wallet first.' });
-        setStep('form');
-        return;
-      }
       if (!currentRPC?.url) {
         toast({ variant: 'destructive', title: 'No RPC connected', description: 'Wait for a live RPC endpoint to connect, then try again.' });
         setStep('form');
@@ -218,11 +229,11 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
 
       const result = isSolanaChain
         ? await sendSolanaTransaction({
-            mnemonic, rpcUrl: currentRPC.url, toAddress: address.trim(), amount,
+            mnemonic: verifiedMnemonic, rpcUrl: currentRPC.url, toAddress: address.trim(), amount,
             mintAddress: selectedToken?.contractAddress, decimals: selectedToken?.decimals,
           })
         : await sendEvmTransaction({
-            mnemonic, rpcUrl: currentRPC.url, toAddress: address.trim(), amount,
+            mnemonic: verifiedMnemonic, rpcUrl: currentRPC.url, toAddress: address.trim(), amount,
             contractAddress: selectedToken?.contractAddress, decimals: selectedToken?.decimals,
           });
 
@@ -239,6 +250,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
       setStep('form');
     } finally {
       setSending(false);
+      setConfirmPassword('');
     }
   };
 
@@ -458,9 +470,23 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
               </span>
             </div>
 
+            <div className="space-y-1.5">
+              <Label className="text-[10px] uppercase font-black text-muted-foreground">Password Required</Label>
+              <Input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => { setConfirmPassword(e.target.value); setPasswordError(null); }}
+                onKeyDown={(e) => { if (e.key === 'Enter' && confirmPassword && !sending) handleApprove(); }}
+                placeholder="Enter your password to confirm"
+                className="h-12 rounded-xl bg-white/5 border-white/10 text-white"
+                autoFocus
+              />
+              {passwordError && <p className="text-destructive text-xs">{passwordError}</p>}
+            </div>
+
             <Button
               onClick={handleApprove}
-              disabled={sending}
+              disabled={sending || !confirmPassword}
               className="w-full h-12 rounded-2xl bg-primary font-black uppercase tracking-widest text-white"
             >
               {sending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
@@ -469,9 +495,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
 
             <div className="flex items-center justify-center gap-1.5 text-white/30 text-[11px] pt-1">
               <ShieldCheck className="w-3.5 h-3.5" />
-              {isEastToken && !isLocked && mnemonic
-                ? 'Secured by EASTCHAIN · self-custody signature + Telegram'
-                : 'Secured by EASTCHAIN'}
+              Password required for every transaction · Secured by EASTCHAIN
             </div>
           </div>
         )}
@@ -479,16 +503,16 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
         {step === 'result' && txHash && (
           <div className="py-6 space-y-4">
             <div className="flex flex-col items-center gap-2 text-center">
-              <CheckCircle2 className="w-10 h-10 text-green-500" />
+              <CheckCircle2 className="w-10 h-10 text-accent" />
               <p className="text-white font-bold">Transaction Sent</p>
               <p className="text-muted-foreground text-xs">{amount} {tokenLabel} to {truncate(address)}</p>
             </div>
-            <div className="p-3 rounded-xl bg-green-500/10 border border-green-500/20 space-y-2">
+            <div className="p-3 rounded-xl bg-accent/10 border border-accent/20 space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-[9px] uppercase font-bold text-green-400/70">Transaction Hash</span>
+                <span className="text-[9px] uppercase font-bold text-accent/70">Transaction Hash</span>
                 <CopyButton text={txHash} />
               </div>
-              <p className="font-mono text-[10px] text-green-400 break-all">{txHash}</p>
+              <p className="font-mono text-[10px] text-accent break-all">{txHash}</p>
             </div>
             <Button
               onClick={() => onOpenChange(false)}

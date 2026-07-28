@@ -392,7 +392,7 @@ export default function Home() {
             <div className="mt-4 space-y-1.5">
               <div className="flex justify-between text-[9px] font-black uppercase tracking-[0.15em]">
                 <span className="text-white/30">Node Participation</span>
-                <span className={isReadyToClaim ? "text-green-500" : isNodeActive ? "text-primary" : "text-white/30"}>
+                <span className={isReadyToClaim ? "text-white" : isNodeActive ? "text-primary" : "text-white/30"}>
                   {isReadyToClaim ? "Ready to Claim" :
                     isConnecting ? "Connecting Node..." :
                     isConnected ? `${nodeState?.verifiedHeaderCount ?? 0}/${MIN_VERIFIED_HEADERS} headers · ${nodeState?.participationSeconds ?? 0}/${MIN_PARTICIPATION_SECONDS}s` :

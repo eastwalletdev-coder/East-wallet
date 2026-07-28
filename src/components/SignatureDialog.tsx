@@ -42,7 +42,7 @@ function CopyChip({ text }: { text: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      className="text-white/30 hover:text-primary transition-colors shrink-0"
+      className="text-white/30 hover:text-white transition-colors shrink-0"
     >
       {copied ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
     </button>
@@ -105,7 +105,7 @@ export function SignatureDialog({
           <Button
             onClick={onConfirm}
             disabled={loading}
-            className="w-full h-12 rounded-2xl bg-primary hover:bg-primary/90 text-white font-black uppercase text-[10px] tracking-widest"
+            className="w-full h-12 rounded-2xl bg-white hover:bg-white/90 text-black font-black uppercase text-[10px] tracking-widest"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
             {loading ? 'Broadcasting...' : 'Approve'}

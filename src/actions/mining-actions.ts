@@ -18,6 +18,7 @@ import { buildSendEastPayload } from '@/lib/tx-payload-builders';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator, queueTransaction, getTransactionStatus } from '@/lib/block-engine';
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
+import { notifyHubBalanceChanged } from '@/lib/hub-notify';
 import { generateEastId } from '@/lib/east-id';
 import { stakeEastContract, requestUnstakeContract, claimUnstakeContract, claimMiningRewardContract, claimVestedContract } from '@/actions/contract-actions';
 import crypto from 'crypto';
@@ -351,6 +352,7 @@ export async function sendEast(
     );
     await identityClient.query('COMMIT');
     await invalidateCachedUser(senderTgId);
+    notifyHubBalanceChanged(sender.wallet_address, Number(sender.balance) - totalDebit);
 
     // queueTransaction (not submitTransaction) — writes the durable
     // ledger.mempool row only. Crediting the recipient / refunding the

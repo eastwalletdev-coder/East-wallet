@@ -60,7 +60,7 @@ function CopyButton({ text, className = '' }: { text: string; className?: string
       variant="outline"
       size="sm"
       onClick={handleCopy}
-      className={`h-7 px-2 gap-1 rounded-lg border-primary/30 text-primary text-[10px] font-bold uppercase hover:bg-primary/10 ${className}`}
+      className={`h-7 px-2 gap-1 rounded-lg border-white/30 text-white text-[10px] font-bold uppercase hover:bg-white/10 ${className}`}
     >
       {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
       {copied ? 'Copied' : 'Copy'}
@@ -263,11 +263,11 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button variant="outline" className="flex-1 h-11 rounded-xl bg-primary border-primary text-white font-bold text-[10px] uppercase hover:bg-primary/80 hover:text-white">
+        <Button variant="outline" className="flex-1 h-11 rounded-xl bg-white border-white text-black font-bold text-[10px] uppercase hover:bg-white/80 hover:text-black">
           <Send className="w-4 h-4 mr-2" /> Send
         </Button>
       </DialogTrigger>
-      <DialogContent className="bg-background border-primary/20 rounded-[2rem] max-w-[380px]">
+      <DialogContent className="bg-background border-white/20 rounded-[2rem] max-w-[380px]">
 
         {step === 'form' && (
           <>
@@ -284,7 +284,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-6 text-[9px] gap-1 text-primary font-bold uppercase"
+                    className="h-6 text-[9px] gap-1 text-white font-bold uppercase"
                     onClick={() => setScanMode(v => !v)}
                   >
                     <ScanLine className="w-3 h-3" />
@@ -302,14 +302,14 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                       }}
                       onError={(msg) => toast({ variant: 'destructive', title: 'Camera Error', description: msg })}
                     />
-                    <Button variant="ghost" size="sm" className="w-full text-[9px] text-primary" onClick={() => setScanMode(false)}>Enter manually instead</Button>
+                    <Button variant="ghost" size="sm" className="w-full text-[9px] text-white" onClick={() => setScanMode(false)}>Enter manually instead</Button>
                   </div>
                 ) : (
                   <Input
                     placeholder={isSolanaChain ? 'Solana address...' : '0x...'}
                     value={address}
                     onChange={e => setAddress(e.target.value)}
-                    className="bg-secondary/30 border-primary/10 font-mono text-sm rounded-xl h-12"
+                    className="bg-secondary/30 border-white/10 font-mono text-sm rounded-xl h-12"
                   />
                 )}
               </div>
@@ -321,7 +321,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                   placeholder="0.00"
                   value={amount}
                   onChange={e => setAmount(e.target.value)}
-                  className="bg-secondary/30 border-primary/10 font-mono text-sm rounded-xl h-12"
+                  className="bg-secondary/30 border-white/10 font-mono text-sm rounded-xl h-12"
                 />
                 {availableBalance && (
                   <div className="flex items-center justify-between px-1">
@@ -329,7 +329,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-5 text-[9px] text-primary font-bold uppercase px-1"
+                      className="h-5 text-[9px] text-white font-bold uppercase px-1"
                       onClick={() => setAmount(selectedToken?.balance || '')}
                     >
                       Max
@@ -357,8 +357,8 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                         onClick={() => setGasFeeEast(tier.value)}
                         className={`h-11 rounded-xl text-[10px] font-bold uppercase flex-col gap-0.5 ${
                           gasFeeEast === tier.value
-                            ? 'bg-primary/20 border-primary text-primary'
-                            : 'bg-secondary/30 border-primary/10 text-muted-foreground'
+                            ? 'bg-white/20 border-white text-white'
+                            : 'bg-secondary/30 border-white/10 text-muted-foreground'
                         }`}
                       >
                         <span>{tier.label}</span>
@@ -373,7 +373,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                     placeholder="Custom fee (EAST)"
                     value={gasFeeEast}
                     onChange={e => setGasFeeEast(e.target.value)}
-                    className="bg-secondary/30 border-primary/10 font-mono text-xs rounded-xl h-9"
+                    className="bg-secondary/30 border-white/10 font-mono text-xs rounded-xl h-9"
                   />
                 </div>
               )}
@@ -382,7 +382,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                 <div className={`rounded-xl border p-3 text-[10px] space-y-1 ${
                   feeEstimate?.success === false || (feeEstimate?.success && !feeEstimate.sufficientForFee)
                     ? 'bg-red-500/10 border-red-500/20 text-red-400'
-                    : 'bg-secondary/30 border-primary/10 text-muted-foreground'
+                    : 'bg-secondary/30 border-white/10 text-muted-foreground'
                 }`}>
                   {estimating ? (
                     <div className="flex items-center gap-2">
@@ -416,7 +416,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
                 !address || !amount || scanMode ||
                 (!isEastToken && (estimating || (feeEstimate?.success && !feeEstimate.sufficientForFee)))
               }
-              className="w-full h-12 rounded-2xl bg-primary font-black uppercase tracking-widest"
+              className="w-full h-12 rounded-2xl bg-white text-black font-black uppercase tracking-widest"
             >
               Review Transfer
             </Button>
@@ -487,7 +487,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
             <Button
               onClick={handleApprove}
               disabled={sending || !confirmPassword}
-              className="w-full h-12 rounded-2xl bg-primary font-black uppercase tracking-widest text-white"
+              className="w-full h-12 rounded-2xl bg-white font-black uppercase tracking-widest text-black"
             >
               {sending ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
               {sending ? 'Broadcasting...' : 'Approve'}
@@ -516,7 +516,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
             </div>
             <Button
               onClick={() => onOpenChange(false)}
-              className="w-full h-12 rounded-2xl bg-primary font-black uppercase tracking-widest"
+              className="w-full h-12 rounded-2xl bg-white text-black font-black uppercase tracking-widest"
             >
               Done
             </Button>

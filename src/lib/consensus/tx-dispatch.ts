@@ -24,6 +24,7 @@
  */
 import { identityPool } from '@/lib/db/identity';
 import { invalidateCachedUser } from '@/lib/db/redis';
+import { notifyHubBalanceChanged } from '@/lib/hub-notify';
 
 export interface MempoolRow {
   txHash: string;
@@ -47,19 +48,21 @@ export interface TxDispatchHandlers {
 const REGISTRY: Record<string, TxDispatchHandlers> = {
   TRANSFER: {
     commit: async (row) => {
-      await identityPool.query(
-        'UPDATE identity.users SET balance = balance + $1, updated_at = NOW() WHERE telegram_id = $2',
+      const res = await identityPool.query(
+        'UPDATE identity.users SET balance = balance + $1, updated_at = NOW() WHERE telegram_id = $2 RETURNING balance',
         [row.amount, row.recipientId]
       );
       await invalidateCachedUser(row.recipientId);
+      if (res.rows.length) notifyHubBalanceChanged(row.recipientAddress, res.rows[0].balance);
     },
     rollback: async (row) => {
       const totalDebit = row.amount + row.gasFee;
-      await identityPool.query(
-        'UPDATE identity.users SET balance = balance + $1, updated_at = NOW() WHERE telegram_id = $2',
+      const res = await identityPool.query(
+        'UPDATE identity.users SET balance = balance + $1, updated_at = NOW() WHERE telegram_id = $2 RETURNING balance',
         [totalDebit, row.senderId]
       );
       await invalidateCachedUser(row.senderId);
+      if (res.rows.length) notifyHubBalanceChanged(row.senderAddress, res.rows[0].balance);
       console.error(`[EASTCHAIN] TRANSFER rollback: refunded ${totalDebit} EAST to ${row.senderId} (tx ${row.txHash} failed to seal)`);
     },
   },

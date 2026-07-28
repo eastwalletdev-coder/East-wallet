@@ -184,7 +184,7 @@ export default function EastpassPage() {
 
           {/* Coin logo bottom left */}
           <div className="mt-4 flex items-center gap-2">
-            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-primary to-purple-800 border border-primary/40 flex items-center justify-center">
+            <div className="w-7 h-7 rounded-full bg-gradient-to-br from-primary to-indigo-900 border border-primary/40 flex items-center justify-center">
               <span className="text-white font-black text-[10px]">E</span>
             </div>
             <span className="text-white/20 text-[9px] font-bold uppercase tracking-widest">EAST Protocol</span>

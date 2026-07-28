@@ -59,7 +59,7 @@ export default function ProfilePage() {
               {user?.username?.[0]?.toUpperCase() || 'U'}
             </AvatarFallback>
           </Avatar>
-          <div className="absolute -bottom-1 -right-1 bg-purple-600 p-1.5 rounded-full border-2 border-background">
+          <div className="absolute -bottom-1 -right-1 bg-indigo-700 p-1.5 rounded-full border-2 border-background">
             <Award className="w-3 h-3 text-white" />
           </div>
         </div>

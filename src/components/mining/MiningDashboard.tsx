@@ -228,7 +228,7 @@ export function MiningDashboard() {
               >
                 <div className="flex items-center space-x-3">
                   {isConnecting ? <Radio className="w-5 h-5 animate-pulse" /> : isConnected ? <Activity className="w-5 h-5 animate-pulse" /> : <Zap className="w-5 h-5 fill-white" />}
-                  <span>{isNetworkHalted ? "Network Locked" : isConnecting ? "Connecting Node..." : isConnected ? "Node Active — Verifying..." : "Initiate Mining Cycle"}</span>
+                  <span>{isNetworkHalted ? "Network Locked" : isConnecting ? "Connecting Node..." : isConnected ? "Node Active — Verifying..." : "Synchronize Node"}</span>
                 </div>
               </Button>
             )}

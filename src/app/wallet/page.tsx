@@ -32,7 +32,7 @@ import { DashboardChart } from "@/components/DashboardChart";
 import { SendDialog } from "@/components/SendDialog";
 import { ReceiveDialog } from "@/components/ReceiveDialog";
 import { scanTokensForAddress, type Token } from "@/lib/token-service";
-import { getRecentTransactions, type Transaction } from "@/lib/transaction-service";
+import { getEastTransactions, type Transaction } from "@/lib/transaction-service";
 import { AIScout } from "@/components/AIScout";
 import { ContractAnalyzer } from "@/components/ContractAnalyzer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -95,7 +95,7 @@ function WalletPageContent() {
   useEffect(() => {
     if (mnemonic && activeAccount?.address) {
       performAutoDetection();
-      getRecentTransactions().then(data => {
+      getEastTransactions(activeAccount.address).then(data => {
         setTransactions(data);
       });
     }

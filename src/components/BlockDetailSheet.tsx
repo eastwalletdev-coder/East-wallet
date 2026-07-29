@@ -159,7 +159,7 @@ export function BlockDetailSheet({ blockIndex, onClose }: BlockDetailSheetProps)
                             </div>
                           </div>
                           <span className="text-[10px] font-bold text-primary">
-                            {tx.amount > 0 ? `+${Number(tx.amount).toLocaleString()} EAST` : '—'}
+                            {tx.amount > 0 ? `+${Number(tx.amount).toLocaleString(undefined, { maximumFractionDigits: 8 })} EAST` : '—'}
                           </span>
                         </div>
 

@@ -19,6 +19,9 @@ export interface HelloMessage {
   role: Role;
   nodeId: string;
   chainId: number; // always EAST_CHAIN_ID — see registry.ts
+  // Opt-in only — see setFullNodeEnabled() in client.ts and the matching
+  // doc comment on the hub's HelloMessage.nodeType.
+  nodeType?: "light" | "full";
 }
 
 export interface WelcomeMessage {
@@ -95,11 +98,17 @@ export interface FullSyncResponseMessage { type: "full_sync_response"; fromNodeI
 export interface BootstrapPeersMessage { type: "bootstrap_peers"; nodeIds: string[]; }
 export interface BootstrapRequestMessage { type: "bootstrap_request"; }
 
+// ── Full Lightnode balance replica — see server.ts's matching types ────
+export interface BalanceUpdateMessage { type: "balance:update"; address: string; balance: string; }
+export interface RpcBalanceRequestMessage { type: "rpc_balance_request"; requestId: string; address: string; }
+export interface RpcBalanceResponseMessage { type: "rpc_balance_response"; requestId: string; address: string; balance: string | null; }
+
 export type InboundMessage =
   | WelcomeMessage | BlockNewMessage | BlockBackfillMessage | PongMessage | ErrorMessage
   | TierAssignMessage
   | FullSyncProvidersMessage | FullSyncResponseMessage
   | WebrtcOfferMessage | WebrtcAnswerMessage | IceCandidateMessage
-  | BootstrapPeersMessage;
+  | BootstrapPeersMessage
+  | BalanceUpdateMessage | RpcBalanceRequestMessage;
 
 export { EAST_CHAIN_ID };

@@ -116,6 +116,8 @@ export function LightNodePanel() {
       <div className="grid grid-cols-2 gap-2">
         <Stat label="Session ID" value={state.nodeId.slice(0, 13) + "…"} mono />
         <Stat label="Latency" value={state.latencyMs != null ? `${state.latencyMs} ms` : "—"} />
+        <Stat label="P2P Network" value={`${state.connectedPeerIds.length} peer${state.connectedPeerIds.length === 1 ? "" : "s"}`} />
+        <Stat label="TURN Mode" value={`${state.turnPeerCount} peer${state.turnPeerCount === 1 ? "" : "s"}`} />
         <Stat
           label="Current Height"
           value={state.currentHeight >= 0 ? `#${state.currentHeight}` : "—"}

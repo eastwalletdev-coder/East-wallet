@@ -10,6 +10,10 @@ import { useToast } from "@/hooks/use-toast";
 import { getValidators, getChainState } from "@/actions/mining-actions";
 import { voteValidatorContract, getMyValidatorVote, proposeContractFunctionAction, voteOnContractProposalAction, listContractProposalsAction } from "@/actions/contract-actions";
 import { SignatureDialog } from "@/components/SignatureDialog";
+import { FullNodeConsentDialog } from "@/components/FullNodeConsentDialog";
+import { Switch } from "@/components/ui/switch";
+import { getLightNodeClient } from "@/lib/lightnode/client";
+import { checkFullNodeAgreement, agreeToFullNodeTerms, setFullNodeActiveStatus } from "@/actions/full-node-actions";
 
 // Mirrors CONTRACTS in lib/contracts/registry.ts — duplicated here (not
 // imported) because registry.ts pulls in the 'pg' driver, which must never
@@ -53,6 +57,11 @@ export default function ValidatorPage() {
   const [govSigOpen, setGovSigOpen] = useState(false);
   const [govLoading, setGovLoading] = useState(false);
 
+  // ── Full Lightnode opt-in ──
+  const [fullNodeOn, setFullNodeOn] = useState(false);
+  const [showFullNodeConsent, setShowFullNodeConsent] = useState(false);
+  const [fullNodeLoading, setFullNodeLoading] = useState(false);
+
   const fetchData = async () => {
     try {
       const [vList, chain] = await Promise.all([getValidators(), getChainState()]);
@@ -74,6 +83,7 @@ export default function ValidatorPage() {
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 15_000);
+    setFullNodeOn(getLightNodeClient().isFullNodeEnabled());
     return () => clearInterval(interval);
   }, [userId]);
 
@@ -163,6 +173,49 @@ export default function ValidatorPage() {
       setGovLoading(false);
       setGovSigOpen(false);
       setGovAction(null);
+    }
+  };
+
+  // ── Full Lightnode toggle ──
+  const handleFullNodeToggle = async (wantOn: boolean) => {
+    if (!userId) return;
+    const client = getLightNodeClient();
+
+    if (!wantOn) {
+      client.setFullNodeEnabled(false);
+      setFullNodeOn(false);
+      setFullNodeActiveStatus(userId, false, initData).catch(() => {});
+      return;
+    }
+
+    const res = await checkFullNodeAgreement(userId, initData);
+    if (res.success && res.agreed) {
+      client.setFullNodeEnabled(true);
+      setFullNodeOn(true);
+      setFullNodeActiveStatus(userId, true, initData).catch(() => {});
+    } else {
+      setShowFullNodeConsent(true);
+    }
+  };
+
+  const confirmFullNodeAgreement = async () => {
+    if (!userId) return;
+    setFullNodeLoading(true);
+    try {
+      const client = getLightNodeClient();
+      const res = await agreeToFullNodeTerms(userId, client.getState().nodeId || userId, initData);
+      if (res.success) {
+        client.setFullNodeEnabled(true);
+        setFullNodeOn(true);
+        toast({ title: "Full Lightnode Enabled", description: "Your device is now maintaining a balance ledger replica." });
+      } else {
+        toast({ variant: "destructive", title: "Could Not Register", description: res.error });
+      }
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Error", description: err?.message || "Request failed" });
+    } finally {
+      setFullNodeLoading(false);
+      setShowFullNodeConsent(false);
     }
   };
 
@@ -265,6 +318,30 @@ export default function ValidatorPage() {
                 </p>
               )}
             </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Full Lightnode opt-in — see FullNodeConsentDialog.tsx for the
+          terms. Registration + agreement is recorded server-side; no
+          slashing/violation-detection logic exists yet, deliberately
+          deferred. */}
+      <Card className="bg-card/40 border-border/30">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-white text-sm font-bold">Full Lightnode</p>
+              <p className="text-white/40 text-[10px] mt-0.5">
+                Maintain a local balance ledger replica on this device to help answer other users'
+                RPC balance queries faster.
+              </p>
+            </div>
+            <Switch checked={fullNodeOn} onCheckedChange={handleFullNodeToggle} />
+          </div>
+          {fullNodeOn && (
+            <p className="text-amber-400 text-[9px] mt-2">
+              ⚠ Do not clear this browser's/Telegram's data while registered — see the agreement you accepted.
+            </p>
           )}
         </CardContent>
       </Card>
@@ -413,6 +490,13 @@ export default function ValidatorPage() {
         gasFee={0}
         onConfirm={confirmGovAction}
         loading={govLoading}
+      />
+
+      <FullNodeConsentDialog
+        open={showFullNodeConsent}
+        onOpenChange={setShowFullNodeConsent}
+        onConfirm={confirmFullNodeAgreement}
+        loading={fullNodeLoading}
       />
     </div>
   );

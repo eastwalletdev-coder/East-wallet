@@ -861,6 +861,78 @@ export async function migrateIdentityV14() {
 }
 
 /**
+ * Full Lightnode ("balance replica") opt-in — a durable, server-side
+ * record that a user (a) agreed to the terms shown in FullNodeConsentDialog
+ * before enabling it, and (b) is currently registered as one. Deliberately
+ * NOT tied to browser storage: the whole point of the agreement is
+ * "your ledger replica lives in browser/Telegram storage, don't clear it" —
+ * recording the AGREEMENT itself in local storage would be circular (the
+ * exact data-loss event the terms warn about would also erase proof the
+ * user ever agreed). is_active flips false on disable/disconnect, not
+ * deleted — agreed_at should stay as a permanent record either way.
+ *
+ * No slashing/violation-detection logic lives here yet — this migration
+ * and these helpers only establish the registration + consent record that
+ * a future detection scheme would need to check against. See the caller
+ * for the current, deliberately-deferred scope.
+ */
+export async function migrateFullNodeSchema() {
+  const client = await identityPool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.full_node_agreements (
+        telegram_id  VARCHAR(50) PRIMARY KEY,
+        node_id      VARCHAR(100),
+        agreed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        is_active    BOOLEAN NOT NULL DEFAULT TRUE,
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    console.log('[EASTCHAIN] Full node schema migration completed (identity.full_node_agreements)');
+  } catch (err) {
+    console.error('[EASTCHAIN] Full node schema migration error (non-fatal):', err);
+  } finally {
+    client.release();
+  }
+}
+
+export async function hasAgreedToFullNodeTerms(telegramId: string): Promise<boolean> {
+  const client = await identityPool.connect();
+  try {
+    const res = await client.query('SELECT 1 FROM identity.full_node_agreements WHERE telegram_id = $1', [telegramId]);
+    return res.rows.length > 0;
+  } finally {
+    client.release();
+  }
+}
+
+export async function recordFullNodeAgreement(telegramId: string, nodeId: string): Promise<void> {
+  const client = await identityPool.connect();
+  try {
+    await client.query(
+      `INSERT INTO identity.full_node_agreements (telegram_id, node_id, is_active)
+       VALUES ($1, $2, TRUE)
+       ON CONFLICT (telegram_id) DO UPDATE SET node_id = $2, is_active = TRUE, updated_at = NOW()`,
+      [telegramId, nodeId]
+    );
+  } finally {
+    client.release();
+  }
+}
+
+export async function setFullNodeActive(telegramId: string, isActive: boolean): Promise<void> {
+  const client = await identityPool.connect();
+  try {
+    await client.query(
+      'UPDATE identity.full_node_agreements SET is_active = $1, updated_at = NOW() WHERE telegram_id = $2',
+      [isActive, telegramId]
+    );
+  } finally {
+    client.release();
+  }
+}
+
+/**
  * Claim message builders live in src/lib/east-claim-messages.ts — a plain
  * isomorphic module importable from client components too (needed so the
  * browser can sign the exact same string this server verifies against).

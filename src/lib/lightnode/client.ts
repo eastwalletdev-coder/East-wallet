@@ -103,6 +103,7 @@ export interface LightNodeState {
   tier: NodeTier;                 // our position in Railway's Leader/Guardian/Broadcaster/Vision hierarchy
   parentNodeId: string | null;    // the ONE peer we dial to receive gossip (null for leader/none — see runCatchUp)
   connectedPeerIds: string[];     // peers we currently have an OPEN DataChannel with
+  turnPeerCount: number;          // of those, how many are relayed via TURN rather than a direct/STUN path — see webrtc-peer.ts's detectRelayUsage()
 }
 
 function loadState(): LightNodeState {
@@ -120,6 +121,7 @@ function loadState(): LightNodeState {
       tier: "none",
       parentNodeId: null,
       connectedPeerIds: [],
+      turnPeerCount: 0,
     };
   } catch {
     return freshState();
@@ -145,6 +147,7 @@ function freshState(): LightNodeState {
     tier: "none",
     parentNodeId: null,
     connectedPeerIds: [],
+    turnPeerCount: 0,
   };
 }
 
@@ -271,6 +274,12 @@ export class LightNodeClient {
   private pendingFullSyncRequest: { fromNodeId: string; resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> } | null = null;
   private syncRequestWatchdog: ReturnType<typeof setTimeout> | null = null;
   private turnRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  // Opt-in only — see HelloMessage.nodeType's doc comment in the hub's
+  // types.ts for why this is separate from hasFullLedger. Off by default:
+  // maintaining a balance replica costs memory/bandwidth a user should
+  // choose to spend, not something switched on silently.
+  private fullNodeEnabled = false;
+  private balanceReplica = new Map<string, string>(); // lowercased address -> decimal-string balance
 
   constructor(url: string) {
     this.url = url;
@@ -295,7 +304,7 @@ export class LightNodeClient {
       },
       onPeerConnected: (peerNodeId) => {
         this.log(`Peer mesh: connected to ${peerNodeId.slice(0, 8)}…`);
-        this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
+        this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds, turnPeerCount: this.peerMesh.turnPeerCount });
         this.savePeerCacheSnapshot();
         // Without this, a freshly-dialed parent (e.g. right after a
         // tier:assign) only helps once it happens to broadcast its NEXT
@@ -309,7 +318,7 @@ export class LightNodeClient {
       },
       onPeerDisconnected: (peerNodeId) => {
         this.log(`Peer mesh: disconnected from ${peerNodeId.slice(0, 8)}…`);
-        this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds });
+        this.set({ connectedPeerIds: this.peerMesh.connectedPeerIds, turnPeerCount: this.peerMesh.turnPeerCount });
       },
       onPeerReconnecting: (peerNodeId) => {
         // IP changed (WiFi<->cellular, NAT rebind) or a transient network
@@ -417,7 +426,7 @@ export class LightNodeClient {
       this.set({ connectionStatus: "connected" });
       this.log("Connected");
       this.reconnectDelayMs = RECONNECT_BASE_MS; // hub is up — forget any backoff from earlier failed attempts
-      ws.send(JSON.stringify({ type: "hello", role: "light-node", nodeId: this.state.nodeId, chainId: EAST_CHAIN_ID }));
+      ws.send(JSON.stringify({ type: "hello", role: "light-node", nodeId: this.state.nodeId, chainId: EAST_CHAIN_ID, nodeType: this.fullNodeEnabled ? "full" : "light" }));
       this.startHeartbeat();
       this.startParticipationClock();
       this.startRelayStats();
@@ -533,6 +542,28 @@ export class LightNodeClient {
               this.log(`Bootstrap: couldn't reach ${nodeId.slice(0, 8)}…`, "warn");
             });
           }
+          break;
+        }
+
+        // Only meaningful once fullNodeEnabled is on, but harmless either
+        // way — a "light" node just discards these instead of subscribing
+        // to them (Railway only broadcasts balance:update to fullLightNodes
+        // in the first place, so a plain light node never receives this).
+        case "balance:update": {
+          if (!this.fullNodeEnabled) break;
+          this.balanceReplica.set(msg.address.toLowerCase(), msg.balance);
+          break;
+        }
+
+        // Railway asking THIS node (picked by score) to answer a balance
+        // query on behalf of /api/rpc. Only "full" nodes ever receive
+        // this — Railway's requestBalanceFromFullNode() only ever targets
+        // fullLightNodes — but the fullNodeEnabled guard stays here too as
+        // defense in depth against a stale/racing toggle.
+        case "rpc_balance_request": {
+          if (!this.fullNodeEnabled || this.ws?.readyState !== WebSocket.OPEN) break;
+          const balance = this.balanceReplica.get(msg.address.toLowerCase()) ?? null;
+          this.ws.send(JSON.stringify({ type: "rpc_balance_response", requestId: msg.requestId, address: msg.address, balance }));
           break;
         }
 
@@ -1219,6 +1250,24 @@ export class LightNodeClient {
       // Only log the "fell behind" case, not every tick before enoughTime.
       this.log(`Fell behind tip (#${this.state.currentHeight} of #${this.state.networkTipHeight}) — claim locked until caught up`);
     }
+  }
+
+  // Opt-in toggle for the balance-replica ("Full Lightnode") mode — see
+  // the fullNodeEnabled field's doc comment. Reconnects if already
+  // connected so the new nodeType takes effect immediately via a fresh
+  // hello, rather than silently waiting for the next natural reconnect.
+  setFullNodeEnabled(enabled: boolean) {
+    if (this.fullNodeEnabled === enabled) return;
+    this.fullNodeEnabled = enabled;
+    if (!enabled) this.balanceReplica.clear(); // opting out — stop pretending to have a replica
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.manualDisconnect = false; // this is a reconfigure, not a user-initiated disconnect — should auto-reconnect
+      this.ws.close();
+    }
+  }
+
+  isFullNodeEnabled(): boolean {
+    return this.fullNodeEnabled;
   }
 
   // Call this right after a successful claim so the UI/state reflects it.

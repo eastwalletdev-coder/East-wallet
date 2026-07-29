@@ -263,7 +263,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
-        <Button variant="outline" className="flex-1 h-11 rounded-xl bg-white border-white text-black font-bold text-[10px] uppercase hover:bg-white/80 hover:text-black">
+        <Button variant="outline" className="flex-1 h-11 rounded-xl bg-primary border-primary text-white font-bold text-[10px] uppercase hover:bg-primary/80 hover:text-white">
           <Send className="w-4 h-4 mr-2" /> Send
         </Button>
       </DialogTrigger>
@@ -503,16 +503,16 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
         {step === 'result' && txHash && (
           <div className="py-6 space-y-4">
             <div className="flex flex-col items-center gap-2 text-center">
-              <CheckCircle2 className="w-10 h-10 text-accent" />
+              <CheckCircle2 className="w-10 h-10 text-white" />
               <p className="text-white font-bold">Transaction Sent</p>
               <p className="text-muted-foreground text-xs">{amount} {tokenLabel} to {truncate(address)}</p>
             </div>
-            <div className="p-3 rounded-xl bg-accent/10 border border-accent/20 space-y-2">
+            <div className="p-3 rounded-xl bg-white/10 border border-white/20 space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-[9px] uppercase font-bold text-accent/70">Transaction Hash</span>
+                <span className="text-[9px] uppercase font-bold text-white/70">Transaction Hash</span>
                 <CopyButton text={txHash} />
               </div>
-              <p className="font-mono text-[10px] text-accent break-all">{txHash}</p>
+              <p className="font-mono text-[10px] text-white break-all">{txHash}</p>
             </div>
             <Button
               onClick={() => onOpenChange(false)}

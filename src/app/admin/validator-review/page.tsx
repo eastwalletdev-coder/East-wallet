@@ -192,6 +192,7 @@ export default function ValidatorReviewPage() {
     { path: '/api/admin/migrate-evm-self-custody', label: 'EVM Self-Custody Columns (v13) — wallet_type/evm_public_key' },
     { path: '/api/admin/migrate-unstake-delay', label: 'Unstake Claim Delay Columns (v14) — pending_unstake_amount/claimable_at' },
     { path: '/api/admin/migrate-governance-schema', label: 'Contract Governance Schema — proposals/votes/approved_functions' },
+    { path: '/api/admin/migrate-full-node-schema', label: 'Full Node Agreements Schema — full_node_agreements' },
   ];
 
   const runMigration = async (path: string) => {

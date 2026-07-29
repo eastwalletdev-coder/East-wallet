@@ -113,7 +113,7 @@ export function AuditTrailSheet({ telegramId, initData, isFounder }: AuditTrailS
                   <div key={i} className="bg-white/[0.03] border border-white/[0.06] rounded-lg p-2.5 flex justify-between items-center">
                     <div>
                       <p className="text-[11px] font-bold text-white">
-                        +{Number(entry.amount).toLocaleString()} <span className="text-primary">{entry.bucket}</span>
+                        +{Number(entry.amount).toLocaleString(undefined, { maximumFractionDigits: 9 })} <span className="text-primary">{entry.bucket}</span>
                       </p>
                       <p className="text-[9px] text-white/30">
                         {entry.reason} · by {entry.triggered_by}

@@ -65,7 +65,7 @@ export async function getPendingEastTransactions(address: string): Promise<Pendi
       return {
         txHash: tx.tx_hash,
         type: isSender ? 'send' as const : 'receive' as const,
-        amount: `${isSender ? '-' : '+'}${Number(tx.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}`,
+        amount: `${isSender ? '-' : '+'}${Number(tx.amount).toLocaleString(undefined, { maximumFractionDigits: 9 })}`,
         gasFee: Number(tx.gas_fee),
         address: isSender ? tx.recipient_address : tx.sender_address,
         submittedAt: new Date(tx.submitted_at).toLocaleString('en-US', {
@@ -110,7 +110,7 @@ export async function getEastTransactions(address: string, limit: number = 8): P
         txHash: tx.tx_hash,
         type,
         token: 'EAST',
-        amount: `${isSender && !isStake ? '-' : '+'}${Number(tx.amount).toLocaleString(undefined, { maximumFractionDigits: 4 })}`,
+        amount: `${isSender && !isStake ? '-' : '+'}${Number(tx.amount).toLocaleString(undefined, { maximumFractionDigits: 9 })}`,
         status: (tx.status as Transaction['status']) || 'confirmed',
         date: new Date(tx.created_at).toLocaleString('en-US', {
           month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',

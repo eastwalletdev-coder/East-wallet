@@ -104,6 +104,11 @@ export interface PeerMeshCallbacks {
 interface Peer {
   connection: RTCPeerConnection;
   channel: RTCDataChannel | null;
+  // Whether the active candidate pair for this connection is relayed via a
+  // TURN server (as opposed to a direct/STUN-reflexive path). null until
+  // detectRelayUsage() resolves shortly after the DataChannel opens — see
+  // wireChannel()'s onopen handler. Only meaningful once true/false.
+  usingTurn: boolean | null;
 }
 
 interface PendingRangeRequest {
@@ -182,6 +187,16 @@ export class PeerMesh {
       .map(([id]) => id);
   }
 
+  /** How many currently-connected peers are relaying through a TURN server
+   *  rather than connected directly (STUN/host candidates). Peers whose
+   *  candidate-pair check hasn't resolved yet (usingTurn still null) are
+   *  not counted either way — see detectRelayUsage(). */
+  get turnPeerCount(): number {
+    return [...this.peers.entries()]
+      .filter(([, p]) => p.channel?.readyState === "open" && p.usingTurn === true)
+      .length;
+  }
+
   /** Everyone we've learned about via Peer Exchange, whether or not we're
    *  directly connected to them ourselves — see the knownPeers field comment. */
   get knownPeerIds(): string[] {
@@ -241,7 +256,7 @@ export class PeerMesh {
     const pc = this.createConnection(peerNodeId);
     const channel = pc.createDataChannel(DATACHANNEL_LABEL);
     this.wireChannel(peerNodeId, channel);
-    this.peers.set(peerNodeId, { connection: pc, channel });
+    this.peers.set(peerNodeId, { connection: pc, channel, usingTurn: null });
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -298,7 +313,7 @@ export class PeerMesh {
     if (viaPeerId) this.relayViaPeer.set(fromNodeId, viaPeerId);
     const pc = this.createConnection(fromNodeId);
     pc.ondatachannel = (ev) => this.wireChannel(fromNodeId, ev.channel);
-    this.peers.set(fromNodeId, { connection: pc, channel: null });
+    this.peers.set(fromNodeId, { connection: pc, channel: null, usingTurn: null });
 
     await pc.setRemoteDescription({ type: "offer", sdp });
     const answer = await pc.createAnswer();
@@ -560,13 +575,54 @@ export class PeerMesh {
     }
   }
 
+  // Inspects the connection's active candidate pair via getStats() to work
+  // out whether this peer's traffic is flowing through a TURN relay rather
+  // than a direct/STUN path. Run once right after the DataChannel opens —
+  // the selected pair doesn't change mid-session under normal operation,
+  // so a single check here is enough (an ICE restart re-triggers wireChannel
+  // via a fresh onopen, which re-runs this anyway).
+  private async detectRelayUsage(peerNodeId: string) {
+    const peer = this.peers.get(peerNodeId);
+    if (!peer) return;
+    try {
+      const stats = await peer.connection.getStats();
+      let usingTurn = false;
+      const candidates = new Map<string, any>();
+      let selectedPairId: string | null = null;
+      stats.forEach((report: any) => {
+        if (report.type === "local-candidate" || report.type === "remote-candidate") {
+          candidates.set(report.id, report);
+        } else if (report.type === "candidate-pair" && (report.state === "succeeded" || report.selected)) {
+          // Prefer the explicitly selected pair; if several "succeeded"
+          // pairs show up, the last one wins — in practice there's only one.
+          selectedPairId = report.id;
+          const local = candidates.get(report.localCandidateId);
+          const remote = candidates.get(report.remoteCandidateId);
+          if (local?.candidateType === "relay" || remote?.candidateType === "relay") {
+            usingTurn = true;
+          }
+        }
+      });
+      if (selectedPairId === null) return; // stats not ready yet — leave usingTurn as null rather than guess
+      peer.usingTurn = usingTurn;
+    } catch {
+      // getStats() failing shouldn't take down the connection — just leave
+      // usingTurn as null (not counted as TURN, not counted as direct).
+    }
+  }
+
   private wireChannel(peerNodeId: string, channel: RTCDataChannel) {
     const peer = this.peers.get(peerNodeId);
     if (peer) peer.channel = channel;
 
-    channel.onopen = () => {
+    channel.onopen = async () => {
       this.knownPeers.delete(peerNodeId); // now directly connected — no longer just a hint
       this.relayViaPeer.delete(peerNodeId); // direct path exists now, stop routing signals for it through a relay
+      // Awaited so turnPeerCount is already accurate by the time
+      // onPeerConnected fires and the panel re-reads peer counts —
+      // otherwise the UI would briefly show this peer as "not TURN"
+      // before the async getStats() check resolves a moment later.
+      await this.detectRelayUsage(peerNodeId);
       this.callbacks.onPeerConnected?.(peerNodeId);
     };
     channel.onclose = () => this.callbacks.onPeerDisconnected?.(peerNodeId);

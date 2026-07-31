@@ -28,6 +28,7 @@ type AuthState = 'checking' | 'signed_out' | 'signed_in' | 'forbidden';
 export default function ValidatorReviewPage() {
   const [candidates, setCandidates] = useState<ValidatorCandidate[]>([]);
   const [loading, setLoading] = useState(false);
+  const [suspiciousResets, setSuspiciousResets] = useState<any[]>([]);
   const [filter, setFilter] = useState<'pending_review' | 'all'>('pending_review');
   const [authState, setAuthState] = useState<AuthState>('checking');
   const [reviewingId, setReviewingId] = useState<string | null>(null);
@@ -72,6 +73,9 @@ export default function ValidatorReviewPage() {
   // automatically on same-origin fetches, no header needed.
   useEffect(() => {
     fetchCandidates();
+    fetch('/api/admin/suspicious-full-nodes').then(r => r.json()).then(d => {
+      if (d.success) setSuspiciousResets(d.rows || []);
+    }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -402,6 +406,24 @@ export default function ValidatorReviewPage() {
           </div>
         )}
       </div>
+
+      {suspiciousResets.length > 0 && (
+        <div className="border-2 border-amber-300 rounded-lg p-4 space-y-2 bg-amber-50">
+          <h2 className="text-sm font-semibold text-amber-800">⚠ Flagged Full Node Height Regressions</h2>
+          <p className="text-xs text-amber-700">
+            Detection only — no automatic action taken. Review manually. See identity.ts's
+            full_node_sync_attestations doc comment for how these are flagged.
+          </p>
+          <div className="space-y-1.5">
+            {suspiciousResets.map((row) => (
+              <div key={row.id} className="text-xs bg-white/60 rounded p-2 font-mono">
+                <span className="font-bold">{row.wallet_address}</span> — dropped to height {row.height}
+                {' '}at {new Date(row.created_at).toLocaleString()}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="border-2 border-red-300 rounded-lg p-4 space-y-3 bg-red-50">
         <h2 className="text-sm font-semibold text-red-700">⚠ Danger Zone — Genesis Reset</h2>

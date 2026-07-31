@@ -119,6 +119,16 @@ export function LightNodePanel() {
         <Stat label="P2P Network" value={`${state.connectedPeerIds.length} peer${state.connectedPeerIds.length === 1 ? "" : "s"}`} />
         <Stat label="TURN Mode" value={`${state.turnPeerCount} peer${state.turnPeerCount === 1 ? "" : "s"}`} />
         <Stat
+          label="P2P Latency"
+          value={(() => {
+            const known = state.peerStats.filter(p => p.latencyMs != null);
+            if (known.length === 0) return "—";
+            const avg = Math.round(known.reduce((sum, p) => sum + (p.latencyMs ?? 0), 0) / known.length);
+            return `${avg} ms avg`;
+          })()}
+          sub={state.peerStats.length > 0 ? `${state.peerStats.length} peer${state.peerStats.length === 1 ? "" : "s"} pinged` : undefined}
+        />
+        <Stat
           label="Current Height"
           value={state.currentHeight >= 0 ? `#${state.currentHeight}` : "—"}
           sub={state.networkTipHeight > state.currentHeight ? `of #${state.networkTipHeight}` : undefined}

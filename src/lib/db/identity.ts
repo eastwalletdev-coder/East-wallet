@@ -885,10 +885,44 @@ export async function migrateFullNodeSchema() {
         node_id      VARCHAR(100),
         agreed_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         is_active    BOOLEAN NOT NULL DEFAULT TRUE,
-        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        -- Denormalized cache of the latest VERIFIED attestation below —
+        -- for fast lookup only. The attestation table is the actual
+        -- source of truth / audit trail.
+        last_known_height        BIGINT NOT NULL DEFAULT 0,
+        last_reported_at         TIMESTAMPTZ,
+        suspected_reset_count    INT NOT NULL DEFAULT 0,
+        last_suspected_reset_at  TIMESTAMPTZ
       );
     `);
-    console.log('[EASTCHAIN] Full node schema migration completed (identity.full_node_agreements)');
+
+    // Signed sync attestations — each row is a user-signed (EVM personal_sign)
+    // claim of "as of this timestamp, my full node was at this height".
+    // Signed client-side with the user's own wallet key (see
+    // full-node-sync.ts), verified server-side (verifyEvmOwnership), then
+    // relayed to the hub so CONNECTED PEERS also get a copy — not just this
+    // server. That's the point: detecting a suspicious height regression
+    // doesn't require trusting this server's bookkeeping alone. Anyone
+    // holding two attestations from the same wallet_address can verify
+    // both signatures themselves and see the same regression independently.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS identity.full_node_sync_attestations (
+        id               SERIAL PRIMARY KEY,
+        telegram_id      VARCHAR(50) NOT NULL,
+        wallet_address   VARCHAR(42) NOT NULL,
+        node_id          VARCHAR(100) NOT NULL,
+        height           BIGINT NOT NULL,
+        signed_at        BIGINT NOT NULL, -- unix ms, part of the signed payload
+        signature        TEXT NOT NULL,
+        flagged_suspicious BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_fnsa_telegram_created
+      ON identity.full_node_sync_attestations (telegram_id, created_at DESC);
+    `);
+    console.log('[EASTCHAIN] Full node schema migration completed (identity.full_node_agreements + full_node_sync_attestations)');
   } catch (err) {
     console.error('[EASTCHAIN] Full node schema migration error (non-fatal):', err);
   } finally {
@@ -927,6 +961,66 @@ export async function setFullNodeActive(telegramId: string, isActive: boolean): 
       'UPDATE identity.full_node_agreements SET is_active = $1, updated_at = NOW() WHERE telegram_id = $2',
       [isActive, telegramId]
     );
+  } finally {
+    client.release();
+  }
+}
+
+export async function getLatestSyncAttestation(telegramId: string) {
+  const client = await identityPool.connect();
+  try {
+    const res = await client.query(
+      'SELECT * FROM identity.full_node_sync_attestations WHERE telegram_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [telegramId]
+    );
+    return res.rows[0] ?? null;
+  } finally {
+    client.release();
+  }
+}
+
+export async function insertSyncAttestation(row: {
+  telegramId: string; walletAddress: string; nodeId: string;
+  height: number; signedAt: number; signature: string; flaggedSuspicious: boolean;
+}): Promise<void> {
+  const client = await identityPool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `INSERT INTO identity.full_node_sync_attestations
+         (telegram_id, wallet_address, node_id, height, signed_at, signature, flagged_suspicious)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [row.telegramId, row.walletAddress, row.nodeId, row.height, row.signedAt, row.signature, row.flaggedSuspicious]
+    );
+    await client.query(
+      `INSERT INTO identity.full_node_agreements (telegram_id, node_id, last_known_height, last_reported_at, suspected_reset_count, last_suspected_reset_at)
+       VALUES ($1, $2, $3, NOW(), $4, $5)
+       ON CONFLICT (telegram_id) DO UPDATE SET
+         node_id = $2, last_known_height = $3, last_reported_at = NOW(),
+         suspected_reset_count = identity.full_node_agreements.suspected_reset_count + $4,
+         last_suspected_reset_at = COALESCE($5, identity.full_node_agreements.last_suspected_reset_at),
+         updated_at = NOW()`,
+      [row.telegramId, row.nodeId, row.height, row.flaggedSuspicious ? 1 : 0, row.flaggedSuspicious ? new Date() : null]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+/** Read-only — for a future admin review panel. */
+export async function listSuspiciousFullNodeResets(limit = 50) {
+  const client = await identityPool.connect();
+  try {
+    const res = await client.query(
+      `SELECT * FROM identity.full_node_sync_attestations WHERE flagged_suspicious = TRUE
+       ORDER BY created_at DESC LIMIT $1`,
+      [limit]
+    );
+    return res.rows;
   } finally {
     client.release();
   }

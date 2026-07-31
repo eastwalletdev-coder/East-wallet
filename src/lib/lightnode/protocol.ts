@@ -103,12 +103,26 @@ export interface BalanceUpdateMessage { type: "balance:update"; address: string;
 export interface RpcBalanceRequestMessage { type: "rpc_balance_request"; requestId: string; address: string; }
 export interface RpcBalanceResponseMessage { type: "rpc_balance_response"; requestId: string; address: string; balance: string | null; }
 
+// ── Full node reset-detection: signed sync attestations ────────────────
+// See the hub's types.ts for the full doc comment. Broadcast to every
+// connected full node so a suspicious height regression can be caught by
+// ANY peer holding two attestations from the same wallet_address — client.ts
+// re-verifies the signature itself on receipt rather than trusting the hub.
+export interface SyncAttestationMessage {
+  type: "sync:attestation";
+  walletAddress: string;
+  nodeId: string;
+  height: number;
+  signedAt: number;
+  signature: string;
+}
+
 export type InboundMessage =
   | WelcomeMessage | BlockNewMessage | BlockBackfillMessage | PongMessage | ErrorMessage
   | TierAssignMessage
   | FullSyncProvidersMessage | FullSyncResponseMessage
   | WebrtcOfferMessage | WebrtcAnswerMessage | IceCandidateMessage
   | BootstrapPeersMessage
-  | BalanceUpdateMessage | RpcBalanceRequestMessage;
+  | BalanceUpdateMessage | RpcBalanceRequestMessage | SyncAttestationMessage;
 
 export { EAST_CHAIN_ID };

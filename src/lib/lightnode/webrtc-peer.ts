@@ -109,6 +109,15 @@ interface Peer {
   // detectRelayUsage() resolves shortly after the DataChannel opens — see
   // wireChannel()'s onopen handler. Only meaningful once true/false.
   usingTurn: boolean | null;
+  // Peer-to-peer latency/heartbeat over the DataChannel itself — separate
+  // from (and doesn't depend on) the client<->hub WS latency/heartbeat.
+  // latencyMs is round-trip time from the last ping/pong exchange;
+  // lastSeenAt updates on ANY message from this peer (not just pong), so
+  // it stays fresh even between ping cycles.
+  latencyMs: number | null;
+  lastSeenAt: number;
+  pingSentAt: number;
+  pingTimer: ReturnType<typeof setInterval> | null;
 }
 
 interface PendingRangeRequest {
@@ -140,10 +149,29 @@ const KNOWN_PEER_TTL_MS = 10 * 60_000; // stale entries (peer probably long gone
 // wander the mesh hop by hop.
 const MAX_RELAY_HOPS = 1;
 
+// How often each peer connection pings the other over the DataChannel to
+// measure round-trip latency and confirm it's still alive. Independent of
+// (and much more frequent than makes sense for) the client<->hub WS
+// heartbeat — this is measuring the P2P path specifically.
+const PEER_PING_INTERVAL_MS = 15_000;
+
+// How often we probe a TURN-relayed peer to see if a direct/STUN path has
+// become viable since — NAT mappings can change (new wifi, router
+// restart), so it's worth periodically re-checking. 5 minutes balances
+// "catch it reasonably soon after conditions improve" against "don't
+// waste cycles re-probing pairs that will never go direct" (e.g.
+// symmetric-NAT-to-symmetric-NAT, which no amount of retrying fixes).
+const TURN_UPGRADE_CHECK_INTERVAL_MS = 5 * 60_000;
+// How long to wait after triggering an ICE restart before re-checking
+// which candidate pair won — renegotiation + new candidate gathering
+// needs a moment to settle.
+const TURN_UPGRADE_CHECK_DELAY_MS = 4_000;
+
 export class PeerMesh {
   private selfNodeId: string;
   private peers = new Map<string, Peer>();
   private callbacks: PeerMeshCallbacks;
+  private turnUpgradeTimer: ReturnType<typeof setInterval> | null = null;
   private pendingRangeRequests = new Map<string, PendingRangeRequest>();
   // targetNodeId -> relay peer nodeId. Set whenever we establish (or receive)
   // a connection attempt through a relay rather than Railway, so every
@@ -179,6 +207,7 @@ export class PeerMesh {
   constructor(selfNodeId: string, callbacks: PeerMeshCallbacks) {
     this.selfNodeId = selfNodeId;
     this.callbacks = callbacks;
+    this.turnUpgradeTimer = setInterval(() => this.probeTurnUpgrades(), TURN_UPGRADE_CHECK_INTERVAL_MS);
   }
 
   get connectedPeerIds(): string[] {
@@ -256,7 +285,7 @@ export class PeerMesh {
     const pc = this.createConnection(peerNodeId);
     const channel = pc.createDataChannel(DATACHANNEL_LABEL);
     this.wireChannel(peerNodeId, channel);
-    this.peers.set(peerNodeId, { connection: pc, channel, usingTurn: null });
+    this.peers.set(peerNodeId, { connection: pc, channel, usingTurn: null, latencyMs: null, lastSeenAt: Date.now(), pingSentAt: 0, pingTimer: null });
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -313,7 +342,7 @@ export class PeerMesh {
     if (viaPeerId) this.relayViaPeer.set(fromNodeId, viaPeerId);
     const pc = this.createConnection(fromNodeId);
     pc.ondatachannel = (ev) => this.wireChannel(fromNodeId, ev.channel);
-    this.peers.set(fromNodeId, { connection: pc, channel: null, usingTurn: null });
+    this.peers.set(fromNodeId, { connection: pc, channel: null, usingTurn: null, latencyMs: null, lastSeenAt: Date.now(), pingSentAt: 0, pingTimer: null });
 
     await pc.setRemoteDescription({ type: "offer", sdp });
     const answer = await pc.createAnswer();
@@ -376,6 +405,7 @@ export class PeerMesh {
     const peer = this.peers.get(peerNodeId);
     if (!peer) return;
     this.clearRecoveryTimers(peerNodeId);
+    if (peer.pingTimer) clearInterval(peer.pingTimer);
     peer.channel?.close();
     peer.connection.close();
     this.peers.delete(peerNodeId);
@@ -389,6 +419,8 @@ export class PeerMesh {
   }
 
   disconnectAll() {
+    if (this.turnUpgradeTimer) clearInterval(this.turnUpgradeTimer);
+    this.turnUpgradeTimer = null;
     [...this.peers.keys()].forEach((id) => this.disconnect(id));
   }
 
@@ -475,6 +507,41 @@ export class PeerMesh {
     if (grace) { clearTimeout(grace); this.disconnectGraceTimers.delete(peerNodeId); }
     const failsafe = this.restartFailsafeTimers.get(peerNodeId);
     if (failsafe) { clearTimeout(failsafe); this.restartFailsafeTimers.delete(peerNodeId); }
+  }
+
+  // Fires every TURN_UPGRADE_CHECK_INTERVAL_MS for every currently-TURN-
+  // relayed peer, trying to find out whether a direct/STUN path has become
+  // viable since the last check (NAT mappings do change over time). Kept
+  // completely separate from attemptIceRestart(): that one is recovering a
+  // BROKEN connection and gives up (disconnects) if the fix doesn't land.
+  // This one probes an ALREADY WORKING TURN connection purely to see if it
+  // can be made cheaper/faster — it must never be the reason a working
+  // connection gets torn down, so there is no failsafe-disconnect here.
+  private probeTurnUpgrades() {
+    for (const [peerNodeId, peer] of this.peers) {
+      if (peer.usingTurn === true && peer.connection.connectionState === "connected") {
+        this.attemptTurnUpgrade(peerNodeId);
+      }
+    }
+  }
+
+  private async attemptTurnUpgrade(peerNodeId: string) {
+    const peer = this.peers.get(peerNodeId);
+    if (!peer || peer.connection.connectionState !== "connected") return;
+    const pc = peer.connection;
+    try {
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      this.emitSignal(peerNodeId, { type: "webrtc_offer", sdp: offer.sdp! });
+    } catch {
+      return; // give up silently this cycle — the existing TURN connection is untouched, try again next interval
+    }
+    // No failsafe timer, no disconnect on timeout — worst case the
+    // renegotiation doesn't land and detectRelayUsage() just confirms
+    // we're still on TURN, same as if we'd never tried.
+    setTimeout(() => {
+      if (this.peers.get(peerNodeId)?.connection === pc) this.detectRelayUsage(peerNodeId);
+    }, TURN_UPGRADE_CHECK_DELAY_MS);
   }
 
   // Routes an outgoing signal (offer/answer/ICE) to its destination: through
@@ -623,10 +690,13 @@ export class PeerMesh {
       // otherwise the UI would briefly show this peer as "not TURN"
       // before the async getStats() check resolves a moment later.
       await this.detectRelayUsage(peerNodeId);
+      this.startPeerPing(peerNodeId);
       this.callbacks.onPeerConnected?.(peerNodeId);
     };
     channel.onclose = () => this.callbacks.onPeerDisconnected?.(peerNodeId);
     channel.onmessage = (ev) => {
+      const p = this.peers.get(peerNodeId);
+      if (p) p.lastSeenAt = Date.now(); // any traffic counts as "alive", not just pong
       try {
         const parsed = JSON.parse(ev.data);
         if (parsed?.kind === "header" && parsed.header) {
@@ -646,11 +716,44 @@ export class PeerMesh {
           this.handlePeerListResponse(peerNodeId, parsed.peerIds);
         } else if (parsed?.kind === "signal_relay") {
           this.handleSignalRelay(peerNodeId, parsed);
+        } else if (parsed?.kind === "ping") {
+          // Reply immediately, echoing sentAt so the pinger can compute
+          // round-trip time without needing clock sync between peers.
+          channel.readyState === "open" && channel.send(JSON.stringify({ kind: "pong", sentAt: parsed.sentAt }));
+        } else if (parsed?.kind === "pong" && p) {
+          p.latencyMs = Date.now() - parsed.sentAt;
         }
       } catch {
         // Malformed peer payload — drop it. Not our job to police the peer's
         // JSON here; verifyHeader() downstream is the actual trust boundary.
       }
     };
+  }
+
+  // Per-peer DataChannel heartbeat/latency — independent of the client<->hub
+  // WS ping/heartbeat (see client.ts's startHeartbeat). Measures the actual
+  // P2P path's round-trip time, which is what matters for mesh health/PoC
+  // scoring between peers rather than each peer's individual link to Railway.
+  private startPeerPing(peerNodeId: string) {
+    const peer = this.peers.get(peerNodeId);
+    if (!peer) return;
+    if (peer.pingTimer) clearInterval(peer.pingTimer);
+    const sendPing = () => {
+      const p = this.peers.get(peerNodeId);
+      if (!p?.channel || p.channel.readyState !== "open") return;
+      p.pingSentAt = Date.now();
+      p.channel.send(JSON.stringify({ kind: "ping", sentAt: p.pingSentAt }));
+    };
+    sendPing(); // first one immediately — don't wait a full interval for the initial reading
+    peer.pingTimer = setInterval(sendPing, PEER_PING_INTERVAL_MS);
+  }
+
+  // Snapshot for the UI — client.ts polls this rather than the mesh
+  // pushing a callback per ping, since per-peer latency changing is not
+  // urgent enough to need a dedicated event.
+  getPeerStats(): Array<{ nodeId: string; latencyMs: number | null; lastSeenAt: number; usingTurn: boolean | null }> {
+    return [...this.peers.entries()].map(([nodeId, p]) => ({
+      nodeId, latencyMs: p.latencyMs, lastSeenAt: p.lastSeenAt, usingTurn: p.usingTurn,
+    }));
   }
 }

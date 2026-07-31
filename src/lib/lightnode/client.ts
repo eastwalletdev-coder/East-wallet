@@ -5,6 +5,7 @@ import type { BlockHeader, InboundMessage, NodeTier } from "./protocol";
 import { EAST_CHAIN_ID } from "@/lib/contracts/registry";
 import { PeerMesh } from "./webrtc-peer";
 import { putBlock } from "./block-store";
+import { buildFullNodeSyncPayload } from "@/lib/tx-payload-builders";
 
 const STORAGE_KEY = "east_lightnode_state_v1";
 // Separate key (not part of the main state blob, which persist()s on every
@@ -104,6 +105,11 @@ export interface LightNodeState {
   parentNodeId: string | null;    // the ONE peer we dial to receive gossip (null for leader/none — see runCatchUp)
   connectedPeerIds: string[];     // peers we currently have an OPEN DataChannel with
   turnPeerCount: number;          // of those, how many are relayed via TURN rather than a direct/STUN path — see webrtc-peer.ts's detectRelayUsage()
+  // Per-peer P2P latency/heartbeat over the DataChannel — see webrtc-peer.ts's
+  // startPeerPing()/getPeerStats(). Refreshed on the same cadence as the
+  // client<->hub heartbeat (see startHeartbeat()), not on every individual
+  // ping — this is a UI-facing snapshot, not a real-time stream.
+  peerStats: Array<{ nodeId: string; latencyMs: number | null; lastSeenAt: number; usingTurn: boolean | null }>;
 }
 
 function loadState(): LightNodeState {
@@ -122,6 +128,7 @@ function loadState(): LightNodeState {
       parentNodeId: null,
       connectedPeerIds: [],
       turnPeerCount: 0,
+      peerStats: [],
     };
   } catch {
     return freshState();
@@ -148,6 +155,7 @@ function freshState(): LightNodeState {
     parentNodeId: null,
     connectedPeerIds: [],
     turnPeerCount: 0,
+    peerStats: [],
   };
 }
 
@@ -280,6 +288,11 @@ export class LightNodeClient {
   // choose to spend, not something switched on silently.
   private fullNodeEnabled = false;
   private balanceReplica = new Map<string, string>(); // lowercased address -> decimal-string balance
+  // Cache of the latest signed sync attestation seen per wallet_address —
+  // used to independently detect a height regression from ANY peer's
+  // broadcast, not just this device's own history. See the "sync:attestation"
+  // case handler for how this gets populated and checked.
+  private receivedAttestations = new Map<string, { height: number; signedAt: number; signature: string }>();
 
   constructor(url: string) {
     this.url = url;
@@ -564,6 +577,35 @@ export class LightNodeClient {
           if (!this.fullNodeEnabled || this.ws?.readyState !== WebSocket.OPEN) break;
           const balance = this.balanceReplica.get(msg.address.toLowerCase()) ?? null;
           this.ws.send(JSON.stringify({ type: "rpc_balance_response", requestId: msg.requestId, address: msg.address, balance }));
+          break;
+        }
+
+        // Peer-side independent verification of a full node's signed
+        // sync attestation — see identity.ts's full_node_sync_attestations
+        // doc comment. This node re-verifies the signature itself (doesn't
+        // trust the hub's relay) and checks it against whatever attestation
+        // it already cached for the same wallet_address. A regression
+        // detected here is logged locally — this client never contacts
+        // anyone about it; it's evidence any observer can independently
+        // reach the same conclusion from, not an accusation this node makes.
+        case "sync:attestation": {
+          const payload = buildFullNodeSyncPayload(msg.nodeId, msg.walletAddress, msg.height, msg.signedAt);
+          let recovered: string;
+          try {
+            recovered = verifyMessage(payload, msg.signature);
+          } catch {
+            break; // malformed signature — silently ignore, nothing to learn from it
+          }
+          if (recovered.toLowerCase() !== msg.walletAddress.toLowerCase()) break; // signature doesn't match claimed address
+
+          const key = msg.walletAddress.toLowerCase();
+          const prev = this.receivedAttestations.get(key);
+          if (prev && prev.height >= 10 && msg.height < prev.height * 0.1 && msg.signedAt > prev.signedAt) {
+            this.log(`⚠ Possible full-node reset detected for ${key.slice(0, 10)}… (was #${prev.height}, now #${msg.height})`, "warn");
+          }
+          if (!prev || msg.signedAt > prev.signedAt) {
+            this.receivedAttestations.set(key, { height: msg.height, signedAt: msg.signedAt, signature: msg.signature });
+          }
           break;
         }
 
@@ -1202,6 +1244,12 @@ export class LightNodeClient {
   private startHeartbeat() {
     this.stopHeartbeat();
     this.heartbeatTimer = setInterval(() => {
+      // Peer stats come from the DataChannel mesh directly, not the hub —
+      // refresh these regardless of whether the WS to the hub is up, so
+      // P2P latency/heartbeat still reflects reality even if the hub
+      // connection is degraded or down.
+      this.set({ peerStats: this.peerMesh.getPeerStats() });
+
       if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
       this.pingSentAt = Date.now();
       this.ws.send(JSON.stringify({ type: "ping" }));
@@ -1268,6 +1316,19 @@ export class LightNodeClient {
 
   isFullNodeEnabled(): boolean {
     return this.fullNodeEnabled;
+  }
+
+  // Builds what the UI needs to sign a fresh sync attestation — this class
+  // deliberately never touches the mnemonic/vault itself (that's the UI
+  // layer's job, since it already owns the unlock/password flow). Call
+  // signEvmMessage(mnemonic, payload) with the returned payload, then pass
+  // everything to submitSyncAttestation(). See full-node-actions.ts.
+  buildSyncAttestationRequest(walletAddress: string): { payload: string; nodeId: string; height: number; signedAt: number } {
+    const nodeId = this.state.nodeId;
+    const height = this.state.currentHeight;
+    const signedAt = Date.now();
+    const payload = buildFullNodeSyncPayload(nodeId, walletAddress, height, signedAt);
+    return { payload, nodeId, height, signedAt };
   }
 
   // Call this right after a successful claim so the UI/state reflects it.

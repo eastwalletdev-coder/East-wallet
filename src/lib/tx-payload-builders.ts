@@ -45,3 +45,20 @@ export function buildContractCallPayload(
 ): string {
   return `CONTRACT_CALL|${telegramId}|${contractAddress}|${functionName}|${JSON.stringify(params)}`;
 }
+
+/**
+ * FULLNODE_SYNC payload — a user-signed claim of "as of signedAt, my full
+ * node was at this height". Verified server-side via verifyEvmOwnership
+ * against walletAddress. See identity.ts's full_node_sync_attestations
+ * table doc comment for the full detection design — the signature is what
+ * lets peers (not just this server) independently verify a height claim.
+ * Format: FULLNODE_SYNC|{nodeId}|{walletAddress lowercased}|{height}|{signedAt}
+ */
+export function buildFullNodeSyncPayload(
+  nodeId: string,
+  walletAddress: string,
+  height: number,
+  signedAt: number
+): string {
+  return `FULLNODE_SYNC|${nodeId}|${walletAddress.toLowerCase()}|${height}|${signedAt}`;
+}

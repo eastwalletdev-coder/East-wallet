@@ -1,0 +1,4 @@
+# ── Phase 3: chain balance read ─────────────────────────────
+RAILWAY_HUB_URL=https://your-hub.up.railway.app
+EAST_VALIDATOR_URL=https://your-validator.up.railway.app
+USE_CHAIN_BALANCE=false

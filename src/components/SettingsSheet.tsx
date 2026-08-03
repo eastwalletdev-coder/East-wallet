@@ -99,7 +99,7 @@ export function SettingsSheet({ children }: SettingsSheetProps) {
                       selectedChain === chain ? "bg-primary text-white border-primary" : "border-primary/10 text-white hover:text-white"
                     )}
                   >
-                    {chain === 'BSC' ? 'Binance SC' : chain === 'East' ? 'EASTCHAIN' : chain}
+                    {chain === 'BSC' ? 'Binance SC' : chain === 'East' ? 'East' : chain}
                   </Button>
                 ))}
               </div>

@@ -34,8 +34,8 @@ export type Token = {
 };
 
 const TOKEN_LIBRARY: Token[] = [
-  // ── EASTCHAIN (native, 6 decimals) ────────────────────────────────
-  { name: 'EAST', symbol: 'EAST', balance: '0.00', value: '$0.00', change: '+0.00%', chain: 'East', logoURI: '', imageHint: 'east chain logo', decimals: 6, comingSoon: false },
+  // ── East (native, 6 decimals) ────────────────────────────────
+  { name: 'East', symbol: 'EAST', balance: '0.00', value: '$0.00', change: '+0.00%', chain: 'East', logoURI: '/east-logo.png', imageHint: 'east chain logo', decimals: 6, comingSoon: false },
   // ── Ethereum ──────────────────────────────────────────────────────
   { name: 'Ethereum', symbol: 'ETH', balance: '0.00', value: '$0.00', change: '+0.00%', chain: 'Ethereum', logoURI: 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/info/logo.png', imageHint: 'ethereum logo', decimals: 18, comingSoon: false },
   // WBTC — verified via Etherscan: 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599

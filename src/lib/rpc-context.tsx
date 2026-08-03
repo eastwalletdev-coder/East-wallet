@@ -24,9 +24,9 @@ type RPCContextType = {
 };
 
 const INITIAL_NODES: RPCNode[] = [
-  // East (EASTCHAIN native — default)
-  { id: 'east-1', name: 'EAST Validator', url: 'https://east-validator-production.up.railway.app/rpc', chain: 'East', latency: null, status: 'offline' },
-  { id: 'east-2', name: 'EAST Validator (alt)', url: 'https://east-validator-production.up.railway.app/rpc', chain: 'East', latency: null, status: 'offline' },
+  // East (native — default)
+  { id: 'east-1', name: 'East Validator', url: 'https://east-validator-production.up.railway.app/rpc', chain: 'East', latency: null, status: 'offline' },
+  { id: 'east-2', name: 'East Validator (alt)', url: 'https://east-validator-production.up.railway.app/rpc', chain: 'East', latency: null, status: 'offline' },
   // Ethereum
   { id: 'eth-1', name: 'Ankr ETH',    url: 'https://rpc.ankr.com/eth',              chain: 'Ethereum', latency: null, status: 'offline' },
   { id: 'eth-2', name: 'Flashbots',   url: 'https://rpc.flashbots.net',              chain: 'Ethereum', latency: null, status: 'offline' },

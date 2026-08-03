@@ -96,8 +96,61 @@ export default function Home() {
   const [sigOpen, setSigOpen] = useState(false);
   const [activityCollapsed, setActivityCollapsed] = useState(true);
   const [lightNodeMode, setLightNodeMode] = useState(false);
+  const [onchainAmount, setOnchainAmount] = useState("");
+  const [onchainLoading, setOnchainLoading] = useState(false);
+  const [onchainMsg, setOnchainMsg] = useState<string | null>(null);
+
 
   useEffect(() => { setMounted(true); }, []);
+
+  async function handleTransferOnchain() {
+    if (!user?.telegramId) {
+      setOnchainMsg("Login required");
+      return;
+    }
+    const amount = parseFloat(onchainAmount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setOnchainMsg("Enter a valid amount");
+      return;
+    }
+    if (amount > (user.balance || 0)) {
+      setOnchainMsg("Amount exceeds mining balance");
+      return;
+    }
+    setOnchainLoading(true);
+    setOnchainMsg(null);
+    try {
+      const initData =
+        typeof window !== "undefined" && (window as any).Telegram?.WebApp?.initData
+          ? (window as any).Telegram.WebApp.initData
+          : undefined;
+      const res = await fetch("/api/chain/transfer-onchain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          telegramId: String(user.telegramId),
+          amount,
+          toAddress: user.walletAddress,
+          initData,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setOnchainMsg(data.error || "Transfer failed");
+        return;
+      }
+      setOnchainMsg(
+        `OK · Neon ${data.neonBalanceAfter} · On-chain ${data.onchainBalanceAfterHuman} EAST`,
+      );
+      setOnchainAmount("");
+      try { refreshUser(); } catch { /* ignore */ }
+    } catch (e: any) {
+      setOnchainMsg(e?.message || "Network error");
+    } finally {
+      setOnchainLoading(false);
+    }
+  }
+
 
   // Fetch cooldown on load
   useEffect(() => {
@@ -405,6 +458,53 @@ export default function Home() {
                   style={{ width: `${progress}%` }} />
               </div>
             </div>
+
+            {/* Transfer on-chain: Neon mining balance → validator */}
+            <div className="mt-5 pt-4 border-t border-white/5 space-y-2">
+              <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/30">
+                Transfer on-chain
+              </p>
+              <p className="text-[10px] text-white/40 leading-relaxed">
+                Move mining balance from Neon to East (validator). Neon decreases; blockchain credits your wallet.
+              </p>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  placeholder="Amount EAST"
+                  value={onchainAmount}
+                  onChange={(e) => setOnchainAmount(e.target.value)}
+                  className="flex-1 h-11 rounded-xl bg-white/5 border border-white/10 px-3 text-sm text-white outline-none focus:border-primary/50"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-11 px-3 rounded-xl border-white/10 text-[10px] font-black uppercase"
+                  onClick={() => setOnchainAmount(String(user?.balance || 0))}
+                  disabled={!user?.balance}
+                >
+                  Max
+                </Button>
+              </div>
+              <Button
+                type="button"
+                onClick={handleTransferOnchain}
+                disabled={onchainLoading || !user?.balance}
+                className="w-full h-12 rounded-xl bg-primary text-primary-foreground font-black uppercase text-[11px] tracking-wider"
+              >
+                {onchainLoading ? (
+                  <span className="flex items-center gap-2">
+                    <Loader2 className="w-4 h-4 animate-spin" /> Transferring…
+                  </span>
+                ) : (
+                  "Transfer on-chain"
+                )}
+              </Button>
+              {onchainMsg && (
+                <p className="text-[10px] text-primary/90 break-all">{onchainMsg}</p>
+              )}
+            </div>
           </CardContent>
         </Card>
 
@@ -478,7 +578,7 @@ export default function Home() {
         >
           <div className="text-left">
             <p className="text-[9px] font-black uppercase tracking-[0.25em] text-white/40">EAST Wallet</p>
-            <p className="text-sm font-bold text-white mt-0.5">Open Wallet · Network: EASTCHAIN</p>
+            <p className="text-sm font-bold text-white mt-0.5">Open Wallet · Network: East</p>
           </div>
           <span className="text-[10px] font-black uppercase tracking-wider text-primary">Wallet →</span>
         </a>

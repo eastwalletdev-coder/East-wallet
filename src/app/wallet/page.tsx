@@ -276,7 +276,7 @@ function WalletPageContent() {
             <ShadDropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="h-9 rounded-xl border-primary/20 bg-primary/5 text-white font-bold text-[10px] uppercase gap-2 hover:bg-primary/10">
                 <Globe className="w-3.5 h-3.5" />
-                {selectedChain === 'East' ? 'EASTCHAIN' : selectedChain}
+                {selectedChain === 'East' ? 'East' : selectedChain}
                 <ChevronDown className="w-3.5 h-3.5" />
               </Button>
             </ShadDropdownMenuTrigger>
@@ -290,7 +290,7 @@ function WalletPageContent() {
                     selectedChain === chain ? "text-primary bg-primary/10" : "text-white"
                   )}
                 >
-                  {chain === 'East' ? 'EASTCHAIN' : chain === 'BSC' ? 'Binance SC' : chain}
+                  {chain === 'East' ? 'East' : chain === 'BSC' ? 'Binance SC' : chain}
                 </ShadDropdownMenuItem>
               ))}
             </ShadDropdownMenuContent>

@@ -471,57 +471,17 @@ export default function Home() {
         </div>
         {/* end Mining Buttons */}
 
-        {/* EAST Chain Wallet Card */}
-        <p className="text-[9px] font-black uppercase tracking-[0.3em] text-white/30 px-1 mt-1">EAST Chain Wallet</p>
-        <Card className="bg-gradient-to-br from-primary/10 via-background to-accent/5 border-primary/20 w-full rounded-2xl">
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex-1 min-w-0 mr-3">
-                <p className="text-[9px] text-white/30 uppercase font-bold mb-1">Chain Address</p>
-                <p className="font-code text-[10px] text-primary/70 truncate">{walletAddress}</p>
-              </div>
-              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={handleCopyAddress}>
-                {copied ? <CheckCheck className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4 text-muted-foreground" />}
-              </Button>
-            </div>
-            <div className="text-center py-3 border-y border-white/5 mb-3">
-              <h3 className="text-2xl font-code font-bold">
-                {userLoading ? "---" : (user?.balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                <span className="text-primary text-sm ml-2">EAST</span>
-              </h3>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <SendDialog open={sendOpen} onOpenChange={setSendOpen} />
-              <ReceiveDialog address={walletAddress} open={receiveOpen} onOpenChange={setReceiveOpen} />
-              <Sheet>
-                <SheetTrigger asChild>
-                  <Button
-                    variant="outline"
-                    className="h-11 rounded-xl bg-primary border-primary hover:bg-primary/80 text-white font-black uppercase text-[10px] tracking-wider flex items-center gap-1.5"
-                  >
-                    <Store className="w-4 h-4 text-white" />
-                    P2P
-                  </Button>
-                </SheetTrigger>
-                <SheetContent
-                  side="bottom"
-                  className="h-[92vh] p-0 bg-background border-t border-primary/20 rounded-t-2xl overflow-hidden"
-                >
-                  <div className="relative h-full w-full">
-                    <div className="absolute inset-0 blur-md pointer-events-none select-none opacity-60">
-                      <TradingTerminal />
-                    </div>
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-background/40">
-                      <Clock className="w-8 h-8 text-primary" />
-                      <p className="text-lg font-black uppercase tracking-widest text-foreground">Coming Soon</p>
-                      <p className="text-xs text-muted-foreground">P2P marketplace is on its way.</p>
-                    </div>
-                  </div>
-                </SheetContent>
-              </Sheet>
-            </div>
-          </CardContent>
-        </Card>
+        {/* Native EAST wallet lives on /wallet (default network: East) */}
+        <a
+          href="/wallet"
+          className="flex items-center justify-between w-full px-4 py-3 rounded-2xl border border-primary/20 bg-primary/5 hover:bg-primary/10 transition-colors"
+        >
+          <div className="text-left">
+            <p className="text-[9px] font-black uppercase tracking-[0.25em] text-white/40">EAST Wallet</p>
+            <p className="text-sm font-bold text-white mt-0.5">Open Wallet · Network: EASTCHAIN</p>
+          </div>
+          <span className="text-[10px] font-black uppercase tracking-wider text-primary">Wallet →</span>
+        </a>
 
         {/* Recent EAST Transactions */}
         <button

@@ -89,7 +89,7 @@ export function SettingsSheet({ children }: SettingsSheetProps) {
             </AccordionTrigger>
             <AccordionContent className="pt-4 space-y-4">
               <div className="grid grid-cols-2 gap-2">
-                {['Ethereum', 'Base', 'Solana', 'BSC'].map((chain) => (
+                {['East', 'Ethereum', 'Base', 'Solana', 'BSC'].map((chain) => (
                   <Button 
                     key={chain}
                     variant="outline"
@@ -99,7 +99,7 @@ export function SettingsSheet({ children }: SettingsSheetProps) {
                       selectedChain === chain ? "bg-primary text-white border-primary" : "border-primary/10 text-white hover:text-white"
                     )}
                   >
-                    {chain === 'BSC' ? 'Binance SC' : chain}
+                    {chain === 'BSC' ? 'Binance SC' : chain === 'East' ? 'EASTCHAIN' : chain}
                   </Button>
                 ))}
               </div>

@@ -75,8 +75,12 @@ function WalletPageContent() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showSetup, setShowSetup] = useState(false);
 
-  const activeAccount = accounts.find(a => a.chain === selectedChain) || accounts[0];
   const evmAccount = accounts.find(a => a.chain === 'Ethereum');
+  // East / Base / BSC share the same EVM derivation address as Ethereum
+  const activeAccount =
+    selectedChain === 'Solana'
+      ? (accounts.find(a => a.chain === 'Solana') || accounts[0])
+      : (evmAccount || accounts[0]);
 
   const performAutoDetection = useCallback(async () => {
     if (!activeAccount?.address) return;
@@ -272,12 +276,12 @@ function WalletPageContent() {
             <ShadDropdownMenuTrigger asChild>
               <Button variant="outline" size="sm" className="h-9 rounded-xl border-primary/20 bg-primary/5 text-white font-bold text-[10px] uppercase gap-2 hover:bg-primary/10">
                 <Globe className="w-3.5 h-3.5" />
-                {selectedChain}
+                {selectedChain === 'East' ? 'EASTCHAIN' : selectedChain}
                 <ChevronDown className="w-3.5 h-3.5" />
               </Button>
             </ShadDropdownMenuTrigger>
             <ShadDropdownMenuContent align="end" className="w-40 bg-background/95 backdrop-blur-md border-primary/20 rounded-xl">
-              {['Ethereum', 'Base', 'Solana', 'BSC'].map((chain) => (
+              {['East', 'Ethereum', 'Base', 'Solana', 'BSC'].map((chain) => (
                 <ShadDropdownMenuItem 
                   key={chain} 
                   onClick={() => setSelectedChain(chain as any)}
@@ -286,7 +290,7 @@ function WalletPageContent() {
                     selectedChain === chain ? "text-primary bg-primary/10" : "text-white"
                   )}
                 >
-                  {chain}
+                  {chain === 'East' ? 'EASTCHAIN' : chain === 'BSC' ? 'Binance SC' : chain}
                 </ShadDropdownMenuItem>
               ))}
             </ShadDropdownMenuContent>

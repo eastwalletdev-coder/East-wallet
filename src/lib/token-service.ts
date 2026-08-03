@@ -25,7 +25,7 @@ export type Token = {
   change: string;
   logoURI: string;
   imageHint: string;
-  chain: 'Ethereum' | 'Solana' | 'Base' | 'BSC';
+  chain: 'East' | 'Ethereum' | 'Solana' | 'Base' | 'BSC';
   contractAddress?: string;
   decimals?: number;
   isCustom?: boolean;
@@ -34,6 +34,8 @@ export type Token = {
 };
 
 const TOKEN_LIBRARY: Token[] = [
+  // ── EASTCHAIN (native, 6 decimals) ────────────────────────────────
+  { name: 'EAST', symbol: 'EAST', balance: '0.00', value: '$0.00', change: '+0.00%', chain: 'East', logoURI: '', imageHint: 'east chain logo', decimals: 6, comingSoon: false },
   // ── Ethereum ──────────────────────────────────────────────────────
   { name: 'Ethereum', symbol: 'ETH', balance: '0.00', value: '$0.00', change: '+0.00%', chain: 'Ethereum', logoURI: 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/info/logo.png', imageHint: 'ethereum logo', decimals: 18, comingSoon: false },
   // WBTC — verified via Etherscan: 0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599
@@ -65,7 +67,7 @@ const TOKEN_LIBRARY: Token[] = [
   { name: 'BSC USDT', symbol: 'USDT', balance: '0.00', value: '$0.00', change: '+0.00%', chain: 'BSC', logoURI: 'https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/ethereum/assets/0xdAC17F958D2ee523a2206206994597C13D831ec7/logo.png', imageHint: 'tether logo', comingSoon: true },
 ];
 
-const NATIVE_SYMBOL_BY_CHAIN: Record<string, string> = { Ethereum: 'ETH', Base: 'ETH', BSC: 'BNB', Solana: 'SOL' };
+const NATIVE_SYMBOL_BY_CHAIN: Record<string, string> = { East: 'EAST', Ethereum: 'ETH', Base: 'ETH', BSC: 'BNB', Solana: 'SOL' };
 
 async function rpcCall(url: string, method: string, params: any[]): Promise<any> {
   const res = await fetch(url, {
@@ -88,10 +90,10 @@ async function fetchErc20Balance(rpcUrl: string, contractAddress: string, ownerA
   return Number(raw) / 10 ** decimals;
 }
 
-async function fetchNativeEvmBalance(rpcUrl: string, address: string): Promise<number> {
+async function fetchNativeEvmBalance(rpcUrl: string, address: string, decimals = 18): Promise<number> {
   const result = await rpcCall(rpcUrl, 'eth_getBalance', [address, 'latest']);
   const raw = BigInt(result || '0x0');
-  return Number(raw) / 1e18;
+  return Number(raw) / 10 ** decimals;
 }
 
 async function fetchSolNativeBalance(rpcUrl: string, address: string): Promise<number> {
@@ -122,7 +124,7 @@ async function fetchSplTokenBalance(rpcUrl: string, mintAddress: string, ownerAd
  */
 export async function scanTokensForAddress(
   address: string,
-  chain: 'Ethereum' | 'Solana' | 'Base' | 'BSC',
+  chain: 'East' | 'Ethereum' | 'Solana' | 'Base' | 'BSC',
   rpcUrl?: string
 ): Promise<Token[]> {
   const chainTokens = TOKEN_LIBRARY.filter(t => t.chain === chain);
@@ -142,8 +144,9 @@ export async function scanTokensForAddress(
           ? await fetchSolNativeBalance(rpcUrl, address)
           : await fetchSplTokenBalance(rpcUrl, token.contractAddress!, address);
       } else {
+        const nativeDecimals = chain === 'East' ? 6 : 18;
         balance = isNative
-          ? await fetchNativeEvmBalance(rpcUrl, address)
+          ? await fetchNativeEvmBalance(rpcUrl, address, nativeDecimals)
           : await fetchErc20Balance(rpcUrl, token.contractAddress!, address, token.decimals || 18);
       }
 
@@ -160,6 +163,6 @@ export async function scanTokensForAddress(
 /**
  * Fetches the base token library for swapping.
  */
-export async function getTokenLibrary(chain: 'Ethereum' | 'Solana' | 'Base' | 'BSC'): Promise<Token[]> {
+export async function getTokenLibrary(chain: 'East' | 'Ethereum' | 'Solana' | 'Base' | 'BSC'): Promise<Token[]> {
   return TOKEN_LIBRARY.filter(token => token.chain === chain);
 }

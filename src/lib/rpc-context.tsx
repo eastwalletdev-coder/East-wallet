@@ -6,7 +6,7 @@ type RPCNode = {
   id: string;
   name: string;
   url: string;
-  chain: 'Ethereum' | 'Solana' | 'Base' | 'BSC';
+  chain: 'East' | 'Ethereum' | 'Solana' | 'Base' | 'BSC';
   latency: number | null;
   status: 'online' | 'offline' | 'checking';
 };
@@ -18,12 +18,15 @@ type RPCContextType = {
   nodes: RPCNode[];
   refreshLatencies: () => Promise<void>;
   setCurrentRPC: (node: RPCNode) => void;
-  selectedChain: 'Ethereum' | 'Solana' | 'Base' | 'BSC';
-  setSelectedChain: (chain: 'Ethereum' | 'Solana' | 'Base' | 'BSC') => void;
+  selectedChain: 'East' | 'Ethereum' | 'Solana' | 'Base' | 'BSC';
+  setSelectedChain: (chain: 'East' | 'Ethereum' | 'Solana' | 'Base' | 'BSC') => void;
   isFindingRPC: boolean;
 };
 
 const INITIAL_NODES: RPCNode[] = [
+  // East (EASTCHAIN native — default)
+  { id: 'east-1', name: 'EAST Validator', url: 'https://east-validator-production.up.railway.app/rpc', chain: 'East', latency: null, status: 'offline' },
+  { id: 'east-2', name: 'EAST Validator (alt)', url: 'https://east-validator-production.up.railway.app/rpc', chain: 'East', latency: null, status: 'offline' },
   // Ethereum
   { id: 'eth-1', name: 'Ankr ETH',    url: 'https://rpc.ankr.com/eth',              chain: 'Ethereum', latency: null, status: 'offline' },
   { id: 'eth-2', name: 'Flashbots',   url: 'https://rpc.flashbots.net',              chain: 'Ethereum', latency: null, status: 'offline' },
@@ -46,7 +49,7 @@ const RPCContext = createContext<RPCContextType | undefined>(undefined);
 
 export function RPCProvider({ children }: { children: React.ReactNode }) {
   const [isAutoMode, setIsAutoMode] = useState(true);
-  const [selectedChain, setSelectedChain] = useState<'Ethereum' | 'Solana' | 'Base' | 'BSC'>('Ethereum');
+  const [selectedChain, setSelectedChain] = useState<'East' | 'Ethereum' | 'Solana' | 'Base' | 'BSC'>('East');
   const [nodes, setNodes] = useState<RPCNode[]>(INITIAL_NODES);
   const [currentRPC, setCurrentRPCState] = useState<RPCNode | null>(null);
   const [isFindingRPC, setIsFindingRPC] = useState(false);

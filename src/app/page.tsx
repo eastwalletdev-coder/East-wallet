@@ -15,6 +15,8 @@ import { getTierFromStaked } from "@/lib/ledger";
 import { useToast } from "@/hooks/use-toast";
 import { ReceiveDialog } from "@/components/ReceiveDialog";
 import { SendDialog } from "@/components/SendDialog";
+import { useWallet } from "@/lib/wallet-context";
+import { getEvmIdentity } from "@/lib/wallet-service";
 import { SignatureDialog } from "@/components/SignatureDialog";
 import { AuditTrailSheet } from "@/components/AuditTrailSheet";
 import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
@@ -56,6 +58,7 @@ function CopyTxButton({ text }: { text: string }) {
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const { userId, user, initData, loading: userLoading, refreshUser } = useTelegram();
+  const { mnemonic, isLocked } = useWallet();
 
   // Upgrade-to-self-custody reminder banner: dismissible, remembered per
   // Telegram account (not just per-device) via a userId-scoped localStorage
@@ -131,7 +134,10 @@ export default function Home() {
         body: JSON.stringify({
           telegramId: String(user.telegramId),
           amount,
-          toAddress: user.walletAddress,
+          // Prefer unlocked vault address so deposit credits the same addr as Wallet/Receive
+          toAddress: (!isLocked && mnemonic)
+            ? getEvmIdentity(mnemonic).address
+            : user.walletAddress,
           initData,
         }),
       });

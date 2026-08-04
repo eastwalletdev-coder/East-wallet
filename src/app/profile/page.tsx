@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useMemo } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { User, Shield, Globe, Award, Settings, FileText, ChevronRight, Crown, Copy, CheckCheck, Users, KeyRound, Coins, ShieldCheck } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -10,17 +10,58 @@ import Link from 'next/link';
 import { useTelegram } from '@/hooks/use-telegram';
 import { ExportEastWalletSheet } from '@/components/ExportEastWalletSheet';
 import { CreateWalletDialog } from '@/components/CreateWalletDialog';
+import { useWallet } from '@/lib/wallet-context';
+import { getEvmIdentity, signEvmMessage } from '@/lib/wallet-service';
+import { upgradeToSelfCustodyWallet } from '@/actions/wallet-onboarding-actions';
+import { useToast } from '@/hooks/use-toast';
 
 export default function ProfilePage() {
   const { userId, user, loading, initData, refreshUser } = useTelegram();
+  const { mnemonic, isLocked } = useWallet();
+  const { toast } = useToast();
   const [copied, setCopied] = useState(false);
   const [copiedRef, setCopiedRef] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+  const [syncing, setSyncing] = useState(false);
 
-  const walletAddress = user?.walletAddress || '0x...';
+  const vaultAddress = useMemo(() => {
+    if (!mnemonic || isLocked) return null;
+    try { return getEvmIdentity(mnemonic).address; } catch { return null; }
+  }, [mnemonic, isLocked]);
+
+  const profileAddress = user?.walletAddress || '';
+  const addressMismatch =
+    Boolean(vaultAddress && profileAddress) &&
+    vaultAddress!.toLowerCase() !== profileAddress.toLowerCase();
+
+  // Prefer vault so Profile matches Wallet / Receive when unlocked
+  const walletAddress = vaultAddress || profileAddress || '0x...';
   const isFounder = user?.isFounder === true;
-  const isSelfCustody = user?.walletType === 'self_custody_evm';
+  const isSelfCustody = user?.walletType === 'self_custody_evm' && !addressMismatch;
   const referralLink = `https://t.me/${process.env.NEXT_PUBLIC_BOT_USERNAME || 'Eastwallet_bot'}?start=${userId}`;
+
+  useEffect(() => {
+    if (!userId || !mnemonic || !vaultAddress || !addressMismatch || syncing) return;
+    let cancelled = false;
+    (async () => {
+      setSyncing(true);
+      try {
+        const payload = `EASTCHAIN_WALLET_INIT_${userId}_${vaultAddress.toLowerCase()}`;
+        const { publicKey } = getEvmIdentity(mnemonic);
+        const signature = await signEvmMessage(mnemonic, payload);
+        const result = await upgradeToSelfCustodyWallet(
+          userId, vaultAddress, publicKey, signature, initData,
+        );
+        if (cancelled) return;
+        if (result.success) {
+          await refreshUser();
+          toast({ title: 'Profile address synced', description: 'Profile now matches your self-custody wallet.' });
+        }
+      } catch { /* non-fatal */ }
+      finally { if (!cancelled) setSyncing(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [userId, mnemonic, vaultAddress, addressMismatch, initData, refreshUser, toast, syncing]);
 
   const handleCopyAddress = useCallback(async () => {
     try { await navigator.clipboard.writeText(walletAddress); }
@@ -154,6 +195,16 @@ export default function ProfilePage() {
             <div className="bg-white/[0.04] rounded-xl p-2">
               <p className="font-mono text-[10px] text-white/40 break-all">{walletAddress}</p>
             </div>
+            {addressMismatch && (
+              <p className="text-[9px] text-amber-400/90 leading-relaxed">
+                {syncing
+                  ? 'Syncing Profile to vault address…'
+                  : `Vault ${vaultAddress?.slice(0, 8)}… ≠ server ${profileAddress.slice(0, 8)}…. Unlock wallet or tap Upgrade to fix.`}
+              </p>
+            )}
+            {vaultAddress && !addressMismatch && user?.walletType === 'self_custody_evm' && (
+              <p className="text-[9px] text-white/25">Matches Wallet / Receive (self-custody)</p>
+            )}
           </div>
 
           <div className="p-4 flex items-center justify-between">
@@ -162,22 +213,26 @@ export default function ProfilePage() {
               <div>
                 <span className="text-white text-sm block">Wallet Custody</span>
                 <span className="text-white/30 text-[10px] uppercase">
-                  {isSelfCustody ? 'You control the private key' : 'Server-derived (legacy)'}
+                  {user?.walletType === 'self_custody_evm' && !addressMismatch
+                    ? 'You control the private key'
+                    : addressMismatch
+                      ? 'Address mismatch — sync required'
+                      : 'Server-derived (legacy)'}
                 </span>
               </div>
             </div>
-            {isSelfCustody ? (
+            {user?.walletType === 'self_custody_evm' && !addressMismatch ? (
               <Badge className="bg-primary/20 text-primary border-primary/30 text-[9px] font-black uppercase">
                 Self-Custody
               </Badge>
             ) : (
               <Button
                 size="sm"
-                disabled={!userId}
+                disabled={!userId || syncing}
                 onClick={() => setUpgradeOpen(true)}
                 className="h-8 rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 text-[9px] font-black uppercase tracking-widest"
               >
-                Upgrade
+                {addressMismatch ? 'Sync' : 'Upgrade'}
               </Button>
             )}
           </div>

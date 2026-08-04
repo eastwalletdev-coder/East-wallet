@@ -201,9 +201,16 @@ export async function upgradeToSelfCustodyWallet(
       await client.query('ROLLBACK');
       return { success: false, error: 'USER_NOT_FOUND' };
     }
-    if (existing.rows[0].wallet_type === 'self_custody_evm') {
+    const prev = existing.rows[0];
+    const prevAddr = String(prev.wallet_address || '').toLowerCase();
+    const nextAddr = address.toLowerCase();
+
+    // Same address already registered → idempotent success (import/re-open).
+    // Different address with valid signature → rebind Profile to vault (import mnemonic).
+    if (prev.wallet_type === 'self_custody_evm' && prevAddr === nextAddr) {
       await client.query('ROLLBACK');
-      return { success: false, error: 'ALREADY_SELF_CUSTODY' };
+      const eastId = generateEastId(address);
+      return { success: true, user: mapUserRow(prev, eastId), alreadySynced: true };
     }
 
     await client.query(`

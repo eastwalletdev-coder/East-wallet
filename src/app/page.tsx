@@ -311,16 +311,25 @@ export default function Home() {
         <div className="relative z-10 flex flex-col items-center text-center pt-4 pb-2 px-4">
           <h2 className="text-5xl font-bold tracking-tight uppercase flex items-center justify-center filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] relative">
             <div className="flex items-center relative z-10">
-              {/* E shifted left so it does not crowd the Λ */}
-              <span className="font-logo text-primary -translate-x-[0.12em] mr-[0.14em]">E</span>
+              <span className="font-logo text-primary -translate-x-[0.12em] mr-[0.14em] leading-none">E</span>
               <span className="font-logo mx-0.5 text-white text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
-              <span className="font-logo text-primary">ST</span>
+              <span className="font-logo text-primary leading-none">ST</span>
             </div>
-            <div className="absolute inset-0 flex items-center justify-center mix-blend-screen pointer-events-none z-20">
-              <div className="flex items-center animate-shimmer-shine bg-[linear-gradient(to_right,transparent_30%,white_50%,transparent_70%)] bg-[length:200%_auto] bg-clip-text text-transparent">
-                <span className="font-logo -translate-x-[0.12em] mr-[0.14em]">E</span>
+            {/* White shine only — no mix-blend-screen (that glitched E/Λ) */}
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20 overflow-hidden">
+              <div
+                className="flex items-center animate-shimmer-shine text-transparent bg-clip-text select-none"
+                style={{
+                  backgroundImage:
+                    'linear-gradient(90deg, transparent 0%, transparent 42%, rgba(255,255,255,0.92) 50%, transparent 58%, transparent 100%)',
+                  backgroundSize: '220% 100%',
+                  WebkitBackgroundClip: 'text',
+                  backgroundClip: 'text',
+                }}
+              >
+                <span className="font-logo -translate-x-[0.12em] mr-[0.14em] leading-none">E</span>
                 <span className="font-logo mx-0.5 text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
-                <span className="font-logo">ST</span>
+                <span className="font-logo leading-none">ST</span>
               </div>
             </div>
           </h2>

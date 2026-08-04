@@ -62,6 +62,16 @@
   to { transform: rotateY(360deg); }
 }
 
+@keyframes logo-shine-sweep {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(320%); }
+}
+
+.animate-logo-shine-sweep {
+  animation: logo-shine-sweep 3.8s ease-in-out infinite;
+  will-change: transform;
+}
+
 .animate-shimmer-shine {
   animation: shimmer-shine 4.3s linear infinite;
   /* Isolate this blended layer so it composites independently of its

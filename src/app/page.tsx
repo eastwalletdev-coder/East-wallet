@@ -310,27 +310,19 @@ export default function Home() {
         {/* Header text overlay */}
         <div className="relative z-10 flex flex-col items-center text-center pt-4 pb-2 px-4">
           <h2 className="text-5xl font-bold tracking-tight uppercase flex items-center justify-center filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] relative">
-            <div className="flex items-center relative z-10">
-              <span className="font-logo text-primary -translate-x-[0.12em] mr-[0.14em] leading-none">E</span>
-              <span className="font-logo mx-0.5 text-white text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
+            {/* E nudged right (tighter to Λ) — shine = soft sweep, no bg-clip-text */}
+            <div className="relative inline-flex items-center z-10 overflow-hidden">
+              <span className="font-logo text-primary -translate-x-[0.03em] mr-[0.05em] leading-none">E</span>
+              <span className="font-logo mx-[0.12em] text-white text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
               <span className="font-logo text-primary leading-none">ST</span>
-            </div>
-            {/* White shine only — no mix-blend-screen (that glitched E/Λ) */}
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20 overflow-hidden">
-              <div
-                className="flex items-center animate-shimmer-shine text-transparent bg-clip-text select-none"
+              <span
+                aria-hidden
+                className="pointer-events-none absolute inset-y-0 w-[38%] animate-logo-shine-sweep"
                 style={{
-                  backgroundImage:
-                    'linear-gradient(90deg, transparent 0%, transparent 42%, rgba(255,255,255,0.92) 50%, transparent 58%, transparent 100%)',
-                  backgroundSize: '220% 100%',
-                  WebkitBackgroundClip: 'text',
-                  backgroundClip: 'text',
+                  background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.5) 50%, transparent 100%)',
+                  mixBlendMode: 'soft-light',
                 }}
-              >
-                <span className="font-logo -translate-x-[0.12em] mr-[0.14em] leading-none">E</span>
-                <span className="font-logo mx-0.5 text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
-                <span className="font-logo leading-none">ST</span>
-              </div>
+              />
             </div>
           </h2>
           <p className="text-[13px] uppercase font-black tracking-[0.1em] text-white leading-tight mt-2">

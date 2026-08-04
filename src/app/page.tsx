@@ -114,7 +114,7 @@ export default function Home() {
       return;
     }
     if (amount > (user.balance || 0)) {
-      setOnchainMsg("Amount exceeds mining balance");
+      setOnchainMsg("Amount exceeds mining (Neon) balance");
       return;
     }
     setOnchainLoading(true);
@@ -124,6 +124,7 @@ export default function Home() {
         typeof window !== "undefined" && (window as any).Telegram?.WebApp?.initData
           ? (window as any).Telegram.WebApp.initData
           : undefined;
+      // Home bridge only: Neon mining → validator. Not Wallet peer-Send.
       const res = await fetch("/api/chain/transfer-onchain", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -136,11 +137,11 @@ export default function Home() {
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
-        setOnchainMsg(data.error || "Transfer failed");
+        setOnchainMsg(data.error || "Deposit to chain failed");
         return;
       }
       setOnchainMsg(
-        `OK · Neon ${data.neonBalanceAfter} · On-chain ${data.onchainBalanceAfterHuman} EAST`,
+        `Deposited · Neon left ${data.neonBalanceAfter} · Chain ${data.onchainBalanceAfterHuman} EAST`,
       );
       setOnchainAmount("");
       try { refreshUser(); } catch { /* ignore */ }
@@ -469,13 +470,15 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Transfer on-chain: SQL/app balance → validator ledger */}
+            {/* Deposit mining → chain (Neon bridge). Wallet Send is separate. */}
             <div className="mt-5 pt-4 border-t border-white/5 space-y-2">
               <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/30">
-                Transfer on-chain
+                Deposit mining → chain
               </p>
               <p className="text-[10px] text-white/40 leading-relaxed">
-                Move mining balance from the app database (SQL) onto the East chain. Database balance decreases; on-chain wallet is credited.
+                Pindahkan hasil mining dari Neon ke saldo free di validator.
+                Neon berkurang, wallet on-chain bertambah. Bukan kirim ke user
+                lain — untuk peer transfer pakai Wallet → Send.
               </p>
               <div className="flex gap-2">
                 <input
@@ -505,10 +508,10 @@ export default function Home() {
               >
                 {onchainLoading ? (
                   <span className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" /> Transferring…
+                    <Loader2 className="w-4 h-4 animate-spin" /> Depositing…
                   </span>
                 ) : (
-                  "Transfer on-chain"
+                  "Deposit to chain"
                 )}
               </Button>
               {onchainMsg && (

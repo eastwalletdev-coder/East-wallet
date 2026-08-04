@@ -8,13 +8,10 @@ import { Label } from '@/components/ui/label';
 import { Send, Loader2, ScanLine, CheckCircle2, AlertTriangle, ChevronLeft, Copy, Check, ShieldCheck } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTelegram } from '@/hooks/use-telegram';
-import { sendEast } from '@/actions/mining-actions';
 import { type Token } from '@/lib/token-service';
 import { useWallet, decryptVaultMnemonic } from '@/lib/wallet-context';
 import { useRPC } from '@/lib/rpc-context';
 import { sendEvmTransaction, sendSolanaTransaction, estimateEvmFee, estimateSolanaFee, type FeeEstimate } from '@/lib/send-service';
-import { signEvmMessage } from '@/lib/wallet-service';
-import { buildSendEastPayload } from '@/lib/tx-payload-builders';
 import { submitChainTransfer, useChainTxEnabled } from '@/lib/chain-tx-client';
 import { isAddress } from 'ethers';
 import { PublicKey } from '@solana/web3.js';
@@ -183,71 +180,45 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
     const amt = parseFloat(amount);
     try {
       if (isEastToken) {
-        // ── Preferred path: Hub → east-validator (real on-chain transfer) ──
-        // Opt-in with NEXT_PUBLIC_USE_CHAIN_TX=true once Hub + validator are live.
-        // Signs EASTCHAIN_TX|{hash} (EIP-191) and POSTs to /api/chain/tx which
-        // proxies to Railway Hub /rpc/tx → validator POST /tx.
-        if (useChainTxEnabled()) {
-          const chainResult = await submitChainTransfer(
-            verifiedMnemonic,
-            address.trim(),
-            amt,
-          );
-          if (chainResult.success) {
-            setTxHash(chainResult.txHash || null);
-            setStep('result');
-            toast({
-              title: 'On-chain transfer submitted',
-              description: `${amt} EAST → ${truncate(address)} (${chainResult.status}) via ${chainResult.via || 'hub'}`,
-            });
-            refreshUser();
-          } else {
-            const detail =
-              typeof chainResult.detail === 'string'
-                ? chainResult.detail
-                : chainResult.error;
-            toast({
-              variant: 'destructive',
-              title: 'On-chain transfer failed',
-              description: detail || 'Unknown error',
-            });
-            setStep('form');
-          }
+        // ── On-chain ONLY: Hub → east-validator (no Neon debit/credit) ──
+        // Signs EASTCHAIN_TX|{hash} → POST /api/chain/tx → Hub /rpc/tx →
+        // validator POST /tx. Neon is never checked or mutated for wallet Send.
+        if (!useChainTxEnabled()) {
+          toast({
+            variant: 'destructive',
+            title: 'On-chain transfer disabled',
+            description:
+              'Set NEXT_PUBLIC_USE_CHAIN_TX=true (or leave unset). Neon path removed for EAST wallet Send.',
+          });
+          setStep('form');
           return;
         }
 
-        // ── Legacy path: Neon identity + mempool (Telegram / dual-mode auth) ──
-        if (!userId) {
-          toast({ variant: 'destructive', title: 'Not authenticated', description: 'Telegram session not found.' });
-          return;
-        }
-
-        let signature: string | undefined;
-        try {
-          const payload = buildSendEastPayload(userId, address.trim(), amt);
-          signature = await signEvmMessage(verifiedMnemonic, payload);
-        } catch (err) {
-          console.error('[SendDialog] Self-custody signing failed:', err);
-          toast({ variant: 'destructive', title: 'Signing failed', description: 'Could not sign this transaction. Please try again.' });
-          return;
-        }
-
-        const result = await sendEast(userId, address.trim(), amt, initData, signature, undefined, parseFloat(gasFeeEast) || 0);
-        if (result.success) {
-          setTxHash(result.txHash || null);
+        const chainResult = await submitChainTransfer(
+          verifiedMnemonic,
+          address.trim(),
+          amt,
+        );
+        if (chainResult.success) {
+          setTxHash(chainResult.txHash || null);
           setStep('result');
-          toast({ title: 'Transfer Queued', description: `${amt} EAST to ${truncate(address)} — confirming...` });
+          toast({
+            title: 'On-chain transfer submitted',
+            description: `${amt} EAST → ${truncate(address)} (${chainResult.status}) via ${chainResult.via || 'hub'}`,
+          });
           refreshUser();
         } else {
-          const errMap: Record<string, string> = {
-            INSUFFICIENT_BALANCE: 'Insufficient balance.',
-            RECIPIENT_NOT_FOUND: 'Recipient address not found on EASTCHAIN.',
-            CANNOT_SEND_TO_SELF: 'You cannot send to your own address.',
-            IDENTITY_VIOLATION: 'Invalid Telegram session.',
-            IDENTITY_MISMATCH: 'Session does not match the sender account.',
-            SENDER_NOT_FOUND: 'Sender account not found.',
-          };
-          toast({ variant: 'destructive', title: 'Transfer Failed', description: errMap[result.error || ''] || result.error || 'Unknown error' });
+          const detail =
+            typeof chainResult.detail === 'string'
+              ? chainResult.detail
+              : chainResult.detail
+                ? JSON.stringify(chainResult.detail).slice(0, 280)
+                : chainResult.error;
+          toast({
+            variant: 'destructive',
+            title: 'On-chain transfer failed',
+            description: detail || 'Unknown error',
+          });
           setStep('form');
         }
         return;

@@ -5,24 +5,17 @@ import { verifyIdentityOrSignature } from "@/lib/auth/dual-mode-identity";
 /**
  * POST /api/chain/transfer-onchain
  *
- * Self-service bridge: app database (SQL) mining balance → validator (on-chain).
- * 1) Debit identity.users.balance (SQL / identity DB)
- * 2) Credit validator account (add subunits; uses GET /account + POST /admin/seed)
+ * HOME "Deposit mining → chain" — NOT Wallet Send.
  *
- * Body:
- * {
- *   telegramId: string,
- *   amount: number,          // human EAST (> 0)
- *   toAddress?: string,      // optional EVM address override (default: users.wallet_address)
- *   initData?: string,
- *   signature?: string,
- *   signaturePayload?: string,
- *   selfCustodyPubkey?: string
- * }
+ * Self-service bridge (user-triggered migration):
+ *   1) Debit identity.users.balance (Neon) — mining / app balance
+ *   2) Credit validator free balance (GET /account + POST /admin/seed)
  *
- * Env:
- *   EAST_VALIDATOR_URL   — e.g. https://east-validator-production.up.railway.app
- *   EAST_VALIDATOR_API_SECRET or API_SECRET — X-API-Secret for /admin/seed
+ * Wallet tab Send uses /api/chain/tx only (peer transfer on validator).
+ * Do not use this route for peer-to-peer Send.
+ *
+ * Body: telegramId, amount (human EAST), toAddress?, initData?, signature?, ...
+ * Env: EAST_VALIDATOR_URL, EAST_VALIDATOR_API_SECRET | API_SECRET
  */
 
 const SUBUNITS = 1_000_000;
@@ -201,6 +194,7 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         ok: true,
+        kind: "neon_to_chain_deposit",
         telegramId,
         toAddress,
         amountHuman: amount,

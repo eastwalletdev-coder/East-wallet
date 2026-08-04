@@ -8,7 +8,7 @@ import { Slider } from '@/components/ui/slider';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Zap, Shield, TrendingUp, Lock, CheckCircle2, Fingerprint, QrCode, Coins, ArrowDownToLine, Clock } from 'lucide-react';
 import { EASTPASS_TIERS, getTierFromStaked } from '@/lib/ledger';
-import { stakeEast, requestUnstake, claimUnstake } from '@/actions/mining-actions';
+import { claimUnstake } from '@/actions/mining-actions';
 import { useToast } from '@/hooks/use-toast';
 import { useTelegram } from '@/hooks/use-telegram';
 import { generateEastId, getPassStatusLabel, isPassActive } from '@/lib/east-id';
@@ -65,62 +65,59 @@ export default function EastpassPage() {
     if (sliderAmount <= 0) return;
     setWidgetLoading(true);
 
-    // On-chain path (Hub → validator) when enabled and vault is unlocked
-    if (useChainTxEnabled()) {
-      if (!mnemonic || isLocked) {
-        toast({
-          variant: "destructive",
-          title: "Vault locked",
-          description: "Unlock your self-custody wallet to sign on-chain stake/unstake.",
-        });
-        setWidgetLoading(false);
-        return;
-      }
-      if (stakeMode === 'stake') {
-        const res = await submitChainStake(mnemonic, sliderAmount);
-        if (res.success) {
-          toast({ title: "On-chain stake submitted", description: `${sliderAmount} EAST (${res.status})` });
-          refreshUser();
-          setSliderAmount(0);
-        } else {
-          toast({ variant: "destructive", title: "Stake Failed", description: res.error });
-        }
-      } else {
-        const res = await submitChainTx({
-          mnemonic,
-          type: "request_unstake",
-          amountHuman: sliderAmount,
-        });
-        if (res.success) {
-          toast({ title: "On-chain unstake submitted", description: `${sliderAmount} EAST (${res.status})` });
-          refreshUser();
-          setSliderAmount(0);
-        } else {
-          toast({ variant: "destructive", title: "Unstake Failed", description: res.error });
-        }
-      }
+    // On-chain ONLY (Hub → validator). Neon path removed for stake/unstake.
+    if (!useChainTxEnabled()) {
+      toast({
+        variant: "destructive",
+        title: "On-chain staking disabled",
+        description: "Set NEXT_PUBLIC_USE_CHAIN_TX=true (or leave unset). Neon path removed for EASTPASS.",
+      });
       setWidgetLoading(false);
       setWidgetSigOpen(false);
       return;
     }
-
+    if (!mnemonic || isLocked) {
+      toast({
+        variant: "destructive",
+        title: "Vault locked",
+        description: "Unlock your self-custody wallet to sign on-chain stake/unstake.",
+      });
+      setWidgetLoading(false);
+      return;
+    }
     if (stakeMode === 'stake') {
-      const res = await stakeEast(userId, sliderAmount, initData);
+      const res = await submitChainStake(mnemonic, sliderAmount);
       if (res.success) {
-        toast({ title: "Stake Confirmed", description: `${sliderAmount} EAST staked.` });
+        toast({ title: "On-chain stake submitted", description: `${sliderAmount} EAST (${res.status})` });
         refreshUser();
         setSliderAmount(0);
       } else {
-        toast({ variant: "destructive", title: "Stake Failed", description: res.error });
+        const detail =
+          typeof res.detail === "string"
+            ? res.detail
+            : res.detail
+              ? JSON.stringify(res.detail).slice(0, 280)
+              : res.error;
+        toast({ variant: "destructive", title: "Stake Failed", description: detail || res.error });
       }
     } else {
-      const res = await requestUnstake(userId, sliderAmount, initData);
+      const res = await submitChainTx({
+        mnemonic,
+        type: "request_unstake",
+        amountHuman: sliderAmount,
+      });
       if (res.success) {
-        toast({ title: "Unstake Requested", description: `${sliderAmount} EAST will be claimable in 24h.` });
+        toast({ title: "On-chain unstake submitted", description: `${sliderAmount} EAST (${res.status})` });
         refreshUser();
         setSliderAmount(0);
       } else {
-        toast({ variant: "destructive", title: "Unstake Failed", description: res.error });
+        const detail =
+          typeof res.detail === "string"
+            ? res.detail
+            : res.detail
+              ? JSON.stringify(res.detail).slice(0, 280)
+              : res.error;
+        toast({ variant: "destructive", title: "Unstake Failed", description: detail || res.error });
       }
     }
     setWidgetLoading(false);
@@ -161,35 +158,39 @@ export default function EastpassPage() {
     setLoadingStake(true);
     const amount = pendingTier.requirement - currentStaked;
 
-    if (useChainTxEnabled()) {
-      if (!mnemonic || isLocked) {
-        toast({
-          variant: "destructive",
-          title: "Vault locked",
-          description: "Unlock your self-custody wallet to sign on-chain stake.",
-        });
-        setLoadingStake(false);
-        return;
-      }
-      const res = await submitChainStake(mnemonic, amount);
-      if (res.success) {
-        toast({ title: "On-chain stake submitted", description: `tx ${res.txHash?.substring(0, 16)}…` });
-        refreshUser();
-      } else {
-        toast({ variant: "destructive", title: "Stake Failed", description: res.error });
-      }
+    // On-chain ONLY — no Neon stakeEast fallback
+    if (!useChainTxEnabled()) {
+      toast({
+        variant: "destructive",
+        title: "On-chain staking disabled",
+        description: "Set NEXT_PUBLIC_USE_CHAIN_TX=true (or leave unset).",
+      });
       setLoadingStake(false);
       setSigOpen(false);
       setPendingTier(null);
       return;
     }
-
-    const res = await stakeEast(userId, amount, initData);
+    if (!mnemonic || isLocked) {
+      toast({
+        variant: "destructive",
+        title: "Vault locked",
+        description: "Unlock your self-custody wallet to sign on-chain stake.",
+      });
+      setLoadingStake(false);
+      return;
+    }
+    const res = await submitChainStake(mnemonic, amount);
     if (res.success) {
-      toast({ title: "Stake Confirmed", description: `Proof Hash: ${res.proofHash?.substring(0, 16)}...` });
+      toast({ title: "On-chain stake submitted", description: `tx ${res.txHash?.substring(0, 16)}…` });
       refreshUser();
     } else {
-      toast({ variant: "destructive", title: "Stake Failed", description: res.error });
+      const detail =
+        typeof res.detail === "string"
+          ? res.detail
+          : res.detail
+            ? JSON.stringify(res.detail).slice(0, 280)
+            : res.error;
+      toast({ variant: "destructive", title: "Stake Failed", description: detail || res.error });
     }
     setLoadingStake(false);
     setSigOpen(false);

@@ -78,13 +78,19 @@ export function subunitsToHumanEast(subunits: number): number {
 /**
  * Whether the UI should submit EAST sends/stakes to the chain (Hub → validator)
  * instead of the legacy Neon mempool path.
- * Opt-in via NEXT_PUBLIC_USE_CHAIN_TX=true (or server USE_CHAIN_TX).
+ *
+ * Default: ON (on-chain only). Set NEXT_PUBLIC_USE_CHAIN_TX=false only to
+ * force the old Neon path. Wallet Send / EASTPASS must not debit Neon for
+ * normal transfers.
  */
 export function useChainTxEnabled(): boolean {
-  if (typeof process === "undefined") return false;
+  if (typeof process === "undefined") return true;
   const v =
     process.env.NEXT_PUBLIC_USE_CHAIN_TX ||
     process.env.USE_CHAIN_TX ||
     "";
-  return v === "true" || v === "1";
+  // Explicit off only
+  if (v === "false" || v === "0") return false;
+  // Default true when unset / "true" / "1"
+  return true;
 }

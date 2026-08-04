@@ -13,6 +13,8 @@ import { useToast } from '@/hooks/use-toast';
 import { useTelegram } from '@/hooks/use-telegram';
 import { generateEastId, getPassStatusLabel, isPassActive } from '@/lib/east-id';
 import { SignatureDialog } from '@/components/SignatureDialog';
+import { useWallet } from '@/lib/wallet-context';
+import { submitChainStake, submitChainTx, useChainTxEnabled } from '@/lib/chain-tx-client';
 
 function formatCountdown(secs: number) {
   if (secs <= 0) return '00:00:00';
@@ -25,6 +27,7 @@ function formatCountdown(secs: number) {
 export default function EastpassPage() {
   const { toast } = useToast();
   const { userId, user, initData, loading, refreshUser } = useTelegram();
+  const { mnemonic, isLocked } = useWallet();
   const [loadingStake, setLoadingStake] = useState(false);
   const [sigOpen, setSigOpen] = useState(false);
   const [pendingTier, setPendingTier] = useState<any>(null);
@@ -61,6 +64,46 @@ export default function EastpassPage() {
   const handleWidgetConfirm = async () => {
     if (sliderAmount <= 0) return;
     setWidgetLoading(true);
+
+    // On-chain path (Hub → validator) when enabled and vault is unlocked
+    if (useChainTxEnabled()) {
+      if (!mnemonic || isLocked) {
+        toast({
+          variant: "destructive",
+          title: "Vault locked",
+          description: "Unlock your self-custody wallet to sign on-chain stake/unstake.",
+        });
+        setWidgetLoading(false);
+        return;
+      }
+      if (stakeMode === 'stake') {
+        const res = await submitChainStake(mnemonic, sliderAmount);
+        if (res.success) {
+          toast({ title: "On-chain stake submitted", description: `${sliderAmount} EAST (${res.status})` });
+          refreshUser();
+          setSliderAmount(0);
+        } else {
+          toast({ variant: "destructive", title: "Stake Failed", description: res.error });
+        }
+      } else {
+        const res = await submitChainTx({
+          mnemonic,
+          type: "request_unstake",
+          amountHuman: sliderAmount,
+        });
+        if (res.success) {
+          toast({ title: "On-chain unstake submitted", description: `${sliderAmount} EAST (${res.status})` });
+          refreshUser();
+          setSliderAmount(0);
+        } else {
+          toast({ variant: "destructive", title: "Unstake Failed", description: res.error });
+        }
+      }
+      setWidgetLoading(false);
+      setWidgetSigOpen(false);
+      return;
+    }
+
     if (stakeMode === 'stake') {
       const res = await stakeEast(userId, sliderAmount, initData);
       if (res.success) {
@@ -117,6 +160,30 @@ export default function EastpassPage() {
     if (!pendingTier) return;
     setLoadingStake(true);
     const amount = pendingTier.requirement - currentStaked;
+
+    if (useChainTxEnabled()) {
+      if (!mnemonic || isLocked) {
+        toast({
+          variant: "destructive",
+          title: "Vault locked",
+          description: "Unlock your self-custody wallet to sign on-chain stake.",
+        });
+        setLoadingStake(false);
+        return;
+      }
+      const res = await submitChainStake(mnemonic, amount);
+      if (res.success) {
+        toast({ title: "On-chain stake submitted", description: `tx ${res.txHash?.substring(0, 16)}…` });
+        refreshUser();
+      } else {
+        toast({ variant: "destructive", title: "Stake Failed", description: res.error });
+      }
+      setLoadingStake(false);
+      setSigOpen(false);
+      setPendingTier(null);
+      return;
+    }
+
     const res = await stakeEast(userId, amount, initData);
     if (res.success) {
       toast({ title: "Stake Confirmed", description: `Proof Hash: ${res.proofHash?.substring(0, 16)}...` });

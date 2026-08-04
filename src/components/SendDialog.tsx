@@ -15,6 +15,7 @@ import { useRPC } from '@/lib/rpc-context';
 import { sendEvmTransaction, sendSolanaTransaction, estimateEvmFee, estimateSolanaFee, type FeeEstimate } from '@/lib/send-service';
 import { signEvmMessage } from '@/lib/wallet-service';
 import { buildSendEastPayload } from '@/lib/tx-payload-builders';
+import { submitChainTransfer, useChainTxEnabled } from '@/lib/chain-tx-client';
 import { isAddress } from 'ethers';
 import { PublicKey } from '@solana/web3.js';
 import { QrCameraScanner } from '@/components/QrCameraScanner';
@@ -182,13 +183,45 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
     const amt = parseFloat(amount);
     try {
       if (isEastToken) {
+        // ── Preferred path: Hub → east-validator (real on-chain transfer) ──
+        // Opt-in with NEXT_PUBLIC_USE_CHAIN_TX=true once Hub + validator are live.
+        // Signs EASTCHAIN_TX|{hash} (EIP-191) and POSTs to /api/chain/tx which
+        // proxies to Railway Hub /rpc/tx → validator POST /tx.
+        if (useChainTxEnabled()) {
+          const chainResult = await submitChainTransfer(
+            verifiedMnemonic,
+            address.trim(),
+            amt,
+          );
+          if (chainResult.success) {
+            setTxHash(chainResult.txHash || null);
+            setStep('result');
+            toast({
+              title: 'On-chain transfer submitted',
+              description: `${amt} EAST → ${truncate(address)} (${chainResult.status}) via ${chainResult.via || 'hub'}`,
+            });
+            refreshUser();
+          } else {
+            const detail =
+              typeof chainResult.detail === 'string'
+                ? chainResult.detail
+                : chainResult.error;
+            toast({
+              variant: 'destructive',
+              title: 'On-chain transfer failed',
+              description: detail || 'Unknown error',
+            });
+            setStep('form');
+          }
+          return;
+        }
+
+        // ── Legacy path: Neon identity + mempool (Telegram / dual-mode auth) ──
         if (!userId) {
           toast({ variant: 'destructive', title: 'Not authenticated', description: 'Telegram session not found.' });
           return;
         }
 
-        // Self-custody signature is now mandatory (password verified above),
-        // not just an optional add-on to Telegram initData.
         let signature: string | undefined;
         try {
           const payload = buildSendEastPayload(userId, address.trim(), amt);

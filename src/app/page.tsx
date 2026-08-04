@@ -311,13 +311,14 @@ export default function Home() {
         <div className="relative z-10 flex flex-col items-center text-center pt-4 pb-2 px-4">
           <h2 className="text-5xl font-bold tracking-tight uppercase flex items-center justify-center filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] relative">
             <div className="flex items-center relative z-10">
-              <span className="font-logo text-primary -mr-[0.03em]">E</span>
+              {/* E shifted left so it does not crowd the Λ */}
+              <span className="font-logo text-primary -translate-x-[0.12em] mr-[0.14em]">E</span>
               <span className="font-logo mx-0.5 text-white text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
               <span className="font-logo text-primary">ST</span>
             </div>
             <div className="absolute inset-0 flex items-center justify-center mix-blend-screen pointer-events-none z-20">
               <div className="flex items-center animate-shimmer-shine bg-[linear-gradient(to_right,transparent_30%,white_50%,transparent_70%)] bg-[length:200%_auto] bg-clip-text text-transparent">
-                <span className="font-logo -mr-[0.03em]">E</span>
+                <span className="font-logo -translate-x-[0.12em] mr-[0.14em]">E</span>
                 <span className="font-logo mx-0.5 text-[1.15em] font-normal leading-none translate-y-[-0.05em]">Λ</span>
                 <span className="font-logo">ST</span>
               </div>
@@ -459,13 +460,13 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Transfer on-chain: Neon mining balance → validator */}
+            {/* Transfer on-chain: SQL/app balance → validator ledger */}
             <div className="mt-5 pt-4 border-t border-white/5 space-y-2">
               <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/30">
                 Transfer on-chain
               </p>
               <p className="text-[10px] text-white/40 leading-relaxed">
-                Move mining balance from Neon to East (validator). Neon decreases; blockchain credits your wallet.
+                Move mining balance from the app database (SQL) onto the East chain. Database balance decreases; on-chain wallet is credited.
               </p>
               <div className="flex gap-2">
                 <input

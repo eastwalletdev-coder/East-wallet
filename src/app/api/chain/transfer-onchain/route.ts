@@ -5,8 +5,8 @@ import { verifyIdentityOrSignature } from "@/lib/auth/dual-mode-identity";
 /**
  * POST /api/chain/transfer-onchain
  *
- * Self-service bridge: Neon mining balance → validator (on-chain).
- * 1) Debit identity.users.balance (Neon)
+ * Self-service bridge: app database (SQL) mining balance → validator (on-chain).
+ * 1) Debit identity.users.balance (SQL / identity DB)
  * 2) Credit validator account (add subunits; uses GET /account + POST /admin/seed)
  *
  * Body:

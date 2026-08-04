@@ -21,7 +21,10 @@ export type Token = {
   name: string;
   symbol: string;
   balance: string;
+  /** Total holding value in USD — right column, under the amount. */
   value: string;
+  /** Per-unit USD for left column. EAST unlisted → "$0.00". */
+  unitPrice?: string;
   change: string;
   logoURI: string;
   imageHint: string;
@@ -32,6 +35,34 @@ export type Token = {
   /** True = not yet wired to a verified on-chain source — see file header. */
   comingSoon?: boolean;
 };
+
+/** Display-only spot. EAST not listed → 0. */
+const USD_SPOT: Record<string, number> = {
+  EAST: 0,
+  ETH: 1867.47,
+  WBTC: 95000,
+  BTC: 95000,
+  USDC: 1,
+  USDT: 1,
+  SOL: 145,
+  BNB: 580,
+  BUSD: 1,
+};
+
+function formatUsd(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '$0.00';
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function applyUsdFields(token: Token, balanceNum: number): Token {
+  const spot = USD_SPOT[token.symbol] ?? 0;
+  return {
+    ...token,
+    unitPrice: formatUsd(spot),
+    value: formatUsd(balanceNum * spot),
+  };
+}
 
 const TOKEN_LIBRARY: Token[] = [
   // ── East (native, 6 decimals) ────────────────────────────────
@@ -128,18 +159,30 @@ export async function scanTokensForAddress(
   rpcUrl?: string
 ): Promise<Token[]> {
   const chainTokens = TOKEN_LIBRARY.filter(t => t.chain === chain);
-  if (!rpcUrl || !address) {
-    return chainTokens.map(t => ({ ...t, comingSoon: true })); // no live RPC selected yet — show as pending, not fake data
+  // East can resolve balance via Hub/validator even without a generic EVM RPC.
+  if (!address || (!rpcUrl && chain !== 'East')) {
+    return chainTokens.map(t => ({ ...t, comingSoon: true }));
   }
 
   const results = await Promise.all(chainTokens.map(async (token) => {
-    if (token.comingSoon) return token; // unverified contract address — don't attempt a fetch
+    if (token.comingSoon) {
+      return applyUsdFields({ ...token }, 0);
+    }
 
     try {
       let balance: number;
       const isNative = token.symbol === NATIVE_SYMBOL_BY_CHAIN[chain] && !token.contractAddress;
 
-      if (chain === 'Solana') {
+      // East native: prefer Hub/validator account API (6-dec subunits), not EVM eth_getBalance
+      if (chain === 'East' && isNative) {
+        try {
+          const { fetchChainAccount } = await import('@/lib/chain-balance');
+          const acc = await fetchChainAccount(address);
+          balance = acc?.balance ?? 0;
+        } catch {
+          balance = await fetchNativeEvmBalance(rpcUrl, address, 6);
+        }
+      } else if (chain === 'Solana') {
         balance = isNative
           ? await fetchSolNativeBalance(rpcUrl, address)
           : await fetchSplTokenBalance(rpcUrl, token.contractAddress!, address);
@@ -150,10 +193,13 @@ export async function scanTokensForAddress(
           : await fetchErc20Balance(rpcUrl, token.contractAddress!, address, token.decimals || 18);
       }
 
-      return { ...token, balance: balance.toFixed(token.symbol === 'BTC' || token.symbol === 'WBTC' ? 6 : 4) };
+      const balStr = balance.toFixed(
+        token.symbol === 'BTC' || token.symbol === 'WBTC' ? 6 : token.symbol === 'EAST' ? 2 : 4,
+      );
+      return applyUsdFields({ ...token, balance: balStr }, balance);
     } catch (err) {
       console.error(`[EASTCHAIN] Balance fetch failed for ${token.symbol} on ${chain}:`, err);
-      return { ...token, balance: '—' }; // fetch failed — show a dash, not a misleading 0.00
+      return applyUsdFields({ ...token, balance: '—' }, 0);
     }
   }));
 

@@ -180,13 +180,16 @@ export async function scanTokensForAddress(
           const acc = await fetchChainAccount(address);
           balance = acc?.balance ?? 0;
         } catch {
+          if (!rpcUrl) throw new Error('no_rpc_for_east_fallback');
           balance = await fetchNativeEvmBalance(rpcUrl, address, 6);
         }
       } else if (chain === 'Solana') {
+        if (!rpcUrl) throw new Error('no_rpc');
         balance = isNative
           ? await fetchSolNativeBalance(rpcUrl, address)
           : await fetchSplTokenBalance(rpcUrl, token.contractAddress!, address);
       } else {
+        if (!rpcUrl) throw new Error('no_rpc');
         const nativeDecimals = chain === 'East' ? 6 : 18;
         balance = isNative
           ? await fetchNativeEvmBalance(rpcUrl, address, nativeDecimals)

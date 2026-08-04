@@ -59,18 +59,26 @@ export function SplashScreen() {
       )}>
         <div className="flex flex-col items-center text-center w-full">
           <h1 className="text-[clamp(3rem,14vw,4.5rem)] font-bold tracking-tight uppercase flex items-center justify-center filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] relative">
-            <div className="relative inline-flex items-center z-10 overflow-hidden">
+            <div className="flex items-center relative z-10">
               <span className={cn(letterE, "text-primary")}>E</span>
               <span className={cn(letterA, "text-white")}>Λ</span>
               <span className={cn(letterST, "text-primary")}>ST</span>
-              <span
-                aria-hidden
-                className="pointer-events-none absolute inset-y-0 w-[38%] animate-logo-shine-sweep"
+            </div>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+              <div
+                className="flex items-center animate-shimmer-shine text-transparent bg-clip-text select-none"
                 style={{
-                  background: 'linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.5) 50%, transparent 100%)',
-                  mixBlendMode: 'soft-light',
+                  backgroundImage:
+                    'linear-gradient(90deg, transparent 0%, transparent 40%, rgba(255,255,255,0.85) 50%, transparent 60%, transparent 100%)',
+                  backgroundSize: '200% 100%',
+                  WebkitBackgroundClip: 'text',
+                  backgroundClip: 'text',
                 }}
-              />
+              >
+                <span className={letterE}>E</span>
+                <span className={letterA}>Λ</span>
+                <span className={letterST}>ST</span>
+              </div>
             </div>
           </h1>
           <div className="mt-5 flex flex-col items-center gap-2 w-full px-2">

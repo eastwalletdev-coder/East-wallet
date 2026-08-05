@@ -18,7 +18,6 @@ import { buildSendEastPayload } from '@/lib/tx-payload-builders';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator, queueTransaction, getTransactionStatus } from '@/lib/block-engine';
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
 import { publishBlockToRailway } from '@/lib/lightnode-publisher';
-import { fetchChainAccount } from '@/lib/chain-balance';
 import { notifyHubBalanceChanged } from '@/lib/hub-notify';
 import { generateEastId } from '@/lib/east-id';
 import { stakeEastContract, requestUnstakeContract, claimUnstakeContract, claimMiningRewardContract, claimVestedContract } from '@/actions/contract-actions';
@@ -133,37 +132,6 @@ async function sealSingleTx(
 }
 
 // ─── Register / Update User ───────────────────────────────────────
-// ─── On-chain account read (self-custody EVM address) ──────────────
-// Thin server-action wrapper so client components that only know the
-// user's self-custody EVM address (derived client-side from mnemonic —
-// see wallet-service.ts's getEvmIdentity, never sent to the server) can
-// fetch that address's real on-chain balance/stake/pending-unstake.
-//
-// This is intentionally separate from registerOrUpdateUser's Postgres
-// `walletAddress`: that's a deterministic custodial hash of the Telegram
-// ID (see generateWalletFromTelegramId in lib/blockchain.ts) and is a
-// DIFFERENT address from the self-custody EVM one that actually holds
-// on-chain funds and signs on-chain transactions. Postgres balance/stake
-// fields are legacy display data only — never the source of truth once
-// a user has an on-chain address.
-export async function getChainAccountForAddress(address: string) {
-  if (!address || !address.startsWith('0x')) {
-    return { success: false as const, error: 'address required (0x...)' };
-  }
-  const account = await fetchChainAccount(address);
-  if (!account) {
-    return { success: false as const, error: 'validator_unreachable_or_empty' };
-  }
-  return {
-    success: true as const,
-    balance: account.balance,
-    staked: account.staked,
-    pendingUnstake: account.pendingUnstake,
-    nonce: account.nonce,
-    source: account.source,
-  };
-}
-
 export async function registerOrUpdateUser(
   telegramId: string, username: string, initData?: string, startParam?: string
 ) {

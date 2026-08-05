@@ -188,3 +188,25 @@ export async function submitChainStake(
     amountHuman,
   });
 }
+
+export async function submitChainRequestUnstake(
+  mnemonic: string,
+  amountHuman: number,
+): Promise<SubmitChainTxResult> {
+  return submitChainTx({
+    mnemonic,
+    type: "request_unstake",
+    amountHuman,
+  });
+}
+
+export async function submitChainClaimUnstake(
+  mnemonic: string,
+  amountHuman: number,
+): Promise<SubmitChainTxResult> {
+  return submitChainTx({
+    mnemonic,
+    type: "claim_unstake",
+    amountHuman,
+  });
+}

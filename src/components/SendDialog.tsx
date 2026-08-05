@@ -204,7 +204,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
           setStep('result');
           toast({
             title: 'On-chain transfer submitted',
-            description: `${amt} EAST → ${truncate(address)} (${chainResult.status}) via ${chainResult.via || 'hub'}`,
+            description: `${amt} EAST → ${truncate(address)} (${chainResult.status}). Balance updates after next block (~3 min).`,
           });
           refreshUser();
         } else {

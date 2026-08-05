@@ -8,7 +8,6 @@ import { Slider } from '@/components/ui/slider';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Zap, Shield, TrendingUp, Lock, CheckCircle2, Fingerprint, QrCode, Coins, ArrowDownToLine, Clock } from 'lucide-react';
 import { EASTPASS_TIERS, getTierFromStaked } from '@/lib/ledger';
-import { claimUnstake } from '@/actions/mining-actions';
 import { useToast } from '@/hooks/use-toast';
 import { useTelegram } from '@/hooks/use-telegram';
 import { generateEastId, getPassStatusLabel, isPassActive } from '@/lib/east-id';
@@ -16,7 +15,7 @@ import { SignatureDialog } from '@/components/SignatureDialog';
 import { useWallet } from '@/lib/wallet-context';
 import { submitChainStake, submitChainTx, useChainTxEnabled } from '@/lib/chain-tx-client';
 import { getEvmIdentity } from '@/lib/wallet-service';
-import { getChainAccountForAddress } from '@/actions/mining-actions';
+import { getChainAccountForAddress } from '@/actions/chain-account-actions';
 
 function formatCountdown(secs: number) {
   if (secs <= 0) return '00:00:00';
@@ -149,7 +148,7 @@ export default function EastpassPage() {
     if (stakeMode === 'stake') {
       const res = await submitChainStake(mnemonic, sliderAmount);
       if (res.success) {
-        toast({ title: "On-chain stake submitted", description: `${sliderAmount} EAST (${res.status})` });
+        toast({ title: "On-chain stake submitted", description: `${sliderAmount} EAST (${res.status}). Updates after next block (~3 min).` });
         refreshUser();
         refreshChainAccount();
         setSliderAmount(0);
@@ -169,7 +168,7 @@ export default function EastpassPage() {
         amountHuman: sliderAmount,
       });
       if (res.success) {
-        toast({ title: "On-chain unstake submitted", description: `${sliderAmount} EAST (${res.status})` });
+        toast({ title: "On-chain unstake submitted", description: `${sliderAmount} EAST (${res.status}). Updates after next block (~3 min).` });
         refreshUser();
         refreshChainAccount();
         setSliderAmount(0);
@@ -189,21 +188,60 @@ export default function EastpassPage() {
 
   const handleClaimUnstake = async () => {
     setClaimLoading(true);
-    const res = await claimUnstake(userId, initData);
+    if (!useChainTxEnabled()) {
+      toast({
+        variant: "destructive",
+        title: "On-chain claim disabled",
+        description: "Set NEXT_PUBLIC_USE_CHAIN_TX=true (or leave unset).",
+      });
+      setClaimLoading(false);
+      return;
+    }
+    if (!mnemonic || isLocked) {
+      toast({
+        variant: "destructive",
+        title: "Vault locked",
+        description: "Unlock wallet to claim pending unstake on-chain.",
+      });
+      setClaimLoading(false);
+      return;
+    }
+    const amountHuman = pendingUnstake > 0 ? pendingUnstake : 0;
+    if (amountHuman <= 0) {
+      toast({ variant: "destructive", title: "Nothing to claim", description: "No pending unstake on-chain." });
+      setClaimLoading(false);
+      return;
+    }
+    const res = await submitChainTx({
+      mnemonic,
+      type: "claim_unstake",
+      amountHuman,
+    });
     if (res.success) {
-      toast({ title: "Claimed", description: `${res.claimed} EAST added to your balance.` });
+      toast({
+        title: "On-chain claim submitted",
+        description: `${amountHuman} EAST (${res.status}). Balance updates after next block (~3 min).`,
+      });
       refreshUser();
-    } else if (res.error?.startsWith('CLAIM_DELAY_ACTIVE')) {
-      toast({ variant: "destructive", title: "Still Locked", description: "The 24h claim delay hasn't passed yet." });
+      refreshChainAccount();
     } else {
-      toast({ variant: "destructive", title: "Claim Failed", description: res.error });
+      const detail =
+        typeof res.detail === "string"
+          ? res.detail
+          : res.detail
+            ? JSON.stringify(res.detail).slice(0, 280)
+            : res.error;
+      toast({ variant: "destructive", title: "Claim Failed", description: detail || res.error });
     }
     setClaimLoading(false);
   };
 
   const currentStaked = chainAccount?.staked || 0;
   const currentTier = getTierFromStaked(currentStaked);
-  const walletAddress = user?.walletAddress || '0x0000000000000000000000000000000000000000';
+  let walletAddress = user?.walletAddress || '0x0000000000000000000000000000000000000000';
+  try {
+    if (mnemonic && !isLocked) walletAddress = getEvmIdentity(mnemonic).address;
+  } catch { /* keep profile */ }
   const eastId = walletAddress !== '0x...' ? generateEastId(walletAddress) : 'EAST-????-????-????';
   const passLabel = getPassStatusLabel(user?.eastpassTier || 0);
   const passActive = isPassActive(user?.eastpassTier || 0);
@@ -375,6 +413,16 @@ export default function EastpassPage() {
       {/* ── Flexible Stake Widget — its own section, separate from tier cards ── */}
       <div className="space-y-3 pt-2">
         <p className="text-white/40 text-[10px] uppercase font-bold px-1">Stake / Unstake EAST</p>
+        {(!mnemonic || isLocked) && (
+          <p className="text-[10px] text-amber-400/90 px-1">
+            Unlock self-custody wallet to load on-chain balance/stake and sign txs.
+          </p>
+        )}
+        {chainAccount && (
+          <p className="text-[9px] text-white/25 px-1 font-mono">
+            On-chain · free {availableBalance.toLocaleString()} · staked {currentStaked.toLocaleString()} EAST
+          </p>
+        )}
 
         <Card className="bg-white/[0.03] border-white/5 rounded-2xl overflow-hidden">
           <CardContent className="p-4 space-y-4">

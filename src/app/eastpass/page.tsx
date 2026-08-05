@@ -15,6 +15,8 @@ import { generateEastId, getPassStatusLabel, isPassActive } from '@/lib/east-id'
 import { SignatureDialog } from '@/components/SignatureDialog';
 import { useWallet } from '@/lib/wallet-context';
 import { submitChainStake, submitChainTx, useChainTxEnabled } from '@/lib/chain-tx-client';
+import { getEvmIdentity } from '@/lib/wallet-service';
+import { getChainAccountForAddress } from '@/actions/mining-actions';
 
 function formatCountdown(secs: number) {
   if (secs <= 0) return '00:00:00';
@@ -40,10 +42,69 @@ export default function EastpassPage() {
   const [claimLoading, setClaimLoading] = useState(false);
   const [claimCountdown, setClaimCountdown] = useState(0);
 
-  const availableBalance = user?.balance || 0;
-  const pendingUnstake = user?.pendingUnstakeAmount || 0;
+  // ── On-chain account (self-custody EVM address) ───────────────────
+  // Source of truth for balance/staked/pendingUnstake. Postgres's
+  // user.balance/stakedAmount belong to a different (custodial) address
+  // and are stale once a user has funds on-chain — see the doc comment
+  // on getChainAccountForAddress in actions/mining-actions.ts.
+  const [chainAccount, setChainAccount] = useState<{
+    balance: number;
+    staked: number;
+    pendingUnstake: number;
+  } | null>(null);
+  const [chainAccountLoading, setChainAccountLoading] = useState(true);
+
+  useEffect(() => {
+    if (!mnemonic || isLocked) {
+      setChainAccount(null);
+      setChainAccountLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setChainAccountLoading(true);
+    const { address } = getEvmIdentity(mnemonic);
+    getChainAccountForAddress(address)
+      .then((res) => {
+        if (cancelled) return;
+        if (res.success) {
+          setChainAccount({
+            balance: res.balance,
+            staked: res.staked,
+            pendingUnstake: res.pendingUnstake,
+          });
+        } else {
+          setChainAccount(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setChainAccountLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mnemonic, isLocked]);
+
+  // refreshChainAccount — re-fetch after a stake/unstake/send submits
+  // successfully, so the UI reflects the new balance without a full
+  // page reload.
+  const refreshChainAccount = () => {
+    if (!mnemonic || isLocked) return;
+    const { address } = getEvmIdentity(mnemonic);
+    getChainAccountForAddress(address).then((res) => {
+      if (res.success) {
+        setChainAccount({
+          balance: res.balance,
+          staked: res.staked,
+          pendingUnstake: res.pendingUnstake,
+        });
+      }
+    });
+  };
+
+  const availableBalance = chainAccount?.balance || 0;
+  const pendingUnstake = chainAccount?.pendingUnstake || 0;
   const pendingClaimableAt = user?.pendingUnstakeClaimableAt || 0;
-  const widgetMax = stakeMode === 'stake' ? availableBalance : (user?.stakedAmount || 0);
+  const widgetMax = stakeMode === 'stake' ? availableBalance : (chainAccount?.staked || 0);
 
   useEffect(() => {
     setSliderAmount(0);
@@ -90,6 +151,7 @@ export default function EastpassPage() {
       if (res.success) {
         toast({ title: "On-chain stake submitted", description: `${sliderAmount} EAST (${res.status})` });
         refreshUser();
+        refreshChainAccount();
         setSliderAmount(0);
       } else {
         const detail =
@@ -109,6 +171,7 @@ export default function EastpassPage() {
       if (res.success) {
         toast({ title: "On-chain unstake submitted", description: `${sliderAmount} EAST (${res.status})` });
         refreshUser();
+        refreshChainAccount();
         setSliderAmount(0);
       } else {
         const detail =
@@ -138,7 +201,7 @@ export default function EastpassPage() {
     setClaimLoading(false);
   };
 
-  const currentStaked = user?.stakedAmount || 0;
+  const currentStaked = chainAccount?.staked || 0;
   const currentTier = getTierFromStaked(currentStaked);
   const walletAddress = user?.walletAddress || '0x0000000000000000000000000000000000000000';
   const eastId = walletAddress !== '0x...' ? generateEastId(walletAddress) : 'EAST-????-????-????';
@@ -183,6 +246,7 @@ export default function EastpassPage() {
     if (res.success) {
       toast({ title: "On-chain stake submitted", description: `tx ${res.txHash?.substring(0, 16)}…` });
       refreshUser();
+      refreshChainAccount();
     } else {
       const detail =
         typeof res.detail === "string"
@@ -266,7 +330,7 @@ export default function EastpassPage() {
         {EASTPASS_TIERS.filter(t => t.level > 0).map((tier) => {
           const isCurrent = currentTier.level === tier.level;
           const isHigher = tier.level > currentTier.level;
-          const canStake = (user?.balance || 0) >= tier.requirement - currentStaked;
+          const canStake = availableBalance >= tier.requirement - currentStaked;
           return (
             <Card key={tier.level} className={`bg-white/[0.03] border-white/5 rounded-2xl overflow-hidden ${isCurrent ? 'ring-1 ring-primary/50' : ''}`}>
               <CardContent className="p-4">
@@ -381,7 +445,7 @@ export default function EastpassPage() {
               value={[sliderAmount]}
               max={Math.max(widgetMax, 1)}
               step={1}
-              disabled={widgetMax <= 0}
+              disabled={widgetMax <= 0 || chainAccountLoading}
               onValueChange={(v) => setSliderAmount(v[0])}
               className="py-1"
             />
@@ -392,7 +456,7 @@ export default function EastpassPage() {
                 <Button
                   key={pct}
                   variant="outline"
-                  disabled={widgetMax <= 0}
+                  disabled={widgetMax <= 0 || chainAccountLoading}
                   onClick={() => setPercent(pct / 100)}
                   className="h-9 rounded-xl bg-white/[0.03] border-white/10 text-white/60 hover:bg-primary/10 hover:text-primary hover:border-primary/20 text-[10px] font-black uppercase"
                 >
@@ -402,7 +466,7 @@ export default function EastpassPage() {
             </div>
 
             <Button
-              disabled={sliderAmount <= 0 || widgetLoading || sliderAmount > widgetMax}
+              disabled={sliderAmount <= 0 || widgetLoading || chainAccountLoading || sliderAmount > widgetMax}
               onClick={() => setWidgetSigOpen(true)}
               className="w-full h-11 rounded-xl bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 text-[10px] font-black uppercase tracking-widest"
             >

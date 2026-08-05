@@ -2,12 +2,10 @@
  * Mirror east-validator tip → Neon ledger.blocks (+ chain_meta).
  * Explorer keeps reading Neon (getChainState / getRecentBlocks) + Redis.
  * Validator remains source of truth for balances/tx; Neon is read replica for UI.
+ *
+ * No dependency on redis-chain-explorer (optional package).
  */
 import { ledgerPool } from '@/lib/db/ledger';
-import {
-  getCachedValidatorExplorerState,
-  setCachedValidatorExplorerState,
-} from '@/lib/db/redis-chain-explorer';
 
 function validatorBase(): string {
   return (process.env.EAST_VALIDATOR_URL || process.env.VALIDATOR_HTTP_URL || '')
@@ -59,7 +57,7 @@ export type SyncResult = {
 
 /**
  * Pull last `lookback` blocks from validator and upsert into ledger.blocks.
- * Safe to run every 30–60s via cron.
+ * Safe to run every 30–60s via QStash.
  */
 export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResult> {
   const latest = await chainGet('/block/latest');
@@ -89,7 +87,6 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
       const txCount = Number(block.tx_count || 0) || 0;
       const proposer = String(block.proposer || 'validator');
       const ts = Number(block.timestamp || Date.now());
-      // sequence_hash: reuse state_root or hash if no VSH on validator header
       const sequenceHash = String(block.state_root || block.hash || blockHash);
       const merkle = Array.isArray(block.tx_hashes)
         ? String(block.tx_hashes[0] || blockHash)
@@ -125,7 +122,6 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
       inserted++;
     }
 
-    // Tip meta for explorer / debugging
     await client.query(
       `INSERT INTO ledger.chain_meta (key, value, updated_at)
        VALUES ('validator_tip_height', $1, NOW())
@@ -159,10 +155,10 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
     client.release();
   }
 
-  // Invalidate explorer redis caches so next read is fresh
+  // Invalidate Neon explorer Redis caches (optional)
   try {
-    const { Redis } = await import('@upstash/redis');
     if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
+      const { Redis } = await import('@upstash/redis');
       const r = new Redis({
         url: process.env.UPSTASH_REDIS_REST_URL,
         token: process.env.UPSTASH_REDIS_REST_TOKEN,
@@ -172,22 +168,7 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
       await r.del('explorer:blocks:15');
     }
   } catch {
-    /* optional */
-  }
-
-  // Optional: warm validator explorer cache keys too
-  try {
-    await setCachedValidatorExplorerState({
-      status: 'active',
-      blockCount: tip,
-      lastBlockHash: String(latest.hash || ''),
-      totalMinted: 0,
-      buckets: {},
-      source: 'neon-mirror',
-      height: tip,
-    });
-  } catch {
-    /* redis-chain-explorer may not exist in all deploys */
+    /* ignore */
   }
 
   return { ok: true, tip, inserted, skipped };

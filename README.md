@@ -1,43 +1,25 @@
-# Explorer: Neon mirror dari validator (QStash, tanpa Vercel Cron)
+# Fix lightnode tip #461 (Neon) → validator height
 
-## Auth
-Sama pola `/api/empty-block`:
-1. **QStash** — header `upstash-signature` (production)
-2. **Admin** — `x-cron-secret` atau `Authorization: Bearer` = `ADMIN_SECRET`
+## Problem
+`/api/chain-height` read `MAX(block_index)` from Neon → ~461.
+Validator Railway tip is much lower. Lightnode tries download 0→461 and stalls.
 
-Tidak perlu `CRON_SECRET` / Vercel Cron (free plan).
+## Fix
+Read tip from `EAST_VALIDATOR_URL/block/latest` or `/health` (fallback Hub).
 
-## Env (sudah dipakai project Anda)
+## Deploy
+Replace `src/app/api/chain-height/route.ts` on East-wallet, redeploy Vercel.
+
+Env:
 ```
-QSTASH_CURRENT_SIGNING_KEY=...
-QSTASH_NEXT_SIGNING_KEY=...
-ADMIN_SECRET=...                 # uji manual
-EAST_VALIDATOR_URL=...
-DATABASE_LEDGER_URL=...
-UPSTASH_REDIS_REST_URL=...       # optional cache invalidate
+EAST_VALIDATOR_URL=https://east-validator-production.up.railway.app
+RAILWAY_HUB_URL=...   # optional fallback
 ```
 
-## Jadwal di Upstash QStash
-1. [console.upstash.com](https://console.upstash.com) → **QStash** → **Schedules** → Create
-2. URL: `https://YOUR_VERCEL_DOMAIN/api/explorer/sync-from-validator`
-3. Method: **POST**
-4. Cron: `* * * * *` (tiap 1 menit) atau `*/2 * * * *`
-5. Body (optional): `{"lookback":30}`
-6. Destination: production URL wallet
-
-QStash akan sign request; route memverifikasi seperti empty-block / mempool process.
-
-## Uji manual
+After deploy:
 ```bash
-curl -sS -X POST "https://YOUR_APP/api/explorer/sync-from-validator" \
-  -H "x-cron-secret: $ADMIN_SECRET" \
-  -H "Content-Type: application/json" \
-  -d '{"lookback":30}'
+curl -sS https://YOUR_APP/api/chain-height
+# latestHeight should match validator, NOT Neon 461
 ```
 
-## File
-- `src/lib/sync-validator-to-neon.ts`
-- `src/app/api/explorer/sync-from-validator/route.ts`  ← QStash-ready
-- `src/actions/sync-validator-neon-actions.ts`
-
-Repo: **East-wallet → Vercel** (bukan Hub).
+Clear lightnode local progress (optional): wipe Mini App data / localStorage key for lightnode so currentHeight resets.

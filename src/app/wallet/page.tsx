@@ -13,7 +13,7 @@ import { SendDialog } from "@/components/SendDialog";
 import { ReceiveDialog } from "@/components/ReceiveDialog";
 import { scanTokensForAddress, type Token } from "@/lib/token-service";
 import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
-import { listLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
+import { listLocalActivity, listAllLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
 import { AIScout } from "@/components/AIScout";
 import { ContractAnalyzer } from "@/components/ContractAnalyzer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -102,7 +102,7 @@ function WalletPageContent() {
         if (cancelled) return;
         setTransactions(hist);
         setPendingTransactions(pending);
-        setLocalActivity(listLocalActivity(addr));
+        setLocalActivity(listAllLocalActivity());
       } finally {
         if (!cancelled) setTxLoading(false);
       }

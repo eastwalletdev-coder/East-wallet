@@ -88,7 +88,17 @@ export function pushLocalActivity(
   };
   const prev = readAll().filter((x) => x.txHash !== row.txHash);
   writeAll([row, ...prev]);
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('east-chain-activity', { detail: row }));
+    }
+  } catch { /* ignore */ }
   return row;
+}
+
+/** All rows on this device (Mini App = one user). Prefer this on Home. */
+export function listAllLocalActivity(): LocalActivity[] {
+  return readAll();
 }
 
 export function markLocalActivityStatus(txHash: string, status: LocalActivity['status']) {

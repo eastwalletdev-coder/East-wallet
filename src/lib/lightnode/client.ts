@@ -1084,18 +1084,68 @@ export class LightNodeClient {
   // the archive is unreachable or any fetch fails, falls back to
   // Railway's normal (possibly-truncated) backfill rather than getting stuck.
   private async catchUpFromArchive(archiveBaseUrl: string, latestHeight: number) {
-    const targetHeight = latestHeight - RAILWAY_BACKFILL_LIMIT;
-    const fromHeight = this.state.currentHeight + 1;
+    // BUG FIX: old code set targetHeight = latestHeight - 1000. When tip < 1000
+    // (e.g. #518) target became negative and this function returned WITHOUT
+    // fetching any archive — UI stuck at Height #0 forever after logging
+    // "catching up from archive".
+    const base = archiveBaseUrl.replace(/\/$/, "");
+    let fromHeight = Math.max(0, this.state.currentHeight + 1);
+    let targetHeight = Math.max(fromHeight, latestHeight);
+
+    // If archive only holds a recent window (QStash lookback), skip missing
+    // genesis and jump to the lowest height the archive actually has.
+    try {
+      const tipRes = await fetch(`${base}/api/archive/headers?tip=1`);
+      if (tipRes.ok) {
+        const tipBody = await tipRes.json();
+        const archTip = typeof tipBody?.height === "number" ? tipBody.height : -1;
+        if (archTip >= 0) {
+          targetHeight = Math.min(targetHeight, archTip);
+          this.log(`Archive tip #${archTip} — syncing headers toward #${targetHeight}`);
+        }
+      }
+      // Probe first chunk: if fromHeight missing, advance to first present header
+      const probeTo = Math.min(fromHeight + 50, targetHeight);
+      const probe = await fetch(`${base}/api/archive/headers?from=${fromHeight}&to=${probeTo}`);
+      if (probe.ok) {
+        const pb = await probe.json();
+        const hdrs = Array.isArray(pb?.headers) ? pb.headers : [];
+        if (hdrs.length === 0 && fromHeight < targetHeight) {
+          // Fall back to last ~120 heights (mirror lookback)
+          const windowFrom = Math.max(0, targetHeight - 120);
+          this.log(`Archive empty at #${fromHeight} — jumping to archive window #${windowFrom}→#${targetHeight}`, "warn");
+          fromHeight = windowFrom;
+          // Allow height jump (verifyHeader permits non-contiguous when not prev+1)
+          if (this.state.currentHeight < fromHeight - 1) {
+            this.set({ currentHeight: fromHeight - 1 });
+            this.lastHash = null;
+          }
+        } else if (hdrs.length > 0) {
+          const minH = Math.min(...hdrs.map((h: any) => Number(h.height)));
+          if (minH > fromHeight) {
+            this.log(`Archive starts at #${minH} (not #${fromHeight}) — jumping`, "warn");
+            fromHeight = minH;
+            if (this.state.currentHeight < fromHeight - 1) {
+              this.set({ currentHeight: fromHeight - 1 });
+              this.lastHash = null;
+            }
+          }
+        }
+      }
+    } catch (e) {
+      this.log(`Archive probe failed — still attempting range fetch`, "warn");
+    }
 
     if (targetHeight < fromHeight) {
-      this.ws?.send(JSON.stringify({ type: "sync_request", nodeId: this.state.nodeId, fromHeight }));
+      this.log(`Nothing to fetch from archive (from #${fromHeight} > tip #${targetHeight}) — asking hub`, "warn");
+      this.ws?.send(JSON.stringify({ type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1 }));
       return;
     }
 
-    this.log(`Gap of ${latestHeight - this.state.currentHeight} blocks exceeds hub buffer — fetching archive…`);
+    this.log(`Fetching archive headers #${fromHeight}→#${targetHeight} (${targetHeight - fromHeight + 1} blocks)…`);
     await this.fetchArchiveRange(archiveBaseUrl, fromHeight, targetHeight);
 
-    // Now ask Railway for just the recent tail to reach the true live tip.
+    // Hub tail (may be empty if validator never published)
     this.ws?.send(JSON.stringify({
       type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
     }));
@@ -1125,6 +1175,9 @@ export class LightNodeClient {
         if (res.ok) {
           const body = await res.json();
           if (body?.success && Array.isArray(body.blocks)) blocks = body.blocks;
+          else this.log(`Archive blocks-range #${chunkFrom}–#${chunkTo}: empty or error`, "warn");
+        } else {
+          this.log(`Archive blocks-range HTTP ${res.status} for #${chunkFrom}–#${chunkTo}`, "warn");
         }
         // Fallback: /api/archive/headers (Neon validator mirror)
         if (blocks.length === 0) {

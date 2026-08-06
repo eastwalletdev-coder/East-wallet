@@ -20,7 +20,7 @@ import { getEvmIdentity } from "@/lib/wallet-service";
 import { SignatureDialog } from "@/components/SignatureDialog";
 import { AuditTrailSheet } from "@/components/AuditTrailSheet";
 import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
-import { listLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
+import { listLocalActivity, listAllLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
 import { MINING_REWARD } from "@/lib/blockchain";
 import { cn } from "@/lib/utils";
 import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
@@ -99,7 +99,7 @@ export default function Home() {
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   const [txLoading, setTxLoading] = useState(true);
   const [sigOpen, setSigOpen] = useState(false);
-  const [activityCollapsed, setActivityCollapsed] = useState(true);
+  const [activityCollapsed, setActivityCollapsed] = useState(false); // show Send/pending by default
   const [lightNodeMode, setLightNodeMode] = useState(false);
   const [onchainAmount, setOnchainAmount] = useState("");
   const [onchainLoading, setOnchainLoading] = useState(false);
@@ -218,7 +218,8 @@ export default function Home() {
           getEastTransactions(walletAddress),
           getPendingEastTransactions(walletAddress),
         ]);
-        const local = listLocalActivity(walletAddress);
+        // Device-local on-chain sends (vault addr may differ from profile walletAddress)
+        const local = listAllLocalActivity();
         if (!cancelled) {
           setTransactions(confirmed);
           setPendingTransactions(pending);
@@ -236,6 +237,19 @@ export default function Home() {
     const interval = setInterval(fetchTx, pendingTransactions.length > 0 ? 5_000 : 30_000);
     return () => { cancelled = true; clearInterval(interval); };
   }, [walletAddress, pendingTransactions.length]);
+
+  // Instant refresh when SendDialog writes local activity
+  useEffect(() => {
+    const onAct = () => setLocalActivity(listAllLocalActivity());
+    if (typeof window === 'undefined') return;
+    window.addEventListener('east-chain-activity', onAct as EventListener);
+    window.addEventListener('focus', onAct);
+    return () => {
+      window.removeEventListener('east-chain-activity', onAct as EventListener);
+      window.removeEventListener('focus', onAct);
+    };
+  }, []);
+
 
   useEffect(() => {
     const client = getLightNodeClient();

@@ -212,7 +212,7 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
               txHash: chainResult.txHash || `pending-${Date.now()}`,
               type: 'send',
               token: 'EAST',
-              amount: `-${amt}`,
+              amount: `-${amt} EAST`,
               status: chainResult.status === 'applied' || chainResult.status === 'queued' ? 'pending' : 'pending',
               address: address.trim(),
               wallet: fromWallet || address.trim(),

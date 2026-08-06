@@ -69,7 +69,7 @@ const RAILWAY_BACKFILL_LIMIT = 1000;
 const ARCHIVE_RANGE_CHUNK = 500; // matches MAX_RANGE server-side cap in /api/archive/blocks-range — one request covers this many heights instead of one request per height
 const FULL_SYNC_PEER_TIMEOUT_MS = 15_000; // give a peer this long before falling back to the archive
 const SYNC_REQUEST_WATCHDOG_MS = 10_000; // if a plain sync_request hasn't closed the gap by then, Railway's buffer likely didn't have it — fall back to the archive instead of hanging forever
-const LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS = 15_000; // total budget to find AND hear back from a lightnode peer before falling back to a validator/Railway — covers both "search" (waiting for a WebRTC peer to connect at all) and the actual request/response
+const LIGHTNODE_PEER_GOSSIP_TIMEOUT_MS = 15_000; // wait for active peers; only then fall back to archive/hub
 const DRIFT_RECHECK_INTERVAL_MS = 3 * 60_000; // browser-side equivalent of full-node-sync.js's periodic recheck — a missed live push self-heals within this interval instead of requiring a manual reconnect
 const PEER_EXCHANGE_INTERVAL_MS = 90_000; // how often we ask connected peers "who else do you know?" — deliberately NOT stopped when Railway disconnects, see startPeerExchange()
 const MESH_EXPANSION_INTERVAL_MS = 45_000; // how often we try turning a knownPeers hint into an actual connection — see startMeshExpansion()
@@ -211,6 +211,14 @@ function verifyHeader(header: BlockHeader, prevHeight: number, prevHash: string 
     // isn't evidence of tampering, so we accept the jump instead of getting
     // stuck forever waiting for blocks that already scrolled out of the hub's history.
     if (header.height === prevHeight + 1 && prevHash && header.previousHash !== prevHash) {
+      // Cutover Neon-L2 → east-validator: local tip may be on the old hash
+      // chain while tip/archive are validator headers. Rejecting forever
+      // leaves the node stuck (e.g. #462 of #503). Accept the jump once
+      // so catch-up can continue; continuity resumes from this header.
+      const allowCutover = process.env.NEXT_PUBLIC_ALLOW_CHAIN_CUTOVER !== "false";
+      if (allowCutover) {
+        return { valid: true, reason: "Chain cutover — previous hash mismatch accepted" };
+      }
       return { valid: false, reason: "Previous hash mismatch" };
     }
   }
@@ -924,6 +932,10 @@ export class LightNodeClient {
     sourcePeerId?: string,
     propagate: boolean = !silent || !!sourcePeerId
   ) {
+    // Normalize hub / archive / validator field names
+    if (header && !header.previousHash && header.prev_hash) header.previousHash = header.prev_hash;
+    if (header && !header.hash && header.block_hash) header.hash = header.block_hash;
+    if (header && header.height == null && header.block_index != null) header.height = header.block_index;
     const result = verifyHeader(header, this.state.currentHeight, this.lastHash);
     if (!result.valid) {
       // "Stale or duplicate" is the EXPECTED outcome when two lightnodes
@@ -1099,10 +1111,33 @@ export class LightNodeClient {
       const chunkTo = Math.min(chunkFrom + ARCHIVE_RANGE_CHUNK - 1, toHeight);
       let blocks: any[] = [];
       try {
-        const res = await fetch(`${archiveBaseUrl.replace(/\/$/, "")}/api/archive/blocks-range?from=${chunkFrom}&to=${chunkTo}`);
+        const base = archiveBaseUrl.replace(/\/$/, "");
+        // Primary: classic blocks-range (now prefers validator archive rows)
+        let res = await fetch(`${base}/api/archive/blocks-range?from=${chunkFrom}&to=${chunkTo}`);
         if (res.ok) {
           const body = await res.json();
           if (body?.success && Array.isArray(body.blocks)) blocks = body.blocks;
+        }
+        // Fallback: /api/archive/headers (Neon validator mirror)
+        if (blocks.length === 0) {
+          res = await fetch(`${base}/api/archive/headers?from=${chunkFrom}&to=${chunkTo}`);
+          if (res.ok) {
+            const body = await res.json();
+            if (body?.ok && Array.isArray(body.headers)) {
+              blocks = body.headers.map((h: any) => ({
+                success: true,
+                height: h.height,
+                hash: h.hash,
+                previousHash: h.prev_hash || h.previousHash || "GENESIS",
+                merkleRoot: h.state_root || h.hash,
+                validator: h.proposer || null,
+                timestamp: h.timestamp,
+                epoch: 0,
+                signature: h.signature || null,
+                transactions: [],
+              }));
+            }
+          }
         }
       } catch {
         // Network error — same handling as a missing block below: fall

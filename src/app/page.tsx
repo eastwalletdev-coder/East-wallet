@@ -20,6 +20,7 @@ import { getEvmIdentity } from "@/lib/wallet-service";
 import { SignatureDialog } from "@/components/SignatureDialog";
 import { AuditTrailSheet } from "@/components/AuditTrailSheet";
 import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
+import { listLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
 import { MINING_REWARD } from "@/lib/blockchain";
 import { cn } from "@/lib/utils";
 import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
@@ -94,6 +95,7 @@ export default function Home() {
   const [upgradeBannerDismissed, setUpgradeBannerDismissed] = useState(true); // default true until we know userId, avoids a flash
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [pendingTransactions, setPendingTransactions] = useState<PendingTransaction[]>([]);
+  const [localActivity, setLocalActivity] = useState<LocalActivity[]>([]);
   const [expandedTxId, setExpandedTxId] = useState<string | null>(null);
   const [txLoading, setTxLoading] = useState(true);
   const [sigOpen, setSigOpen] = useState(false);
@@ -216,7 +218,12 @@ export default function Home() {
           getEastTransactions(walletAddress),
           getPendingEastTransactions(walletAddress),
         ]);
-        if (!cancelled) { setTransactions(confirmed); setPendingTransactions(pending); }
+        const local = listLocalActivity(walletAddress);
+        if (!cancelled) {
+          setTransactions(confirmed);
+          setPendingTransactions(pending);
+          setLocalActivity(local);
+        }
       } catch {
       } finally {
         if (!cancelled) setTxLoading(false);
@@ -624,9 +631,9 @@ export default function Home() {
         {!activityCollapsed && (
           <Card className="bg-card/40 border-white/5 w-full rounded-2xl">
             <CardContent className="p-2">
-              {txLoading && transactions.length === 0 && pendingTransactions.length === 0 ? (
+              {txLoading && transactions.length === 0 && pendingTransactions.length === 0 && localActivity.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground text-center py-6">Loading transactions...</p>
-              ) : transactions.length === 0 && pendingTransactions.length === 0 ? (
+              ) : transactions.length === 0 && pendingTransactions.length === 0 && localActivity.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground text-center py-6">No transactions yet.</p>
               ) : (
                 <div className="divide-y divide-white/5 max-h-[400px] overflow-y-auto">
@@ -675,7 +682,27 @@ export default function Home() {
                       </div>
                     );
                   })}
-                  {transactions.map((tx) => {
+                  
+                  {localActivity
+                    .filter((la) => !transactions.some((x) => x.txHash === la.txHash))
+                    .filter((la) => !pendingTransactions.some((x) => x.txHash === la.txHash))
+                    .map((tx) => (
+                    <div key={`loc-${tx.id}`} className="px-1.5">
+                      <div className="w-full flex items-center justify-between py-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className="h-8 w-8 rounded-full flex items-center justify-center shrink-0 bg-primary/10">
+                            <ArrowUpRight className="w-4 h-4 text-red-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold capitalize text-white/90">{tx.type} · {tx.status}</p>
+                            <p className="text-[9px] text-muted-foreground truncate">{tx.date} · on-chain</p>
+                          </div>
+                        </div>
+                        <p className="text-xs font-bold text-white/80 shrink-0">{tx.amount}</p>
+                      </div>
+                    </div>
+                  ))}
+{transactions.map((tx) => {
                     const isOpen = expandedTxId === tx.txHash;
                     return (
                       <div key={tx.id} className="px-1.5">

@@ -63,9 +63,15 @@ export async function GET(req: NextRequest) {
   // ── Tier 1: ledger.blocks — one query for all headers in range, one for all their txs ──
   const ledgerClient = await ledgerPool.connect();
   try {
+    // Prefer chain_source=validator (post cutover mirror) over legacy Neon-L2 rows
     const blockRes = await ledgerClient.query(
-      `SELECT block_index, block_hash, prev_hash, merkle_root, validator_id, created_at
-       FROM ledger.blocks WHERE block_index BETWEEN $1 AND $2 ORDER BY block_index ASC`,
+      `SELECT DISTINCT ON (block_index)
+          block_index, block_hash, prev_hash, merkle_root, validator_id, created_at,
+          COALESCE(chain_source, 'legacy') AS chain_source
+       FROM ledger.blocks
+       WHERE block_index BETWEEN $1 AND $2
+       ORDER BY block_index ASC,
+         CASE WHEN COALESCE(chain_source,'') = 'validator' THEN 0 ELSE 1 END ASC`,
       [from, to]
     );
     if (blockRes.rows.length > 0) {
@@ -147,6 +153,6 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json(
     { success: true, blocks },
-    { headers: { 'Cache-Control': 'public, max-age=31536000, immutable' } }
+    { headers: { 'Cache-Control': 'public, max-age=30' } }
   );
 }

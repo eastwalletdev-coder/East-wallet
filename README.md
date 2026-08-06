@@ -1,25 +1,30 @@
-# Fix lightnode tip #461 (Neon) → validator height
+# Hard fix: lightnode stuck #462 + activity kosong
 
-## Problem
-`/api/chain-height` read `MAX(block_index)` from Neon → ~461.
-Validator Railway tip is much lower. Lightnode tries download 0→461 and stalls.
+## Root causes (teliti)
+1. Lightnode **menolak** header berikutnya karena `Previous hash mismatch` (tip lokal Neon ≠ validator).
+2. Archive path memakai `/api/archive/blocks-range` — harus berisi row `chain_source=validator` (jalankan mirror upsert).
+3. Peer search 15s + 0 peers → terasa "minta validator terus".
+4. Home **Recent Activity** hanya baca Neon — Send on-chain tidak muncul tanpa `chain-activity-local`.
 
-## Fix
-Read tip from `EAST_VALIDATOR_URL/block/latest` or `/health` (fallback Hub).
+## Files
+- `src/lib/lightnode/client.ts` — accept chain cutover; dual archive API; peer timeout 15s
+- `src/app/api/archive/blocks-range/route.ts` — prefer validator rows; short cache
+- `src/app/page.tsx` — Recent Activity + local on-chain log
+- `src/components/SendDialog.tsx` + `src/lib/chain-activity-local.ts`
+- mirror/archive helpers (upsert + `/api/archive/headers`)
 
-## Deploy
-Replace `src/app/api/chain-height/route.ts` on East-wallet, redeploy Vercel.
-
-Env:
-```
-EAST_VALIDATOR_URL=https://east-validator-production.up.railway.app
-RAILWAY_HUB_URL=...   # optional fallback
-```
-
-After deploy:
+## Deploy + wajib jalankan
 ```bash
-curl -sS https://YOUR_APP/api/chain-height
-# latestHeight should match validator, NOT Neon 461
-```
+# 1) Mirror upsert (timpa Neon L2 di height yang sama)
+curl -sS -X POST "https://thiseast.vercel.app/api/explorer/sync-from-validator" \
+  -H "x-cron-secret: $ADMIN_SECRET" -d '{"lookback":120}'
+# expect: updated > 0 or inserted > 0
 
-Clear lightnode local progress (optional): wipe Mini App data / localStorage key for lightnode so currentHeight resets.
+# 2) Env Vercel
+NEXT_PUBLIC_APP_URL=https://thiseast.vercel.app
+NEXT_PUBLIC_ALLOW_CHAIN_CUTOVER=true
+CHAIN_SIGNING_PRIVATE_KEY=...   # supaya archive bisa sign header
+NEXT_PUBLIC_CHAIN_SIGNING_ADDRESS=...
+
+# 3) Clear Mini App data (local tip 462) lalu buka node lagi
+```

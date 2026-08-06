@@ -107,6 +107,7 @@ export default function Home() {
   const [fullNodeLoading, setFullNodeLoading] = useState(false);
   const [fullNodeOn, setFullNodeOn] = useState(false);
   const [onchainAmount, setOnchainAmount] = useState("");
+  const [depositRackOpen, setDepositRackOpen] = useState(false); // closed by default
   const [onchainLoading, setOnchainLoading] = useState(false);
   const [onchainMsg, setOnchainMsg] = useState<string | null>(null);
 
@@ -508,8 +509,8 @@ async function handleTransferOnchain() {
         <Card className="glass-card overflow-hidden border-white/5 w-full">
           <div className="absolute top-0 left-0 w-full h-[1px] bg-gradient-to-r from-transparent via-primary/50 to-transparent" />
           <CardContent className="p-5">
-            <div className="flex justify-between items-start">
-              <div className="space-y-2">
+            <div className="flex justify-between items-start gap-3">
+              <div className="space-y-2 min-w-0 flex-1">
                 <div className="flex items-center space-x-2">
                   <ShieldCheck className="w-3 h-3 text-primary opacity-80" />
                   <p className="text-white/40 text-[10px] font-black uppercase tracking-[0.2em]">Mining Balance</p>
@@ -526,11 +527,38 @@ async function handleTransferOnchain() {
                   </div>
                 </div>
               </div>
-              <div className={cn("p-3 rounded-2xl transition-all duration-700",
-                isNodeActive ? "bg-primary/20 scale-110" : isReadyToClaim ? "bg-white/20" : "bg-white/5")}>
-                {isReadyToClaim
-                  ? <CheckCircle2 className="w-5 h-5 text-white" />
-                  : <Zap className={cn("w-5 h-5", isNodeActive ? "text-primary fill-primary" : "text-white/20")} />}
+              {/* Compact actions beside balance */}
+              <div className="flex flex-col items-end gap-1.5 shrink-0">
+                <div className={cn("p-2 rounded-xl transition-all duration-700",
+                  isNodeActive ? "bg-primary/20" : isReadyToClaim ? "bg-white/20" : "bg-white/5")}>
+                  {isReadyToClaim
+                    ? <CheckCircle2 className="w-4 h-4 text-white" />
+                    : <Zap className={cn("w-4 h-4", isNodeActive ? "text-primary fill-primary" : "text-white/20")} />}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDepositRackOpen((o) => !o)}
+                  className="h-7 px-2 rounded-lg border border-white/10 bg-white/5 text-[9px] font-black uppercase tracking-wide text-white/70 hover:bg-white/10"
+                >
+                  {depositRackOpen ? "Hide deposit" : "To chain"}
+                </button>
+                <button
+                  type="button"
+                  disabled={fullNodeLoading || !isConnected}
+                  onClick={() => {
+                    if (fullNodeOn) handleDisableFullNode();
+                    else setFullNodeOpen(true);
+                  }}
+                  className={cn(
+                    "h-7 px-2 rounded-lg border text-[9px] font-black uppercase tracking-wide",
+                    fullNodeOn
+                      ? "border-primary/40 bg-primary/15 text-primary"
+                      : "border-white/10 bg-white/5 text-white/70 hover:bg-white/10",
+                    (!isConnected || fullNodeLoading) && "opacity-40 cursor-not-allowed",
+                  )}
+                >
+                  {fullNodeLoading ? "…" : fullNodeOn ? "Full node ON" : "Full node"}
+                </button>
               </div>
             </div>
             <div className="mt-4 space-y-1.5">
@@ -550,54 +578,51 @@ async function handleTransferOnchain() {
               </div>
             </div>
 
-            {/* Deposit mining → chain (Neon bridge). Wallet Send is separate. */}
-            <div className="mt-5 pt-4 border-t border-white/5 space-y-2">
-              <p className="text-[9px] font-black uppercase tracking-[0.2em] text-white/30">
-                Deposit mining → chain
-              </p>
-              <p className="text-[10px] text-white/40 leading-relaxed">
-                Move mining rewards from Neon to free balance on the validator.
-                Neon decreases; on-chain wallet increases. This is not a peer transfer —
-                use Wallet → Send to transfer to another user.
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="number"
-                  min="0"
-                  step="any"
-                  placeholder="Amount EAST"
-                  value={onchainAmount}
-                  onChange={(e) => setOnchainAmount(e.target.value)}
-                  className="flex-1 h-11 rounded-xl bg-white/5 border border-white/10 px-3 text-sm text-white outline-none focus:border-primary/50"
-                />
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-11 px-3 rounded-xl border-white/10 text-[10px] font-black uppercase"
-                  onClick={() => setOnchainAmount(String(user?.balance || 0))}
-                  disabled={!user?.balance}
-                >
-                  Max
-                </Button>
-              </div>
-              <Button
-                type="button"
-                onClick={handleTransferOnchain}
-                disabled={onchainLoading || !user?.balance}
-                className="w-full h-12 rounded-xl bg-primary text-primary-foreground font-black uppercase text-[11px] tracking-wider"
-              >
-                {onchainLoading ? (
-                  <span className="flex items-center gap-2">
-                    <Loader2 className="w-4 h-4 animate-spin" /> Depositing…
-                  </span>
-                ) : (
-                  "Deposit to chain"
+            {/* Deposit rack — collapsed by default; compact under mining balance */}
+            {depositRackOpen && (
+              <div className="mt-3 pt-3 border-t border-white/5 space-y-2">
+                <p className="text-[9px] font-black uppercase tracking-[0.15em] text-white/35">
+                  Deposit mining → chain
+                </p>
+                <p className="text-[9px] text-white/40 leading-snug">
+                  Move Neon mining balance to on-chain free balance. Not a peer transfer — use Wallet → Send for that.
+                </p>
+                <div className="flex gap-1.5">
+                  <input
+                    type="number"
+                    min="0"
+                    step="any"
+                    placeholder="Amount"
+                    value={onchainAmount}
+                    onChange={(e) => setOnchainAmount(e.target.value)}
+                    className="flex-1 h-9 rounded-lg bg-white/5 border border-white/10 px-2 text-xs text-white outline-none focus:border-primary/50"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 px-2 rounded-lg border-white/10 text-[9px] font-black uppercase"
+                    onClick={() => setOnchainAmount(String(user?.balance || 0))}
+                    disabled={!user?.balance}
+                  >
+                    Max
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={handleTransferOnchain}
+                    disabled={onchainLoading || !user?.balance}
+                    className="h-9 px-3 rounded-lg bg-primary text-primary-foreground font-black uppercase text-[9px]"
+                  >
+                    {onchainLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Deposit"}
+                  </Button>
+                </div>
+                {onchainMsg && (
+                  <p className="text-[9px] text-primary/90 break-all">{onchainMsg}</p>
                 )}
-              </Button>
-              {onchainMsg && (
-                <p className="text-[10px] text-primary/90 break-all">{onchainMsg}</p>
-              )}
-            </div>
+                {!isConnected && (
+                  <p className="text-[9px] text-white/35">Connect Light Node to enable full node mode.</p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -650,21 +675,6 @@ async function handleTransferOnchain() {
                 <Radio className="w-4 h-4 mr-2" />
                 Light Node
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={fullNodeLoading || !isConnected}
-                onClick={() => {
-                  if (fullNodeOn) handleDisableFullNode();
-                  else setFullNodeOpen(true);
-                }}
-                className="w-full h-12 rounded-2xl font-black uppercase tracking-widest border-white/10 bg-white/5 text-white/80"
-              >
-                {fullNodeLoading ? "Working…" : fullNodeOn ? "Full lightnode · ON" : "Enable full lightnode"}
-              </Button>
-              {!isConnected && (
-                <p className="text-[10px] text-white/40 text-center">Connect Light Node first, then enable full mode.</p>
-              )}
             </>
           )}
           {user?.isFounder && (

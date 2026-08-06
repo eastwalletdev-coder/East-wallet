@@ -503,9 +503,9 @@ export default function Home() {
                 Deposit mining → chain
               </p>
               <p className="text-[10px] text-white/40 leading-relaxed">
-                Pindahkan hasil mining dari Neon ke saldo free di validator.
-                Neon berkurang, wallet on-chain bertambah. Bukan kirim ke user
-                lain — untuk peer transfer pakai Wallet → Send.
+                Move mining rewards from Neon to free balance on the validator.
+                Neon decreases; on-chain wallet increases. This is not a peer transfer —
+                use Wallet → Send to transfer to another user.
               </p>
               <div className="flex gap-2">
                 <input
@@ -708,7 +708,7 @@ export default function Home() {
                             <ArrowUpRight className="w-4 h-4 text-red-400" />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-xs font-bold capitalize text-white/90">{tx.type} · {tx.status}</p>
+                            <p className="text-xs font-bold capitalize text-white/90">{tx.type} · {tx.status === 'pending' ? 'Pending' : tx.status === 'confirmed' ? 'Confirmed' : tx.status}</p>
                             <p className="text-[9px] text-muted-foreground truncate">{tx.date} · on-chain</p>
                           </div>
                         </div>

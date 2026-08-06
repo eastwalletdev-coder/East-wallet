@@ -77,14 +77,13 @@ export function pushLocalActivity(
     address: entry.address || '',
     wallet: (entry.wallet || '').toLowerCase(),
     at,
-    date:
-      new Date(at).toLocaleString('en-US', {
+    date: new Date(at).toLocaleString('en-US', {
         month: 'short',
         day: 'numeric',
         hour: '2-digit',
         minute: '2-digit',
         hour12: false,
-      }) + ' local',
+      }),
   };
   const prev = readAll().filter((x) => x.txHash !== row.txHash);
   writeAll([row, ...prev]);

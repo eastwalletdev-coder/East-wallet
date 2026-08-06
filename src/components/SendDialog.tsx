@@ -213,7 +213,10 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
               type: 'send',
               token: 'EAST',
               amount: `-${amt} EAST`,
-              status: chainResult.status === 'applied' || chainResult.status === 'queued' ? 'pending' : 'pending',
+              // User-facing: accepted by chain/mempool counts as sent (confirmed).
+              // Only mark pending if the API explicitly says queued AND you prefer
+              // mempool visibility — balance already debited on apply/queue success.
+              status: 'confirmed',
               address: address.trim(),
               wallet: fromWallet || address.trim(),
             });

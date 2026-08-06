@@ -1,28 +1,32 @@
-# Fix teliti: Activity kosong + lightnode #462
+# Hard fix: lightnode stuck height + Send recent activity
 
-## Bug 1 — Activity tidak muncul setelah Send
-`pushLocalActivity` menyimpan **address = penerima**, lalu `listLocalActivity(walletAddress)` memfilter **address === wallet user** → **tidak pernah cocok**.
+## Bug 1 — Activity missing after Send
+`pushLocalActivity` stored **address = recipient**, while `listLocalActivity(walletAddress)` filtered on the **sender wallet** → never matched.
 
-Perbaikan: field `wallet` = alamat pengirim (dari mnemonic); list memfilter `wallet` atau counterparty.
+**Fix:** store `wallet` = sender (from mnemonic); Home uses `listAllLocalActivity()` (all device rows). Event `east-chain-activity` refreshes the list after Send.
 
-## Bug 2 — Lightnode stuck setelah 15s peer
-Setelah peer kosong, archive butuh `NEXT_PUBLIC_APP_URL`. Sekarang fallback `window.location.origin`.
-Header validator sering **tanpa** signature Vercel → ditolak. Cutover menerima unsigned + prev-hash mismatch.
+## Bug 2 — Lightnode stuck after peer wait
+After 15s with no peers, archive needs a base URL (`NEXT_PUBLIC_APP_URL` or `window.location.origin`).
+
+**Critical bug in `catchUpFromArchive`:**  
+`targetHeight = latestHeight - 1000` made target **negative** when tip &lt; 1000 (e.g. #518), so the function returned **without fetching**. UI logged “catching up from archive” but height stayed #0.
+
+**Fix:** fetch through tip; if genesis missing, jump to archive window (tip − 120); accept prev-hash mismatch / unsigned headers during cutover (`NEXT_PUBLIC_ALLOW_CHAIN_CUTOVER`).
 
 ## Deploy
-Timpa semua file di zip → push Vercel.
+Overwrite files from this zip into **East-wallet**, push, deploy Vercel.
 
 ```bash
-# Mirror archive validator → Neon
-curl -sS -X POST "https://thiseast.vercel.app/api/explorer/sync-from-validator" \
-  -H "x-cron-secret: $ADMIN_SECRET" -d '{"lookback":120}'
+curl -sS -X POST "https://YOUR_APP/api/explorer/sync-from-validator" \
+  -H "x-cron-secret: $ADMIN_SECRET" \
+  -d '{"lookback":150}'
 ```
 
 Env:
 ```
+NEXT_PUBLIC_APP_URL=https://YOUR_APP
 NEXT_PUBLIC_ALLOW_CHAIN_CUTOVER=true
-NEXT_PUBLIC_APP_URL=https://thiseast.vercel.app
+EAST_VALIDATOR_URL=https://your-validator.up.railway.app
 ```
 
-Lalu **Send lagi** (log lama tanpa field wallet tetap ditampilkan lewat legacy filter).
-Clear Mini App data jika lightnode masih #462.
+Clear Mini App data if local tip is still stuck on the old Neon chain tip.

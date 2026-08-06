@@ -23,7 +23,7 @@ import { getEastTransactions, getPendingEastTransactions, type Transaction, type
 import { listLocalActivity, listAllLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
 import { FullNodeConsentDialog } from "@/components/FullNodeConsentDialog";
 import { checkFullNodeAgreement, agreeToFullNodeTerms, setFullNodeActiveStatus } from "@/actions/full-node-actions";
-import { getLightNodeClient } from "@/lib/lightnode/client";
+import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
 import { MINING_REWARD } from "@/lib/blockchain";
 import { cn } from "@/lib/utils";
 
@@ -776,7 +776,7 @@ async function handleTransferOnchain() {
                             <ArrowUpRight className="w-4 h-4 text-red-400" />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-xs font-bold capitalize text-white/90">{tx.type} · {tx.status === 'pending' ? 'Pending' : tx.status === 'confirmed' ? 'Confirmed' : tx.status}</p>
+                            <p className="text-xs font-bold capitalize text-white/90">{tx.type} · <span className={tx.status === 'pending' ? 'text-amber-400' : tx.status === 'failed' ? 'text-red-400' : 'text-green-400'}>{tx.status === 'pending' ? 'Pending' : tx.status === 'failed' ? 'Failed' : 'Confirmed'}</span></p>
                             <p className="text-[9px] text-muted-foreground truncate">{tx.date} · on-chain</p>
                           </div>
                         </div>

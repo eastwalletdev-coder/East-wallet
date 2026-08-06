@@ -86,7 +86,7 @@ function WalletPageContent() {
     }
   }, [mnemonic, selectedChain, activeAccount?.address, performAutoDetection]);
 
-  // Recent activity: Neon history + Neon mempool pending + local on-chain log
+  // Recent activity (same sources as Home): mempool pending + local on-chain + ledger history
   useEffect(() => {
     if (!activeAccount?.address) return;
     let cancelled = false;
@@ -96,7 +96,7 @@ function WalletPageContent() {
       setTxLoading(true);
       try {
         const [hist, pending] = await Promise.all([
-          getEastTransactions(addr, 20),
+          getEastTransactions(addr, 30),
           getPendingEastTransactions(addr),
         ]);
         if (cancelled) return;
@@ -109,10 +109,19 @@ function WalletPageContent() {
     }
 
     loadActivity();
+    const onAct = () => setLocalActivity(listAllLocalActivity());
+    if (typeof window !== "undefined") {
+      window.addEventListener("east-chain-activity", onAct as EventListener);
+      window.addEventListener("focus", onAct);
+    }
     const interval = setInterval(loadActivity, pendingTransactions.length > 0 ? 5_000 : 20_000);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("east-chain-activity", onAct as EventListener);
+        window.removeEventListener("focus", onAct);
+      }
     };
   }, [activeAccount?.address, selectedChain, mnemonic, pendingTransactions.length]);
 
@@ -518,6 +527,14 @@ function WalletPageContent() {
               </span>
             )}
           </div>
+          <p className="text-[10px] text-muted-foreground px-2">
+            EAST on-chain and network history. Pending = in queue; Confirmed = completed.
+            {selectedChain !== "East" && selectedChain !== "Ethereum" ? (
+              <span className="block mt-1 text-white/40">
+                Other networks: token list only — transfer history for ETH/Base/BSC/Solana is not indexed in this build.
+              </span>
+            ) : null}
+          </p>
           <div className="space-y-2">
             {txLoading && transactions.length === 0 && pendingTransactions.length === 0 && localActivity.length === 0 ? (
               <p className="text-[10px] text-muted-foreground text-center py-8">Loading activity…</p>
@@ -525,7 +542,9 @@ function WalletPageContent() {
               <div className="p-8 text-center glass rounded-2xl border-white/5 flex flex-col items-center gap-2">
                 <History className="w-8 h-8 text-muted-foreground opacity-20" />
                 <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">No recent activity</p>
-                <p className="text-[9px] text-muted-foreground/60 max-w-[240px]">Send, receive, stake, and unstake will show here.</p>
+                <p className="text-[9px] text-muted-foreground/60 max-w-[260px]">
+                  Sends, receives, stakes, and unstakes will appear here.
+                </p>
               </div>
             ) : (
               <>
@@ -536,10 +555,12 @@ function WalletPageContent() {
                         <Loader2 className="w-4 h-4 text-amber-400 animate-spin" />
                       </div>
                       <div className="min-w-0">
-                        <p className="text-xs font-bold capitalize text-amber-200">{tx.type} · pending</p>
+                        <p className="text-xs font-bold capitalize text-amber-200">
+                          {tx.type} · <span className="text-amber-400">Pending</span>
+                        </p>
                         <p className="text-[9px] text-muted-foreground truncate">
                           {tx.submittedAt}
-                          {tx.queuePosition > 0 ? ` · #${tx.queuePosition} in queue` : ''}
+                          {tx.queuePosition > 0 ? ` · queue #${tx.queuePosition}` : ""}
                         </p>
                         <p className="text-[8px] text-muted-foreground/50 font-mono truncate">{tx.txHash}</p>
                       </div>
@@ -550,63 +571,84 @@ function WalletPageContent() {
                     </div>
                   </div>
                 ))}
-                {/* Local on-chain log (validator txs not yet in Neon) */}
                 {localActivity
-                  .filter((la) => !transactions.some((t) => t.txHash === la.txHash))
-                  .filter((la) => !pendingTransactions.some((t) => t.txHash === la.txHash))
-                  .map((tx) => (
-                  <div key={`l-${tx.id}`} className="flex items-center justify-between p-4 bg-secondary/20 rounded-2xl border border-white/5">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                        tx.status === 'pending' ? 'bg-amber-500/10' :
-                        tx.type === 'send' ? 'bg-red-500/10' :
-                        tx.type === 'receive' ? 'bg-green-500/10' : 'bg-primary/10'
-                      }`}>
-                        {tx.status === 'pending' ? <Clock className="w-4 h-4 text-amber-400" /> :
-                         tx.type === 'send' ? <ArrowUpRight className="w-4 h-4 text-red-400" /> :
-                         tx.type === 'receive' ? <ArrowDownLeft className="w-4 h-4 text-green-400" /> :
-                         <Lock className="w-4 h-4 text-primary" />}
+                  .filter((la) => !transactions.some((x) => x.txHash === la.txHash))
+                  .filter((la) => !pendingTransactions.some((x) => x.txHash === la.txHash))
+                  .map((tx) => {
+                    const isPending = tx.status === "pending";
+                    const isFailed = tx.status === "failed";
+                    const statusLabel = isPending ? "Pending" : isFailed ? "Failed" : "Confirmed";
+                    const statusColor = isPending ? "text-amber-400" : isFailed ? "text-red-400" : "text-green-400";
+                    return (
+                      <div key={`l-${tx.id}`} className="flex items-center justify-between p-4 bg-secondary/20 rounded-2xl border border-white/5">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                            isPending ? "bg-amber-500/10" :
+                            tx.type === "send" ? "bg-red-500/10" :
+                            tx.type === "receive" ? "bg-green-500/10" : "bg-primary/10"
+                          }`}>
+                            {isPending ? <Clock className="w-4 h-4 text-amber-400" /> :
+                             tx.type === "send" ? <ArrowUpRight className="w-4 h-4 text-red-400" /> :
+                             tx.type === "receive" ? <ArrowDownLeft className="w-4 h-4 text-green-400" /> :
+                             <Lock className="w-4 h-4 text-primary" />}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold capitalize">
+                              {tx.type} · <span className={statusColor}>{statusLabel}</span>
+                            </p>
+                            <p className="text-[9px] text-muted-foreground">{tx.date} · on-chain</p>
+                            {tx.txHash ? (
+                              <p className="text-[8px] text-muted-foreground/50 font-mono truncate">{tx.txHash}</p>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className={`text-xs font-bold ${tx.type === "send" ? "text-foreground" : "text-green-500"}`}>
+                            {tx.amount}
+                          </p>
+                          <p className="text-[9px] text-muted-foreground font-mono max-w-[100px] truncate">{tx.address}</p>
+                        </div>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold capitalize">{tx.type} {tx.token}</p>
-                        <p className="text-[9px] text-muted-foreground">{tx.date} · {tx.status} · on-chain</p>
+                    );
+                  })}
+                {transactions.map((tx) => {
+                  const isPending = tx.status === "pending";
+                  const isFailed = tx.status === "failed";
+                  const statusLabel = isPending ? "Pending" : isFailed ? "Failed" : "Confirmed";
+                  const statusColor = isPending ? "text-amber-400" : isFailed ? "text-red-400" : "text-green-400";
+                  return (
+                    <div key={tx.id} className="flex items-center justify-between p-4 bg-secondary/20 rounded-2xl border border-white/5">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
+                          tx.type === "send" ? "bg-red-500/10" :
+                          tx.type === "receive" ? "bg-green-500/10" : "bg-primary/10"
+                        }`}>
+                          {tx.type === "send" ? <ArrowUpRight className="w-4 h-4 text-red-400" /> :
+                           tx.type === "receive" ? <ArrowDownLeft className="w-4 h-4 text-green-400" /> :
+                           <Lock className="w-4 h-4 text-primary" />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold capitalize">
+                            {tx.type} · <span className={statusColor}>{statusLabel}</span>
+                          </p>
+                          <p className="text-[9px] text-muted-foreground">{tx.date}</p>
+                          <p className="text-[8px] text-muted-foreground/50 font-mono truncate">{tx.txHash}</p>
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className={`text-xs font-bold ${tx.type === "send" ? "text-foreground" : "text-green-500"}`}>
+                          {tx.amount} {tx.token}
+                        </p>
+                        <p className="text-[9px] text-muted-foreground font-mono max-w-[100px] truncate">{tx.address}</p>
                       </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <p className={`text-xs font-bold ${tx.type === 'send' ? 'text-foreground' : 'text-green-500'}`}>{tx.amount}</p>
-                      <p className="text-[9px] text-muted-foreground font-mono max-w-[100px] truncate">{tx.address}</p>
-                    </div>
-                  </div>
-                ))}
-                {transactions.map((tx) => (
-                  <div key={tx.id} className="flex items-center justify-between p-4 bg-secondary/20 rounded-2xl border border-white/5">
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
-                        tx.type === 'send' ? 'bg-red-500/10' :
-                        tx.type === 'receive' ? 'bg-green-500/10' : 'bg-primary/10'
-                      }`}>
-                        {tx.type === 'send' ? <ArrowUpRight className="w-4 h-4 text-red-400" /> :
-                         tx.type === 'receive' ? <ArrowDownLeft className="w-4 h-4 text-green-400" /> :
-                         <Lock className="w-4 h-4 text-primary" />}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold capitalize">{tx.type} {tx.token}</p>
-                        <p className="text-[9px] text-muted-foreground">{tx.date} · {tx.status}</p>
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className={`text-xs font-bold ${tx.type === 'send' ? 'text-foreground' : 'text-green-500'}`}>
-                        {tx.amount} {tx.token}
-                      </p>
-                      <p className="text-[9px] text-muted-foreground font-mono max-w-[100px] truncate">{tx.address}</p>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </>
             )}
           </div>
         </TabsContent>
-      </Tabs>
+</Tabs>
 
       <div className="p-6 bg-yellow-500/5 rounded-3xl border border-yellow-500/10 space-y-4 mt-4">
         <div className="flex items-center gap-2 text-yellow-500">

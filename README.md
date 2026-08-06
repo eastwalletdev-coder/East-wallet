@@ -1,32 +1,25 @@
-# Hard fix: lightnode stuck height + Send recent activity
+# Home activity + Wallet activity + Full lightnode (one deploy)
 
-## Bug 1 — Activity missing after Send
-`pushLocalActivity` stored **address = recipient**, while `listLocalActivity(walletAddress)` filtered on the **sender wallet** → never matched.
+## Build fix
+`src/app/page.tsx` imports:
+```ts
+import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
+```
+(Fixes: Cannot find name `LightNodeState`)
 
-**Fix:** store `wallet` = sender (from mnemonic); Home uses `listAllLocalActivity()` (all device rows). Event `east-chain-activity` refreshes the list after Send.
-
-## Bug 2 — Lightnode stuck after peer wait
-After 15s with no peers, archive needs a base URL (`NEXT_PUBLIC_APP_URL` or `window.location.origin`).
-
-**Critical bug in `catchUpFromArchive`:**  
-`targetHeight = latestHeight - 1000` made target **negative** when tip &lt; 1000 (e.g. #518), so the function returned **without fetching**. UI logged “catching up from archive” but height stayed #0.
-
-**Fix:** fetch through tip; if genesis missing, jump to archive window (tip − 120); accept prev-hash mismatch / unsigned headers during cutover (`NEXT_PUBLIC_ALLOW_CHAIN_CUTOVER`).
+## Includes
+| File | What |
+|------|------|
+| `src/app/page.tsx` | Recent Activity + Enable full lightnode |
+| `src/app/wallet/page.tsx` | Activity tab (Pending / Confirmed) |
+| `src/components/SendDialog.tsx` | Local activity status `confirmed` |
+| `src/components/FullNodeConsentDialog.tsx` | Consent UI |
+| `src/lib/chain-activity-local.ts` | Device activity log |
+| `src/lib/lightnode/client.ts` | Archive catch-up fix + setFullNodeEnabled |
+| `src/actions/full-node-actions.ts` | Agreement / active flag (if missing in repo) |
+| `src/lib/transaction-service.ts` | Optional Neon pending/history |
 
 ## Deploy
-Overwrite files from this zip into **East-wallet**, push, deploy Vercel.
+Merge into East-wallet `src/…`, push, redeploy Vercel.
 
-```bash
-curl -sS -X POST "https://YOUR_APP/api/explorer/sync-from-validator" \
-  -H "x-cron-secret: $ADMIN_SECRET" \
-  -d '{"lookback":150}'
-```
-
-Env:
-```
-NEXT_PUBLIC_APP_URL=https://YOUR_APP
-NEXT_PUBLIC_ALLOW_CHAIN_CUTOVER=true
-EAST_VALIDATOR_URL=https://your-validator.up.railway.app
-```
-
-Clear Mini App data if local tip is still stuck on the old Neon chain tip.
+Full lightnode: connect Light Node first → **Enable full lightnode**.

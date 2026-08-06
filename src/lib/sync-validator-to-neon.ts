@@ -1,9 +1,6 @@
 /**
- * Mirror east-validator tip → Neon ledger.blocks (+ chain_meta).
- * Explorer keeps reading Neon (getChainState / getRecentBlocks) + Redis.
- * Validator remains source of truth for balances/tx; Neon is read replica for UI.
- *
- * No dependency on redis-chain-explorer (optional package).
+ * Mirror validator headers → Neon ledger.blocks (archive).
+ * Upserts by block_index so Railway heights replace stale Neon-L2 rows.
  */
 import { ledgerPool } from '@/lib/db/ledger';
 
@@ -51,28 +48,36 @@ export type SyncResult = {
   ok: boolean;
   tip: number;
   inserted: number;
+  updated: number;
   skipped: number;
   error?: string;
 };
 
 /**
- * Pull last `lookback` blocks from validator and upsert into ledger.blocks.
- * Safe to run every 30–60s via QStash.
+ * lookback: how many heights below tip to pull.
+ * mode=upsert: replace Neon row at same block_index when hash differs (archive = validator).
  */
-export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResult> {
+export async function syncValidatorBlocksToNeon(lookback = 50): Promise<SyncResult> {
   const latest = await chainGet('/block/latest');
   if (!latest || latest.height == null) {
-    return { ok: false, tip: -1, inserted: 0, skipped: 0, error: 'block_latest_unreachable' };
+    return { ok: false, tip: -1, inserted: 0, updated: 0, skipped: 0, error: 'block_latest_unreachable' };
   }
 
   const tip = Number(latest.height) || 0;
   const start = Math.max(0, tip - lookback + 1);
   let inserted = 0;
+  let updated = 0;
   let skipped = 0;
 
   const client = await ledgerPool.connect();
   try {
     await client.query('BEGIN');
+
+    // Ensure archive marker column exists (idempotent)
+    await client.query(`
+      ALTER TABLE ledger.blocks
+      ADD COLUMN IF NOT EXISTS chain_source VARCHAR(32) DEFAULT NULL
+    `).catch(() => {});
 
     for (let h = start; h <= tip; h++) {
       const block = h === tip ? latest : await chainGet(`/block/${h}`);
@@ -82,42 +87,58 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
       }
 
       const blockIndex = Number(block.height) || 0;
-      const blockHash = String(block.hash || `height-${blockIndex}`);
-      const prevHash = String(block.prev_hash || 'GENESIS');
+      const blockHash = String(block.hash || `height-${blockIndex}`).slice(0, 66);
+      const prevHash = String(block.prev_hash || 'GENESIS').slice(0, 66);
       const txCount = Number(block.tx_count || 0) || 0;
-      const proposer = String(block.proposer || 'validator');
+      const proposer = String(block.proposer || 'validator').slice(0, 50);
       const ts = Number(block.timestamp || Date.now());
-      const sequenceHash = String(block.state_root || block.hash || blockHash);
+      const tsMs = ts > 1e12 ? ts : ts * 1000;
+      const sequenceHash = String(block.state_root || block.hash || blockHash).slice(0, 66);
       const merkle = Array.isArray(block.tx_hashes)
-        ? String(block.tx_hashes[0] || blockHash)
+        ? String(block.tx_hashes[0] || blockHash).slice(0, 66)
         : blockHash;
 
-      const exists = await client.query(
-        `SELECT 1 FROM ledger.blocks WHERE block_index = $1 OR block_hash = $2 LIMIT 1`,
-        [blockIndex, blockHash],
+      const existing = await client.query(
+        `SELECT block_hash, chain_source FROM ledger.blocks WHERE block_index = $1 LIMIT 1`,
+        [blockIndex],
       );
-      if (exists.rows.length) {
-        skipped++;
+
+      if (existing.rows.length) {
+        const row = existing.rows[0];
+        if (row.block_hash === blockHash && row.chain_source === 'validator') {
+          skipped++;
+          continue;
+        }
+        // Replace stale Neon-L2 or different hash at same height
+        await client.query(
+          `UPDATE ledger.blocks SET
+             block_hash = $2,
+             prev_hash = $3,
+             sequence_hash = $4,
+             merkle_root = $5,
+             tx_count = $6,
+             is_empty = $7,
+             validator_id = $8,
+             created_at = to_timestamp($9::double precision / 1000.0),
+             chain_source = 'validator'
+           WHERE block_index = $1`,
+          [blockIndex, blockHash, prevHash, sequenceHash, merkle, txCount, txCount === 0, proposer, tsMs],
+        );
+        updated++;
         continue;
       }
 
       await client.query(
         `INSERT INTO ledger.blocks
           (block_index, block_hash, prev_hash, sequence_hash, merkle_root,
-           tx_count, total_gas, is_empty, validator_id, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8, to_timestamp($9::double precision / 1000.0))
-         ON CONFLICT (block_hash) DO NOTHING`,
-        [
-          blockIndex,
-          blockHash.slice(0, 66),
-          prevHash.slice(0, 66),
-          sequenceHash.slice(0, 66),
-          merkle.slice(0, 66),
-          txCount,
-          txCount === 0,
-          proposer.slice(0, 50),
-          ts > 1e12 ? ts : ts * 1000,
-        ],
+           tx_count, total_gas, is_empty, validator_id, created_at, chain_source)
+         VALUES ($1,$2,$3,$4,$5,$6,0,$7,$8, to_timestamp($9::double precision / 1000.0), 'validator')
+         ON CONFLICT (block_hash) DO UPDATE SET
+           block_index = EXCLUDED.block_index,
+           prev_hash = EXCLUDED.prev_hash,
+           sequence_hash = EXCLUDED.sequence_hash,
+           chain_source = 'validator'`,
+        [blockIndex, blockHash, prevHash, sequenceHash, merkle, txCount, txCount === 0, proposer, tsMs],
       );
       inserted++;
     }
@@ -136,9 +157,8 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
     );
     await client.query(
       `INSERT INTO ledger.chain_meta (key, value, updated_at)
-       VALUES ('validator_synced_at', $1, NOW())
-       ON CONFLICT (key) DO UPDATE SET value = $1, updated_at = NOW()`,
-      [new Date().toISOString()],
+       VALUES ('archive_role', 'validator_headers', NOW())
+       ON CONFLICT (key) DO UPDATE SET value = 'validator_headers', updated_at = NOW()`,
     );
 
     await client.query('COMMIT');
@@ -148,6 +168,7 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
       ok: false,
       tip,
       inserted,
+      updated,
       skipped,
       error: e?.message || 'sync_failed',
     };
@@ -155,7 +176,6 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
     client.release();
   }
 
-  // Invalidate Neon explorer Redis caches (optional)
   try {
     if (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) {
       const { Redis } = await import('@upstash/redis');
@@ -171,5 +191,5 @@ export async function syncValidatorBlocksToNeon(lookback = 20): Promise<SyncResu
     /* ignore */
   }
 
-  return { ok: true, tip, inserted, skipped };
+  return { ok: true, tip, inserted, updated, skipped };
 }

@@ -13,6 +13,7 @@ import { useWallet, decryptVaultMnemonic } from '@/lib/wallet-context';
 import { useRPC } from '@/lib/rpc-context';
 import { sendEvmTransaction, sendSolanaTransaction, estimateEvmFee, estimateSolanaFee, type FeeEstimate } from '@/lib/send-service';
 import { submitChainTransfer, useChainTxEnabled } from '@/lib/chain-tx-client';
+import { pushLocalActivity } from '@/lib/chain-activity-local';
 import { isAddress } from 'ethers';
 import { PublicKey } from '@solana/web3.js';
 import { QrCameraScanner } from '@/components/QrCameraScanner';
@@ -201,6 +202,16 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
         );
         if (chainResult.success) {
           setTxHash(chainResult.txHash || null);
+          try {
+            pushLocalActivity({
+              txHash: chainResult.txHash || `pending-${Date.now()}`,
+              type: 'send',
+              token: 'EAST',
+              amount: `-${amt}`,
+              status: chainResult.status === 'applied' ? 'confirmed' : 'pending',
+              address: address.trim(),
+            });
+          } catch { /* ignore */ }
           setStep('result');
           toast({
             title: 'On-chain transfer submitted',

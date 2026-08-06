@@ -203,13 +203,19 @@ export function SendDialog({ open, onOpenChange, startWithScanner = false, selec
         if (chainResult.success) {
           setTxHash(chainResult.txHash || null);
           try {
+            let fromWallet = '';
+            try {
+              const { Wallet } = await import('ethers');
+              fromWallet = Wallet.fromPhrase(verifiedMnemonic.trim()).address;
+            } catch { /* ignore */ }
             pushLocalActivity({
               txHash: chainResult.txHash || `pending-${Date.now()}`,
               type: 'send',
               token: 'EAST',
               amount: `-${amt}`,
-              status: chainResult.status === 'applied' ? 'confirmed' : 'pending',
+              status: chainResult.status === 'applied' || chainResult.status === 'queued' ? 'pending' : 'pending',
               address: address.trim(),
+              wallet: fromWallet || address.trim(),
             });
           } catch { /* ignore */ }
           setStep('result');

@@ -1,7 +1,6 @@
 /**
  * Client-side recent activity for on-chain EAST txs.
- * Validator txs often never land in Neon ledger.transactions — this keeps
- * Send / receive / stake / unstake visible in Wallet → Activity.
+ * Keyed by the USER wallet (actor), not only the counterparty.
  */
 export type LocalActivity = {
   id: string;
@@ -11,13 +10,15 @@ export type LocalActivity = {
   amount: string;
   status: 'confirmed' | 'pending' | 'failed';
   date: string;
+  /** Counterparty (to for send, from for receive) */
   address: string;
-  /** ISO for sort */
+  /** The wallet on this device that performed / owns the row */
+  wallet: string;
   at: number;
 };
 
 const KEY = 'east_chain_activity_v1';
-const MAX = 40;
+const MAX = 50;
 
 function readAll(): LocalActivity[] {
   if (typeof window === 'undefined') return [];
@@ -40,19 +41,31 @@ function writeAll(items: LocalActivity[]) {
   }
 }
 
+/** List activity for a wallet address (sender or receiver or stored wallet field). */
 export function listLocalActivity(forAddress?: string): LocalActivity[] {
   const all = readAll();
   if (!forAddress) return all;
   const a = forAddress.toLowerCase();
-  return all.filter(
-    (x) =>
-      x.address?.toLowerCase() === a ||
-      // also keep rows where this wallet was actor (id embeds from)
-      x.id.toLowerCase().includes(a.slice(2, 10)),
-  );
+  return all.filter((x) => {
+    const wallet = (x.wallet || '').toLowerCase();
+    const counter = (x.address || '').toLowerCase();
+    // Legacy rows (no wallet field): still show if counterparty matches OR always if no filter keys
+    if (wallet && wallet === a) return true;
+    if (counter === a) return true;
+    // Legacy send rows only stored recipient in address — show all local rows when filter
+    // is set and wallet field missing (device-local log is single-user)
+    if (!x.wallet) return true;
+    return false;
+  });
 }
 
-export function pushLocalActivity(entry: Omit<LocalActivity, 'id' | 'at' | 'date'> & { txHash: string }) {
+export function pushLocalActivity(
+  entry: Omit<LocalActivity, 'id' | 'at' | 'date'> & {
+    txHash: string;
+    wallet: string;
+    address: string;
+  },
+) {
   const at = Date.now();
   const row: LocalActivity = {
     id: entry.txHash || `local-${at}`,
@@ -62,6 +75,7 @@ export function pushLocalActivity(entry: Omit<LocalActivity, 'id' | 'at' | 'date
     amount: entry.amount,
     status: entry.status || 'pending',
     address: entry.address || '',
+    wallet: (entry.wallet || '').toLowerCase(),
     at,
     date:
       new Date(at).toLocaleString('en-US', {

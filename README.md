@@ -1,30 +1,28 @@
-# Hard fix: lightnode stuck #462 + activity kosong
+# Fix teliti: Activity kosong + lightnode #462
 
-## Root causes (teliti)
-1. Lightnode **menolak** header berikutnya karena `Previous hash mismatch` (tip lokal Neon ≠ validator).
-2. Archive path memakai `/api/archive/blocks-range` — harus berisi row `chain_source=validator` (jalankan mirror upsert).
-3. Peer search 15s + 0 peers → terasa "minta validator terus".
-4. Home **Recent Activity** hanya baca Neon — Send on-chain tidak muncul tanpa `chain-activity-local`.
+## Bug 1 — Activity tidak muncul setelah Send
+`pushLocalActivity` menyimpan **address = penerima**, lalu `listLocalActivity(walletAddress)` memfilter **address === wallet user** → **tidak pernah cocok**.
 
-## Files
-- `src/lib/lightnode/client.ts` — accept chain cutover; dual archive API; peer timeout 15s
-- `src/app/api/archive/blocks-range/route.ts` — prefer validator rows; short cache
-- `src/app/page.tsx` — Recent Activity + local on-chain log
-- `src/components/SendDialog.tsx` + `src/lib/chain-activity-local.ts`
-- mirror/archive helpers (upsert + `/api/archive/headers`)
+Perbaikan: field `wallet` = alamat pengirim (dari mnemonic); list memfilter `wallet` atau counterparty.
 
-## Deploy + wajib jalankan
+## Bug 2 — Lightnode stuck setelah 15s peer
+Setelah peer kosong, archive butuh `NEXT_PUBLIC_APP_URL`. Sekarang fallback `window.location.origin`.
+Header validator sering **tanpa** signature Vercel → ditolak. Cutover menerima unsigned + prev-hash mismatch.
+
+## Deploy
+Timpa semua file di zip → push Vercel.
+
 ```bash
-# 1) Mirror upsert (timpa Neon L2 di height yang sama)
+# Mirror archive validator → Neon
 curl -sS -X POST "https://thiseast.vercel.app/api/explorer/sync-from-validator" \
   -H "x-cron-secret: $ADMIN_SECRET" -d '{"lookback":120}'
-# expect: updated > 0 or inserted > 0
-
-# 2) Env Vercel
-NEXT_PUBLIC_APP_URL=https://thiseast.vercel.app
-NEXT_PUBLIC_ALLOW_CHAIN_CUTOVER=true
-CHAIN_SIGNING_PRIVATE_KEY=...   # supaya archive bisa sign header
-NEXT_PUBLIC_CHAIN_SIGNING_ADDRESS=...
-
-# 3) Clear Mini App data (local tip 462) lalu buka node lagi
 ```
+
+Env:
+```
+NEXT_PUBLIC_ALLOW_CHAIN_CUTOVER=true
+NEXT_PUBLIC_APP_URL=https://thiseast.vercel.app
+```
+
+Lalu **Send lagi** (log lama tanpa field wallet tetap ditampilkan lewat legacy filter).
+Clear Mini App data jika lightnode masih #462.

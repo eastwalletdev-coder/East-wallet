@@ -21,9 +21,11 @@ import { SignatureDialog } from "@/components/SignatureDialog";
 import { AuditTrailSheet } from "@/components/AuditTrailSheet";
 import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
 import { listLocalActivity, listAllLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
+import { FullNodeConsentDialog } from "@/components/FullNodeConsentDialog";
+import { checkFullNodeAgreement, agreeToFullNodeTerms, setFullNodeActiveStatus } from "@/actions/full-node-actions";
+import { getLightNodeClient } from "@/lib/lightnode/client";
 import { MINING_REWARD } from "@/lib/blockchain";
 import { cn } from "@/lib/utils";
-import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
 
 const MIN_VERIFIED_HEADERS = 2;
 const MIN_PARTICIPATION_SECONDS = 120;
@@ -101,6 +103,9 @@ export default function Home() {
   const [sigOpen, setSigOpen] = useState(false);
   const [activityCollapsed, setActivityCollapsed] = useState(false); // show Send/pending by default
   const [lightNodeMode, setLightNodeMode] = useState(false);
+  const [fullNodeOpen, setFullNodeOpen] = useState(false);
+  const [fullNodeLoading, setFullNodeLoading] = useState(false);
+  const [fullNodeOn, setFullNodeOn] = useState(false);
   const [onchainAmount, setOnchainAmount] = useState("");
   const [onchainLoading, setOnchainLoading] = useState(false);
   const [onchainMsg, setOnchainMsg] = useState<string | null>(null);
@@ -108,7 +113,54 @@ export default function Home() {
 
   useEffect(() => { setMounted(true); }, []);
 
-  async function handleTransferOnchain() {
+  
+  async function handleEnableFullNode() {
+    if (!userId) return;
+    setFullNodeLoading(true);
+    try {
+      const initData =
+        typeof window !== "undefined" && (window as any).Telegram?.WebApp?.initData
+          ? (window as any).Telegram.WebApp.initData
+          : undefined;
+      const client = getLightNodeClient();
+      const nid = nodeState?.nodeId || "unknown";
+      const agree = await agreeToFullNodeTerms(String(userId), nid, initData);
+      if (!agree?.success) {
+        toast({ variant: "destructive", title: "Full node agreement failed", description: agree?.error || "Auth error" });
+        return;
+      }
+      await setFullNodeActiveStatus(String(userId), true, initData);
+      client.setFullNodeEnabled(true);
+      setFullNodeOn(true);
+      setFullNodeOpen(false);
+      toast({ title: "Full lightnode enabled", description: "This device will keep a balance replica and answer RPC reads when selected." });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Full node enable failed", description: e?.message || "Error" });
+    } finally {
+      setFullNodeLoading(false);
+    }
+  }
+
+  async function handleDisableFullNode() {
+    if (!userId) return;
+    setFullNodeLoading(true);
+    try {
+      const initData =
+        typeof window !== "undefined" && (window as any).Telegram?.WebApp?.initData
+          ? (window as any).Telegram.WebApp.initData
+          : undefined;
+      await setFullNodeActiveStatus(String(userId), false, initData);
+      getLightNodeClient().setFullNodeEnabled(false);
+      setFullNodeOn(false);
+      toast({ title: "Full lightnode disabled" });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Disable failed", description: e?.message || "Error" });
+    } finally {
+      setFullNodeLoading(false);
+    }
+  }
+
+async function handleTransferOnchain() {
     if (!user?.telegramId) {
       setOnchainMsg("Login required");
       return;
@@ -254,6 +306,7 @@ export default function Home() {
   useEffect(() => {
     const client = getLightNodeClient();
     const unsub = client.subscribe(setNodeState);
+    try { setFullNodeOn(client.isFullNodeEnabled()); } catch { /* ignore */ }
     return () => { unsub(); };
   }, []);
 
@@ -597,6 +650,21 @@ export default function Home() {
                 <Radio className="w-4 h-4 mr-2" />
                 Light Node
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={fullNodeLoading || !isConnected}
+                onClick={() => {
+                  if (fullNodeOn) handleDisableFullNode();
+                  else setFullNodeOpen(true);
+                }}
+                className="w-full h-12 rounded-2xl font-black uppercase tracking-widest border-white/10 bg-white/5 text-white/80"
+              >
+                {fullNodeLoading ? "Working…" : fullNodeOn ? "Full lightnode · ON" : "Enable full lightnode"}
+              </Button>
+              {!isConnected && (
+                <p className="text-[10px] text-white/40 text-center">Connect Light Node first, then enable full mode.</p>
+              )}
             </>
           )}
           {user?.isFounder && (
@@ -778,6 +846,14 @@ export default function Home() {
           Protocol: <span className="text-primary">Anchor Protocol Active</span>
         </p>
       </div>
+
+
+      <FullNodeConsentDialog
+        open={fullNodeOpen}
+        onOpenChange={setFullNodeOpen}
+        onConfirm={handleEnableFullNode}
+        loading={fullNodeLoading}
+      />
 
       {/* Signature Dialog — mining claim */}
       <SignatureDialog

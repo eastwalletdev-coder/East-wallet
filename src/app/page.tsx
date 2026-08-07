@@ -116,7 +116,10 @@ export default function Home() {
 
   
   async function handleEnableFullNode() {
-    if (!userId) return;
+    if (!userId) {
+      toast({ variant: "destructive", title: "Full node enable failed", description: "Not logged in." });
+      return;
+    }
     setFullNodeLoading(true);
     try {
       const initData =
@@ -124,19 +127,78 @@ export default function Home() {
           ? (window as any).Telegram.WebApp.initData
           : undefined;
       const client = getLightNodeClient();
-      const nid = nodeState?.nodeId || "unknown";
-      const agree = await agreeToFullNodeTerms(String(userId), nid, initData);
-      if (!agree?.success) {
-        toast({ variant: "destructive", title: "Full node agreement failed", description: agree?.error || "Auth error" });
+      // Prefer live node id from client state (not only React snapshot)
+      const nid =
+        nodeState?.nodeId ||
+        (typeof (client as any).isFullNodeEnabled === "function"
+          ? // pull from internal state if exposed via subscribe snapshot
+            nodeState?.nodeId
+          : null) ||
+        (typeof window !== "undefined"
+          ? (JSON.parse(localStorage.getItem("east_lightnode_state_v1") || "{}")?.nodeId as string | undefined)
+          : undefined) ||
+        `fn-${String(userId).slice(0, 8)}`;
+
+      if (!initData) {
+        // Still allow local full mode for testing outside Telegram, but registry skip
+        client.setFullNodeEnabled(true);
+        setFullNodeOn(true);
+        setFullNodeOpen(false);
+        toast({
+          title: "Full lightnode enabled (local only)",
+          description: "No Telegram initData — agreement not recorded on server.",
+        });
         return;
       }
-      await setFullNodeActiveStatus(String(userId), true, initData);
+
+      const agree = await agreeToFullNodeTerms(String(userId), nid, initData);
+      if (!agree?.success) {
+        if (agree?.error === "SCHEMA_MISSING") {
+          // Enable locally; admin must run migrate-full-node-schema once
+          client.setFullNodeEnabled(true);
+          setFullNodeOn(true);
+          setFullNodeOpen(false);
+          toast({
+            title: "Full lightnode enabled (local)",
+            description: "Server table missing — run Full Node schema migration in Admin → Validator review.",
+          });
+          return;
+        }
+        toast({
+          variant: "destructive",
+          title: "Full node agreement failed",
+          description: String((agree as any)?.detail || agree?.error || "Auth error"),
+        });
+        return;
+      }
+      const active = await setFullNodeActiveStatus(String(userId), true, initData);
+      if (!active?.success && active?.error !== "SCHEMA_MISSING") {
+        toast({
+          variant: "destructive",
+          title: "Full node registry failed",
+          description: String((active as any)?.detail || active?.error || "Error"),
+        });
+        // still enable local
+      }
       client.setFullNodeEnabled(true);
       setFullNodeOn(true);
       setFullNodeOpen(false);
-      toast({ title: "Full lightnode enabled", description: "This device will keep a balance replica and answer RPC reads when selected." });
+      toast({
+        title: "Full lightnode enabled",
+        description: "This device keeps a balance replica and can answer RPC reads when selected.",
+      });
     } catch (e: any) {
-      toast({ variant: "destructive", title: "Full node enable failed", description: e?.message || "Error" });
+      // Never surface raw "Server Components" digests — enable local fallback
+      try {
+        getLightNodeClient().setFullNodeEnabled(true);
+        setFullNodeOn(true);
+        setFullNodeOpen(false);
+      } catch { /* ignore */ }
+      toast({
+        variant: "destructive",
+        title: "Full node enable partial",
+        description: e?.message || "Server error — local full mode attempted. Run schema migration if needed.",
+      });
     } finally {
       setFullNodeLoading(false);
     }

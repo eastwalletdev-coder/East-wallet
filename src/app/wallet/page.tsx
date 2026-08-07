@@ -360,7 +360,7 @@ function WalletPageContent() {
         </Button>
       </div>
 
-      <Tabs defaultValue="assets" className="w-full">
+      <Tabs defaultValue="activity" className="w-full">
         <TabsList className="w-full grid grid-cols-2 bg-secondary/30 rounded-xl mb-6 p-1 h-12">
           <TabsTrigger value="assets" className="text-[10px] font-bold uppercase tracking-wider rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Assets</TabsTrigger>
           <TabsTrigger value="activity" className="text-[10px] font-bold uppercase tracking-wider rounded-lg data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">Activity</TabsTrigger>

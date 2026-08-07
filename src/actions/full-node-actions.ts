@@ -120,10 +120,19 @@ export async function agreeToFullNodeTerms(tgId: string, nodeId: string, initDat
   if (!initData || !validateTelegramData(initData)) return { success: false, error: 'IDENTITY_VIOLATION' };
   const verifiedId = extractVerifiedUserId(initData);
   if (verifiedId !== tgId) return { success: false, error: 'IDENTITY_MISMATCH' };
-  if (!nodeId) return { success: false, error: 'MISSING_NODE_ID' };
+  if (!nodeId || nodeId === 'unknown') return { success: false, error: 'MISSING_NODE_ID' };
 
-  await recordFullNodeAgreement(tgId, nodeId);
-  return { success: true };
+  try {
+    await recordFullNodeAgreement(tgId, nodeId);
+    return { success: true };
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    // Schema not migrated yet — caller can still enable local fullnode mode
+    if (/full_node_agreements|does not exist|relation/i.test(msg)) {
+      return { success: false, error: 'SCHEMA_MISSING', detail: msg };
+    }
+    return { success: false, error: 'DB_ERROR', detail: msg };
+  }
 }
 
 export async function setFullNodeActiveStatus(tgId: string, isActive: boolean, initData?: string) {
@@ -131,6 +140,14 @@ export async function setFullNodeActiveStatus(tgId: string, isActive: boolean, i
   const verifiedId = extractVerifiedUserId(initData);
   if (verifiedId !== tgId) return { success: false, error: 'IDENTITY_MISMATCH' };
 
-  await setFullNodeActive(tgId, isActive);
-  return { success: true };
+  try {
+    await setFullNodeActive(tgId, isActive);
+    return { success: true };
+  } catch (err: any) {
+    const msg = String(err?.message || err);
+    if (/full_node_agreements|does not exist|relation/i.test(msg)) {
+      return { success: false, error: 'SCHEMA_MISSING', detail: msg };
+    }
+    return { success: false, error: 'DB_ERROR', detail: msg };
+  }
 }

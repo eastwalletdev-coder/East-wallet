@@ -58,7 +58,7 @@ export function SplashScreen() {
         isGateOpen ? "opacity-100 translate-y-0 scale-100" : "opacity-0 translate-y-8 scale-90"
       )}>
         <div className="flex flex-col items-center text-center w-full">
-          <h1 className="text-[clamp(3rem,14vw,4.5rem)] font-bold tracking-tight uppercase flex items-center justify-center filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] relative">
+          <h1 className="text-5xl font-bold tracking-tight uppercase flex items-center justify-center filter drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] relative">
             <div className="flex items-center relative z-10">
               <span className={cn(letterE, "text-primary")}>E</span>
               <span className={cn(letterA, "text-white")}>Λ</span>

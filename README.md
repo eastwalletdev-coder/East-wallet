@@ -1,39 +1,20 @@
-# Fullnode enable + activity + admin migration
+# Admin login widget empty (env already set)
 
-## Why "Full node enable failed" (Server Components digest)
-`agreeToFullNodeTerms` / `setFullNodeActive` hit Postgres. If
-`identity.full_node_agreements` was never created, the server action **throws**
-and Next.js shows a generic Server Components error.
+## Cause (not "you changed env")
+1. **Ref timing** — widget `useEffect` often ran while `widgetContainerRef.current` was still `null` after `signed_out` paint → script never injected → blank area, no error.
+2. **NEXT_PUBLIC_*** is baked in at **build**. Changing Vercel env without redeploy leaves old client bundle (or empty).
+3. Telegram Login Widget can fail silently if domain is not allowed in BotFather or script is blocked.
 
-### Fix schema (once)
-1. Open `/admin/validator-review`
-2. Login with **founder** Telegram (widget needs `NEXT_PUBLIC_BOT_USERNAME`)
-3. Enter **admin passphrase**
-4. Run migration **Full node schema** (path `/api/admin/migrate-full-node-schema`)
+## Fix in this patch
+- Retry inject via `requestAnimationFrame` + timeouts
+- Visible panel for the widget + show `@{BOT_USERNAME}` so you can verify the build saw the env
+- English diagnostics
 
-Or curl (founder session cookie + passphrase):
-```bash
-curl -sS -X POST "https://APP/api/admin/migrate-full-node-schema" \
-  -H "Content-Type: application/json" \
-  -H "Cookie: YOUR_ADMIN_SESSION" \
-  -d '{"passphrase":"YOUR_ADMIN_PASSPHRASE"}'
-```
+## After deploy checklist
+1. Hard refresh `/admin/validator-review`
+2. You should see **Bot: @YourBot** under the box
+3. Blue **Log in with Telegram** button inside the box
+4. BotFather → Bot → **Domain** (Login Widget) includes `thiseast.vercel.app`
+5. Prefer external browser if Telegram in-app browser blocks the widget
 
-### Client resilience (this patch)
-- DB errors return `{ success:false, error:'SCHEMA_MISSING' }` instead of throw
-- UI can still enable **local** fullnode and show a clear English message
-
-## Admin login not showing
-Requires env:
-```
-NEXT_PUBLIC_BOT_USERNAME=YourBotUsername
-```
-Bot must match Telegram Login Widget domain. Only `FOUNDER_IDS` can sign in; others see forbidden.
-
-## Wallet Activity
-`defaultValue="activity"` so the Activity tab is visible; sources = mempool + local log + Neon history.
-
-## Files
-- `src/actions/full-node-actions.ts`
-- `src/app/page.tsx` (from hardfix — enable handler)
-- `src/app/wallet/page.tsx`
+Overwrite: `src/app/admin/validator-review/page.tsx`

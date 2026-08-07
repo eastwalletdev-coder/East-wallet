@@ -111,21 +111,51 @@ export default function ValidatorReviewPage() {
     };
   }, [fetchCandidates]);
 
-  // Inject the official Telegram widget script once we know we need it.
+  // Inject Telegram Login Widget after signed_out paint (ref must exist).
+  // Retry: first effect tick often runs before ref is attached → empty UI.
   useEffect(() => {
     if (authState !== 'signed_out' && authState !== 'forbidden') return;
-    if (!widgetContainerRef.current || !BOT_USERNAME) return;
-    widgetContainerRef.current.innerHTML = '';
+    if (!BOT_USERNAME) return;
 
-    const script = document.createElement('script');
-    script.src = 'https://telegram.org/js/telegram-widget.js?22';
-    script.async = true;
-    script.setAttribute('data-telegram-login', BOT_USERNAME);
-    script.setAttribute('data-size', 'large');
-    script.setAttribute('data-onauth', 'onTelegramAuth(user)');
-    script.setAttribute('data-request-access', 'write');
-    widgetContainerRef.current.appendChild(script);
+    let cancelled = false;
+
+    const inject = (): boolean => {
+      const el = widgetContainerRef.current;
+      if (!el || cancelled) return false;
+      el.innerHTML = '';
+      const script = document.createElement('script');
+      script.src = 'https://telegram.org/js/telegram-widget.js?22';
+      script.async = true;
+      script.setAttribute('data-telegram-login', BOT_USERNAME);
+      script.setAttribute('data-size', 'large');
+      script.setAttribute('data-radius', '10');
+      script.setAttribute('data-onauth', 'onTelegramAuth(user)');
+      script.setAttribute('data-request-access', 'write');
+      // Light button so it stays visible on dark app chrome
+      script.setAttribute('data-userpic', 'false');
+      el.appendChild(script);
+      return true;
+    };
+
+    let frames = 0;
+    const raf = () => {
+      if (cancelled) return;
+      if (inject()) return;
+      if (frames++ < 30) requestAnimationFrame(raf);
+    };
+    requestAnimationFrame(raf);
+    const t1 = window.setTimeout(() => inject(), 50);
+    const t2 = window.setTimeout(() => inject(), 300);
+    const t3 = window.setTimeout(() => inject(), 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t1);
+      window.clearTimeout(t2);
+      window.clearTimeout(t3);
+    };
   }, [authState]);
+
 
   async function handleLogout() {
     await fetch('/api/admin/logout', { method: 'POST' });
@@ -165,22 +195,34 @@ export default function ValidatorReviewPage() {
 
   if (authState === 'signed_out' || authState === 'forbidden') {
     return (
-      <div className="max-w-md mx-auto p-6 space-y-4 text-center">
+      <div className="max-w-md mx-auto p-6 space-y-4 text-center text-white">
         <h1 className="text-2xl font-bold">Validator Review (Admin Only)</h1>
-        <p className="text-sm text-gray-500">
-          Log in with the founder's Telegram account. No password — identity is
+        <p className="text-sm text-white/50">
+          Log in with the founder&apos;s Telegram account. No password — identity is
           verified directly by Telegram, and only telegram_ids listed
           in FOUNDER_IDS are allowed in.
         </p>
         {authState === 'forbidden' && (
-          <p className="text-sm text-red-500 font-medium">
+          <p className="text-sm text-red-400 font-medium">
             This Telegram account is not a founder — access denied.
           </p>
         )}
-        <div ref={widgetContainerRef} className="flex justify-center py-4" />
-        {!BOT_USERNAME && (
-          <p className="text-xs text-red-500">
-            NEXT_PUBLIC_BOT_USERNAME is not set — the widget can't load.
+        {/* min-height so empty inject is obvious; Telegram script fills this */}
+        <div
+          ref={widgetContainerRef}
+          className="flex justify-center items-center py-6 min-h-[56px] rounded-xl bg-white/5 border border-white/10"
+        />
+        {!BOT_USERNAME ? (
+          <p className="text-xs text-red-400">
+            NEXT_PUBLIC_BOT_USERNAME is not set at build time — the widget cannot load.
+            Set it on Vercel and <strong>redeploy</strong> (NEXT_PUBLIC_* is inlined at build).
+          </p>
+        ) : (
+          <p className="text-[11px] text-white/40">
+            Bot: <span className="font-mono text-white/60">@{BOT_USERNAME}</span>
+            {' '}· If the button below is missing, open this page in Chrome/Safari
+            (not only in-app WebView), allow third-party cookies, and confirm BotFather
+            Login Widget domain includes <span className="font-mono">thiseast.vercel.app</span>.
           </p>
         )}
       </div>

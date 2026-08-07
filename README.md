@@ -1,20 +1,21 @@
-# Admin login widget empty (env already set)
+# Full lightnode: IndexedDB balance replica
 
-## Cause (not "you changed env")
-1. **Ref timing** — widget `useEffect` often ran while `widgetContainerRef.current` was still `null` after `signed_out` paint → script never injected → blank area, no error.
-2. **NEXT_PUBLIC_*** is baked in at **build**. Changing Vercel env without redeploy leaves old client bundle (or empty).
-3. Telegram Login Widget can fail silently if domain is not allowed in BotFather or script is blocked.
+## Behaviour (same features, durable)
+| Layer | Role |
+|-------|------|
+| **Memory Map** | Hot path — `rpc_balance_request` answers (unchanged) |
+| **IndexedDB** | Cold path — survives reload / Mini App reopen |
+| **Debounced writes** | ~800ms batch — less IO than write-per-update |
+| **Soft cap** | 50k accounts; oldest by `updatedAt` pruned if exceeded |
 
-## Fix in this patch
-- Retry inject via `requestAnimationFrame` + timeouts
-- Visible panel for the widget + show `@{BOT_USERNAME}` so you can verify the build saw the env
-- English diagnostics
+## Lifecycle
+1. User enables fullnode → `setFullNodePref(true)` + hydrate from IDB
+2. `balance:update` → Map + debounced IDB put
+3. Disable → clear Map + clear IDB store + pref false
+4. Reload with pref true → auto `fullNodeEnabled` + hydrate before Hub updates
 
-## After deploy checklist
-1. Hard refresh `/admin/validator-review`
-2. You should see **Bot: @YourBot** under the box
-3. Blue **Log in with Telegram** button inside the box
-4. BotFather → Bot → **Domain** (Login Widget) includes `thiseast.vercel.app`
-5. Prefer external browser if Telegram in-app browser blocks the widget
+## Files
+- `src/lib/lightnode/balance-replica-store.ts` (new)
+- `src/lib/lightnode/client.ts` (wired)
 
-Overwrite: `src/app/admin/validator-review/page.tsx`
+Not a full block archive — balance replica only, same as current design.

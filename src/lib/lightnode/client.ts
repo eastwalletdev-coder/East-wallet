@@ -7,6 +7,13 @@ import { PeerMesh } from "./webrtc-peer";
 import { putBlock } from "./block-store";
 import { buildFullNodeSyncPayload } from "@/lib/tx-payload-builders";
 
+import {
+  loadBalanceReplica,
+  clearBalanceReplica,
+  setFullNodePref,
+  getFullNodePref,
+  BalanceReplicaWriter,
+} from "./balance-replica-store";
 const STORAGE_KEY = "east_lightnode_state_v1";
 // Separate key (not part of the main state blob, which persist()s on every
 // single set() call) for a small cross-restart peer cache — see
@@ -300,6 +307,8 @@ export class LightNodeClient {
   // choose to spend, not something switched on silently.
   private fullNodeEnabled = false;
   private balanceReplica = new Map<string, string>(); // lowercased address -> decimal-string balance
+  private balanceWriter = new BalanceReplicaWriter();
+  private replicaHydrated = false;
   // Cache of the latest signed sync attestation seen per wallet_address —
   // used to independently detect a height regression from ANY peer's
   // broadcast, not just this device's own history. See the "sync:attestation"
@@ -309,6 +318,13 @@ export class LightNodeClient {
   constructor(url: string) {
     this.url = url;
     this.state = loadState();
+    // Restore fullnode preference + replica after Mini App reload
+    void getFullNodePref().then((on) => {
+      if (on) {
+        this.fullNodeEnabled = true;
+        void this.hydrateReplicaFromIdb();
+      }
+    });
     this.peerMesh = new PeerMesh(this.state.nodeId, {
       // Guarded on readyState now (not just ws existing) — mesh expansion
       // (see startMeshExpansion()) can attempt connectTo() with no relay
@@ -576,7 +592,9 @@ export class LightNodeClient {
         // in the first place, so a plain light node never receives this).
         case "balance:update": {
           if (!this.fullNodeEnabled) break;
-          this.balanceReplica.set(msg.address.toLowerCase(), msg.balance);
+          const addr = msg.address.toLowerCase();
+          this.balanceReplica.set(addr, msg.balance);
+          this.balanceWriter.put(addr, String(msg.balance));
           break;
         }
 
@@ -1403,11 +1421,38 @@ export class LightNodeClient {
   setFullNodeEnabled(enabled: boolean) {
     if (this.fullNodeEnabled === enabled) return;
     this.fullNodeEnabled = enabled;
-    if (!enabled) this.balanceReplica.clear(); // opting out — stop pretending to have a replica
+    void setFullNodePref(enabled);
+    if (!enabled) {
+      this.balanceReplica.clear(); // opting out — stop pretending to have a replica
+      this.replicaHydrated = false;
+      void clearBalanceReplica();
+    } else {
+      // Hydrate from IndexedDB so reload keeps prior balances
+      void this.hydrateReplicaFromIdb();
+    }
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.manualDisconnect = false; // this is a reconfigure, not a user-initiated disconnect — should auto-reconnect
       this.ws.close();
     }
+  }
+
+  private async hydrateReplicaFromIdb() {
+    try {
+      const stored = await loadBalanceReplica();
+      if (!this.fullNodeEnabled) return;
+      for (const [k, v] of stored) {
+        if (!this.balanceReplica.has(k)) this.balanceReplica.set(k, v);
+      }
+      this.replicaHydrated = true;
+      this.log(`Fullnode replica restored from IndexedDB (${stored.size} accounts)`);
+    } catch {
+      this.replicaHydrated = true;
+    }
+  }
+
+  /** Account count in local balance replica (memory). */
+  getBalanceReplicaSize(): number {
+    return this.balanceReplica.size;
   }
 
   isFullNodeEnabled(): boolean {

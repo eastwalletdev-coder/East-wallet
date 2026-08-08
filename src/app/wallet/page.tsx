@@ -595,9 +595,9 @@ function WalletPageContent() {
                           </div>
                           <div className="min-w-0">
                             <p className="text-xs font-bold capitalize">
-                              {tx.type} · <span className={statusColor}>{statusLabel}</span>
+                              {tx.type === "migrate" ? "Migrate to chain" : tx.type} · <span className={statusColor}>{statusLabel}</span>
                             </p>
-                            <p className="text-[9px] text-muted-foreground">{tx.date} · on-chain</p>
+                            <p className="text-[9px] text-muted-foreground">{tx.date} · {tx.type === "migrate" ? "Neon → on-chain" : "on-chain"}</p>
                             {tx.txHash ? (
                               <p className="text-[8px] text-muted-foreground/50 font-mono truncate">{tx.txHash}</p>
                             ) : null}
@@ -626,7 +626,6 @@ function WalletPageContent() {
                         }`}>
                           {tx.type === "send" ? <ArrowUpRight className="w-4 h-4 text-red-400" /> :
                            tx.type === "receive" ? <ArrowDownLeft className="w-4 h-4 text-green-400" /> :
-                           tx.type === "migrate" ? <ArrowUpRight className="w-4 h-4 text-primary" /> :
                            <Lock className="w-4 h-4 text-primary" />}
                         </div>
                         <div className="min-w-0">

@@ -1,18 +1,9 @@
-# Combined: leader push + STUN + PEER_OFFLINE warn + migrate activity
-
-## Includes
-1. **Leader push** — block:new → broadcast mesh; non-leader range only parent
-2. **STUN pool** — Google 0–4, Cloudflare, stunprotocol; ICE grace 10s
-3. **PEER_OFFLINE** → warn "not on hub (P2P may still be up)"
-4. **Migrate to chain** in Recent Activity when Home deposit (Neon → on-chain) succeeds
+# Profile: new Whitepaper + Tokenomics diagram
 
 ## Files
-- `src/lib/lightnode/client.ts`
-- `src/lib/lightnode/webrtc-peer.ts`
-- `src/lib/chain-activity-local.ts` (type `migrate`)
-- `src/app/page.tsx` (pushLocalActivity on deposit)
-- `src/app/wallet/page.tsx` (label/icon)
-- `src/components/SendDialog.tsx` (if present)
+- `src/app/whitepaper/page.tsx` — full whitepaper text (accordion sections, English)
+- `src/app/tokenomics/page.tsx` — existing tokenomics + SVG allocation donut
 
 ## Deploy
-Merge into East-wallet `src/…` → push Vercel.
+Overwrite both under East-wallet → push Vercel.
+Profile links `/whitepaper` and `/tokenomics` stay the same.

@@ -47,6 +47,77 @@ function Bullet({ children }: { children: React.ReactNode }) {
   return <p className="text-white/70 text-sm">→ {children}</p>;
 }
 
+
+/** Donut chart for fixed supply allocation — pure SVG, no chart library. */
+function AllocationDiagram() {
+  const slices = [
+    { label: "Ecosystem Rewards", pct: 50, color: "#8B5CF6" },
+    { label: "Liquidity Pool", pct: 15, color: "#6366F1" },
+    { label: "Treasury", pct: 10, color: "#3B82F6" },
+    { label: "Emergency Reserve", pct: 7, color: "#06B6D4" },
+    { label: "Marketing & Growth", pct: 7, color: "#14B8A6" },
+    { label: "Team & Development", pct: 6, color: "#A78BFA" },
+    { label: "Founder Allocation", pct: 5, color: "#C4B5FD" },
+  ];
+  const r = 42;
+  const c = 50;
+  const circ = 2 * Math.PI * r;
+  let offset = 0;
+  const arcs = slices.map((s) => {
+    const len = (s.pct / 100) * circ;
+    const dash = `${len} ${circ - len}`;
+    const el = { ...s, dash, offset: -offset };
+    offset += len;
+    return el;
+  });
+  return (
+    <Card className="bg-white/[0.03] border-white/5 rounded-2xl overflow-hidden">
+      <CardContent className="p-4">
+        <p className="text-primary font-bold text-sm uppercase tracking-wider mb-3">
+          Allocation Overview
+        </p>
+        <div className="flex flex-col sm:flex-row items-center gap-4">
+          <div className="relative w-[180px] h-[180px] shrink-0">
+            <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
+              <circle cx={c} cy={c} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="12" />
+              {arcs.map((a) => (
+                <circle
+                  key={a.label}
+                  cx={c}
+                  cy={c}
+                  r={r}
+                  fill="none"
+                  stroke={a.color}
+                  strokeWidth="12"
+                  strokeDasharray={a.dash}
+                  strokeDashoffset={a.offset}
+                  strokeLinecap="butt"
+                />
+              ))}
+            </svg>
+            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-white font-black text-lg leading-none">1B</span>
+              <span className="text-white/40 text-[9px] uppercase tracking-wider mt-0.5">EAST</span>
+            </div>
+          </div>
+          <div className="flex-1 w-full space-y-1.5">
+            {slices.map((s) => (
+              <div key={s.label} className="flex items-center gap-2 text-[11px]">
+                <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ background: s.color }} />
+                <span className="text-white/70 flex-1 truncate">{s.label}</span>
+                <span className="text-white font-bold tabular-nums">{s.pct}%</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <p className="text-white/35 text-[10px] mt-3 leading-relaxed">
+          Fixed maximum supply · allocations enforced via on-chain supply buckets
+        </p>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function TokenomicsPage() {
   return (
     <div className="flex flex-col gap-4 px-3 py-4 pb-8">
@@ -81,7 +152,9 @@ export default function TokenomicsPage() {
         </CardContent>
       </Card>
 
-      <Section title="1. Token Allocation" defaultOpen>
+      <AllocationDiagram />
+
+            <Section title="1. Token Allocation" defaultOpen>
         <div className="bg-white/[0.04] rounded-xl p-3 space-y-2">
           <Row label="Ecosystem Rewards" value="50% · 500,000,000" />
           <Row label="Liquidity Pool" value="15% · 150,000,000" />

@@ -55,10 +55,35 @@
 // stream — never worse than that.
 import { getRange } from "./block-store";
 
+// Diverse public STUN — keeps ICE gathering fast (2–4 servers).
+// Avoid a long list: each URL adds RTT to gathering. Prefer global anycast.
 const STUN_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" },
 ];
+
+/** Normalize Metered/other TURN lists: UDP first, then TCP, then TURNS. */
+function orderTurnServers(servers: RTCIceServer[]): RTCIceServer[] {
+  const seen = new Set<string>();
+  const udp: RTCIceServer[] = [];
+  const tcp: RTCIceServer[] = [];
+  const tls: RTCIceServer[] = [];
+  const other: RTCIceServer[] = [];
+  for (const s of servers || []) {
+    const urls = Array.isArray(s.urls) ? s.urls : [s.urls];
+    const key = urls.join("|") + "|" + (s.username || "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const u = String(urls[0] || "").toLowerCase();
+    if (u.startsWith("turns:")) tls.push(s);
+    else if (u.includes("?transport=tcp") || u.includes("transport=tcp")) tcp.push(s);
+    else if (u.startsWith("turn:")) udp.push(s);
+    else other.push(s);
+  }
+  return [...udp, ...tcp, ...tls, ...other];
+}
+
 
 const DATACHANNEL_LABEL = "headers";
 
@@ -82,11 +107,11 @@ const MAX_MESH_PEERS = 20;
 // before doing anything, so a normal brief blip never triggers a restart.
 // "failed" means ICE has already given up trying by itself — no need to
 // wait there, restart immediately.
-const ICE_DISCONNECT_GRACE_MS = 4_000;
+const ICE_DISCONNECT_GRACE_MS = 8_000; // mobile NAT blips often >4s
 // After sending an ICE-restart offer, how long to wait for it to actually
 // land (answer comes back, state flips to "connected") before giving up
 // and treating the peer as genuinely gone rather than just IP-shuffled.
-const ICE_RESTART_FAILSAFE_MS = 10_000;
+const ICE_RESTART_FAILSAFE_MS = 15_000; // allow slow TURN renegotiation
 
 export interface PeerMeshCallbacks {
   /** Send a signaling message out over the existing Railway WS connection. */
@@ -431,11 +456,21 @@ export class PeerMesh {
    *  represents "these are the current valid credentials," not an addition
    *  to a growing list). */
   setTurnServers(turnServers: RTCIceServer[]) {
-    this.iceServers = [...STUN_SERVERS, ...turnServers];
+    // Prefer UDP TURN, then TCP, then TLS — browser tries in list order
+    // after host/srflx (STUN). Deduplicate by urls string.
+    this.iceServers = [...STUN_SERVERS, ...orderTurnServers(turnServers)];
   }
 
   private createConnection(peerNodeId: string): RTCPeerConnection {
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    const pc = new RTCPeerConnection({
+      iceServers: this.iceServers,
+      // Pre-gather a few candidates so the next dial is faster
+      iceCandidatePoolSize: 2,
+      bundlePolicy: "max-bundle",
+      rtcpMuxPolicy: "require",
+      // "all" = try direct first, TURN as fallback (never force-relay only)
+      iceTransportPolicy: "all",
+    });
     pc.onicecandidate = (ev) => {
       if (ev.candidate) {
         this.emitSignal(peerNodeId, { type: "ice_candidate", candidate: JSON.stringify(ev.candidate) });

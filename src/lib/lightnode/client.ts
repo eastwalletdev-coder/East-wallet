@@ -397,7 +397,7 @@ export class LightNodeClient {
   private async fetchIceServers() {
     if (typeof window === "undefined" || typeof fetch === "undefined") return;
     const appUrl = process.env.NEXT_PUBLIC_ARCHIVE_BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "";
-    this.log("Trying TURN mode, please wait…");
+    this.log("Checking TURN (optional)…");
     try {
       const res = await fetch(`${appUrl.replace(/\/$/, "")}/api/turn-credentials`);
       if (!res.ok) {
@@ -406,7 +406,7 @@ export class LightNodeClient {
       }
       const body = await res.json();
       if (!body?.configured) {
-        this.log("TURN not configured on this deployment — staying STUN-only");
+        this.log("STUN-only mode (TURN not configured)");
         return; // no TURN server set up on this deployment — stay STUN-only
       }
       // Route already returns an RTCIceServer[] (Metered hands back the
@@ -841,7 +841,7 @@ export class LightNodeClient {
       return; // same reasoning as above
     }
     if (remainingGap > PEER_AND_ARCHIVE_TRIGGER_GAP + 1 && archiveUrl) {
-      this.log(`No peer range — catching up from archive ${archiveUrl} (#${this.state.currentHeight + 1}→#${latestHeight})`);
+      this.log(`No peer range — catching up from relay (#${this.state.currentHeight + 1}→#${latestHeight})`);
       this.catchUpFromArchive(archiveUrl, latestHeight);
     } else if (remainingGap > 0) {
       // Small enough for Railway's own ring-buffer backfill, or no
@@ -862,7 +862,7 @@ export class LightNodeClient {
       this.syncRequestWatchdog = setTimeout(() => {
         this.syncRequestWatchdog = null;
         if (this.state.currentHeight < targetHeight && archiveUrl) {
-          this.log(`Hub backfill didn't close the gap (#${this.state.currentHeight} of #${targetHeight}) after ${SYNC_REQUEST_WATCHDOG_MS / 1000}s — falling back to archive`, "warn");
+          this.log(`Hub backfill didn't close the gap (#${this.state.currentHeight} of #${targetHeight}) after ${SYNC_REQUEST_WATCHDOG_MS / 1000}s — falling back to relay`, "warn");
           this.fetchArchiveRange(archiveUrl, this.state.currentHeight + 1, targetHeight);
         }
       }, SYNC_REQUEST_WATCHDOG_MS);
@@ -964,19 +964,15 @@ export class LightNodeClient {
     if (header && header.height == null && header.block_index != null) header.height = header.block_index;
     const result = verifyHeader(header, this.state.currentHeight, this.lastHash);
     if (!result.valid) {
-      // "Stale or duplicate" is the EXPECTED outcome when two lightnodes
-      // are peer-mesh-connected and both already have overlapping history
-      // — e.g. this node just range-caught-up from peer A, then peer B
-      // (who has the same range) gossips the same headers over. That's
-      // not a problem: it's just confirming we already have it. Logging
-      // it at "error" made a harmless, common event look like something
-      // was broken. Genuine failures (bad hash chain, bad signature)
-      // still log loud, since those DO mean something is wrong.
+      // "Stale or duplicate" is expected mesh overlap — do not spam activity log.
+      // Genuine failures (bad hash chain / signature) still log as REJECTED.
       const benign = result.reason === "Stale or duplicate block height";
-      this.log(
-        `Header ${benign ? "skipped" : "REJECTED"} — block #${header.height} (hash ${String(header.hash).slice(0, 10)}…): ${result.reason}`,
-        benign ? "info" : "error"
-      );
+      if (!benign) {
+        this.log(
+          `Header REJECTED — block #${header.height} (hash ${String(header.hash).slice(0, 10)}…): ${result.reason}`,
+          "error",
+        );
+      }
       onDone?.();
       return;
     }
@@ -1119,7 +1115,7 @@ export class LightNodeClient {
         const archTip = typeof tipBody?.height === "number" ? tipBody.height : -1;
         if (archTip >= 0) {
           targetHeight = Math.min(targetHeight, archTip);
-          this.log(`Archive tip #${archTip} — syncing headers toward #${targetHeight}`);
+          this.log(`Relay tip #${archTip} — syncing headers toward #${targetHeight}`);
         }
       }
       // Probe first chunk: if fromHeight missing, advance to first present header
@@ -1131,7 +1127,7 @@ export class LightNodeClient {
         if (hdrs.length === 0 && fromHeight < targetHeight) {
           // Fall back to last ~120 heights (mirror lookback)
           const windowFrom = Math.max(0, targetHeight - 120);
-          this.log(`Archive empty at #${fromHeight} — jumping to archive window #${windowFrom}→#${targetHeight}`, "warn");
+          this.log(`Relay empty at #${fromHeight} — jumping to relay window #${windowFrom}→#${targetHeight}`, "warn");
           fromHeight = windowFrom;
           // Allow height jump (verifyHeader permits non-contiguous when not prev+1)
           if (this.state.currentHeight < fromHeight - 1) {
@@ -1141,7 +1137,7 @@ export class LightNodeClient {
         } else if (hdrs.length > 0) {
           const minH = Math.min(...hdrs.map((h: any) => Number(h.height)));
           if (minH > fromHeight) {
-            this.log(`Archive starts at #${minH} (not #${fromHeight}) — jumping`, "warn");
+            this.log(`Relay starts at #${minH} (not #${fromHeight}) — jumping`, "warn");
             fromHeight = minH;
             if (this.state.currentHeight < fromHeight - 1) {
               this.set({ currentHeight: fromHeight - 1 });
@@ -1151,16 +1147,16 @@ export class LightNodeClient {
         }
       }
     } catch (e) {
-      this.log(`Archive probe failed — still attempting range fetch`, "warn");
+      this.log(`Relay probe failed — still attempting range fetch`, "warn");
     }
 
     if (targetHeight < fromHeight) {
-      this.log(`Nothing to fetch from archive (from #${fromHeight} > tip #${targetHeight}) — asking hub`, "warn");
+      this.log(`Nothing to fetch from relay (from #${fromHeight} > tip #${targetHeight}) — asking hub`, "warn");
       this.ws?.send(JSON.stringify({ type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1 }));
       return;
     }
 
-    this.log(`Fetching archive headers #${fromHeight}→#${targetHeight} (${targetHeight - fromHeight + 1} blocks)…`);
+    this.log(`Fetching relay headers #${fromHeight}→#${targetHeight} (${targetHeight - fromHeight + 1} blocks)…`);
     await this.fetchArchiveRange(archiveBaseUrl, fromHeight, targetHeight);
 
     // Hub tail (may be empty if validator never published)
@@ -1193,9 +1189,9 @@ export class LightNodeClient {
         if (res.ok) {
           const body = await res.json();
           if (body?.success && Array.isArray(body.blocks)) blocks = body.blocks;
-          else this.log(`Archive blocks-range #${chunkFrom}–#${chunkTo}: empty or error`, "warn");
+          else this.log(`Relay range #${chunkFrom}–#${chunkTo}: empty or error`, "warn");
         } else {
-          this.log(`Archive blocks-range HTTP ${res.status} for #${chunkFrom}–#${chunkTo}`, "warn");
+          this.log(`Relay range HTTP ${res.status} for #${chunkFrom}–#${chunkTo}`, "warn");
         }
         // Fallback: /api/archive/headers (Neon validator mirror)
         if (blocks.length === 0) {
@@ -1229,7 +1225,7 @@ export class LightNodeClient {
       for (let h = chunkFrom; h <= chunkTo; h++) {
         const header = byHeight.get(h);
         if (!header) {
-          this.log(`Archive missing block #${h} — falling back to hub backfill for the rest`, "warn");
+          this.log(`Relay missing block #${h} — falling back to hub backfill for the rest`, "warn");
           this.ws?.send(JSON.stringify({
             type: "sync_request", nodeId: this.state.nodeId, fromHeight: this.state.currentHeight + 1,
           }));
@@ -1243,7 +1239,7 @@ export class LightNodeClient {
       }
     }
 
-    this.log(`Archive catch-up complete — ${fetchedCount} block(s) verified from archive`);
+    this.log(`Relay catch-up complete — ${fetchedCount} block(s) verified`);
   }
 
   private startRelayStats() {

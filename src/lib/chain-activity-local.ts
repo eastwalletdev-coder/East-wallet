@@ -5,7 +5,7 @@
 export type LocalActivity = {
   id: string;
   txHash: string;
-  type: 'send' | 'receive' | 'stake' | 'unstake' | 'claim';
+  type: 'send' | 'receive' | 'stake' | 'unstake' | 'claim' | 'migrate';
   token: string;
   amount: string;
   status: 'confirmed' | 'pending' | 'failed';

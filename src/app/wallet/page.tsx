@@ -590,6 +590,7 @@ function WalletPageContent() {
                             {isPending ? <Clock className="w-4 h-4 text-amber-400" /> :
                              tx.type === "send" ? <ArrowUpRight className="w-4 h-4 text-red-400" /> :
                              tx.type === "receive" ? <ArrowDownLeft className="w-4 h-4 text-green-400" /> :
+                             tx.type === "migrate" ? <ArrowUpRight className="w-4 h-4 text-primary" /> :
                              <Lock className="w-4 h-4 text-primary" />}
                           </div>
                           <div className="min-w-0">
@@ -625,6 +626,7 @@ function WalletPageContent() {
                         }`}>
                           {tx.type === "send" ? <ArrowUpRight className="w-4 h-4 text-red-400" /> :
                            tx.type === "receive" ? <ArrowDownLeft className="w-4 h-4 text-green-400" /> :
+                           tx.type === "migrate" ? <ArrowUpRight className="w-4 h-4 text-primary" /> :
                            <Lock className="w-4 h-4 text-primary" />}
                         </div>
                         <div className="min-w-0">

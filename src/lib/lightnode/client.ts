@@ -501,21 +501,43 @@ export class LightNodeClient {
           break;
 
         case "block:new":
-          // Live block arriving after initial sync — verify immediately.
+          // Live block from hub — verify, then push down the mesh.
+          // Leader/none: responsible for fan-out so children need not poll each other.
           this.set({ syncPhase: "validating" });
           if (msg.header?.height > this.state.networkTipHeight) {
             this.set({ networkTipHeight: msg.header.height });
           }
-          this.applyHeader(msg.header, false, () => this.set({ syncPhase: "live" }));
+          this.applyHeader(msg.header, false, () => {
+            this.set({ syncPhase: "live" });
+            // applyHeader already broadcasts when propagate=true; reinforce for leader
+            if (this.state.tier === "leader" || this.state.tier === "none") {
+              const n = this.peerMesh.connectedPeerIds.length;
+              if (n > 0 && msg.header) {
+                this.peerMesh.broadcastHeader(msg.header);
+                this.log(`Leader push — block #${msg.header.height} → ${n} peer(s)`);
+              }
+            }
+          });
           break;
 
         case "pong":
           this.set({ latencyMs: Date.now() - this.pingSentAt });
           break;
 
-        case "error":
-          this.log(`Error: ${msg.message}`, "error");
+        case "error": {
+          const em = String(msg.message || "");
+          // Hub has no WS for that nodeId — not the same as WebRTC DataChannel down.
+          if (em.includes("PEER_OFFLINE")) {
+            const id = em.replace(/^PEER_OFFLINE\s*[—-]\s*/i, "").trim();
+            this.log(
+              `Hub signaling: ${id.slice(0, 8)}… not on hub (P2P may still be up)`,
+              "warn",
+            );
+          } else {
+            this.log(`Error: ${em}`, "error");
+          }
           break;
+        }
 
         // ── Tier hierarchy signaling — Railway is the intro point only ──
         case "tier:assign": {
@@ -731,11 +753,40 @@ export class LightNodeClient {
   // validator/Railway.
   private async requestRangeWaitingForPeer(fromHeight: number, toHeight: number, totalTimeoutMs: number): Promise<any[]> {
     const deadline = Date.now() + totalTimeoutMs;
+    const parentId = this.state.parentNodeId;
+    const isLeaf = !this.canGoDirectToRailway() && !!parentId;
+
+    // Non-leader with a parent: wait briefly for parent *push* (gossip), then
+    // range-request ONLY that parent — do not spam every mesh peer.
+    if (isLeaf) {
+      const pushWaitMs = Math.min(6_000, totalTimeoutMs);
+      const pushDeadline = Date.now() + pushWaitMs;
+      while (Date.now() < pushDeadline && this.state.currentHeight < toHeight) {
+        if (this.peerMesh.connectedPeerIds.includes(parentId!)) break;
+        await new Promise((r) => setTimeout(r, 400));
+      }
+      // Passive wait: parent may already be broadcasting headers
+      const passiveUntil = Date.now() + Math.min(3_000, Math.max(0, deadline - Date.now()));
+      while (Date.now() < passiveUntil && this.state.currentHeight < fromHeight) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
+      if (this.state.currentHeight >= toHeight) return [];
+
+      if (this.peerMesh.connectedPeerIds.includes(parentId!)) {
+        const remaining = Math.max(500, deadline - Date.now());
+        this.log(`Requesting #${fromHeight}–#${toHeight} from parent ${parentId!.slice(0, 8)}…`);
+        return this.peerMesh.requestRange(fromHeight, toHeight, remaining, [parentId!]);
+      }
+      this.log(`Parent ${parentId!.slice(0, 8)}… not connected — waiting (no mesh-wide poll)`, "warn");
+      return [];
+    }
+
+    // Leader / none: may ask any connected peer (or none — then hub/relay).
     if (this.peerMesh.connectedPeerIds.length === 0) {
       this.log(`Searching for lightnode peer (up to ${Math.round(totalTimeoutMs / 1000)}s) to request #${fromHeight}–#${toHeight}…`);
-    }
-    while (this.peerMesh.connectedPeerIds.length === 0 && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      while (Date.now() < deadline && this.peerMesh.connectedPeerIds.length === 0) {
+        await new Promise((r) => setTimeout(r, 500));
+      }
     }
     const remaining = deadline - Date.now();
     if (this.peerMesh.connectedPeerIds.length === 0 || remaining <= 0) {
@@ -759,6 +810,13 @@ export class LightNodeClient {
       (typeof window !== "undefined" ? window.location.origin : "");
 
     if (gap > 0) {
+      if ((this.state.tier === "leader" || this.state.tier === "none") && gap <= 3) {
+        // Live block:new may already be in flight from hub — brief wait, then push mesh
+        await new Promise((r) => setTimeout(r, 1500));
+        if (this.state.currentHeight >= latestHeight) {
+          return;
+        }
+      }
       // Step 1 of 3: other lightnodes first (WebRTC mesh, see
       // webrtc-peer.ts's requestRange + block-store.ts) — tried by EVERY
       // node regardless of relay status, and regardless of how far

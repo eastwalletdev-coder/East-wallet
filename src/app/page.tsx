@@ -20,7 +20,7 @@ import { getEvmIdentity } from "@/lib/wallet-service";
 import { SignatureDialog } from "@/components/SignatureDialog";
 import { AuditTrailSheet } from "@/components/AuditTrailSheet";
 import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
-import { listLocalActivity, listAllLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
+import { listLocalActivity, listAllLocalActivity, pushLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
 import { FullNodeConsentDialog } from "@/components/FullNodeConsentDialog";
 import { checkFullNodeAgreement, agreeToFullNodeTerms, setFullNodeActiveStatus } from "@/actions/full-node-actions";
 import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
@@ -266,6 +266,23 @@ async function handleTransferOnchain() {
       setOnchainMsg(
         `Deposited · Neon left ${data.neonBalanceAfter} · Chain ${data.onchainBalanceAfterHuman} EAST`,
       );
+      // Recent Activity — Neon DB mining balance → on-chain free balance
+      try {
+        const vaultAddr = (!isLocked && mnemonic)
+          ? getEvmIdentity(mnemonic).address
+          : (user.walletAddress || "");
+        const txHash = String(data.txHash || data.hash || data.txid || `migrate-${Date.now()}`);
+        pushLocalActivity({
+          type: "migrate",
+          token: "EAST",
+          amount: String(amount),
+          status: "confirmed",
+          address: vaultAddr,
+          wallet: vaultAddr,
+          txHash,
+        });
+        setLocalActivity(listAllLocalActivity());
+      } catch { /* ignore */ }
       setOnchainAmount("");
       try { refreshUser(); } catch { /* ignore */ }
     } catch (e: any) {
@@ -848,7 +865,7 @@ async function handleTransferOnchain() {
                             <ArrowUpRight className="w-4 h-4 text-red-400" />
                           </div>
                           <div className="min-w-0">
-                            <p className="text-xs font-bold capitalize text-white/90">{tx.type} · <span className={tx.status === 'pending' ? 'text-amber-400' : tx.status === 'failed' ? 'text-red-400' : 'text-green-400'}>{tx.status === 'pending' ? 'Pending' : tx.status === 'failed' ? 'Failed' : 'Confirmed'}</span></p>
+                            <p className="text-xs font-bold capitalize text-white/90">{tx.type === "migrate" ? "Migrate to chain" : tx.type} · <span className={tx.status === 'pending' ? 'text-amber-400' : tx.status === 'failed' ? 'text-red-400' : 'text-green-400'}>{tx.status === 'pending' ? 'Pending' : tx.status === 'failed' ? 'Failed' : 'Confirmed'}</span></p>
                             <p className="text-[9px] text-muted-foreground truncate">{tx.date} · on-chain</p>
                           </div>
                         </div>

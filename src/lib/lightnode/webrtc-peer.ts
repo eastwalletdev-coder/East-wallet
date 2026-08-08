@@ -55,12 +55,15 @@
 // stream — never worse than that.
 import { getRange } from "./block-store";
 
-// Diverse public STUN — keeps ICE gathering fast (2–4 servers).
-// Avoid a long list: each URL adds RTT to gathering. Prefer global anycast.
+// Public STUN pool — enough diversity for mobile/WebView NAT without
+// bloating ICE gather time. Prefer well-known anycast operators.
+// (TURN still optional via /api/turn-credentials when Metered is configured.)
 const STUN_SERVERS: RTCIceServer[] = [
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] },
+  { urls: ["stun:stun2.l.google.com:19302", "stun:stun3.l.google.com:19302"] },
+  { urls: "stun:stun4.l.google.com:19302" },
   { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: "stun:stun.stunprotocol.org:3478" },
 ];
 
 /** Normalize Metered/other TURN lists: UDP first, then TCP, then TURNS. */
@@ -107,11 +110,11 @@ const MAX_MESH_PEERS = 20;
 // before doing anything, so a normal brief blip never triggers a restart.
 // "failed" means ICE has already given up trying by itself — no need to
 // wait there, restart immediately.
-const ICE_DISCONNECT_GRACE_MS = 8_000; // mobile NAT blips often >4s
+const ICE_DISCONNECT_GRACE_MS = 10_000; // Mini App / mobile NAT blips
 // After sending an ICE-restart offer, how long to wait for it to actually
 // land (answer comes back, state flips to "connected") before giving up
 // and treating the peer as genuinely gone rather than just IP-shuffled.
-const ICE_RESTART_FAILSAFE_MS = 15_000; // allow slow TURN renegotiation
+const ICE_RESTART_FAILSAFE_MS = 18_000;
 
 export interface PeerMeshCallbacks {
   /** Send a signaling message out over the existing Railway WS connection. */
@@ -407,8 +410,12 @@ export class PeerMesh {
   // range, both just resolve to an empty array — callers (client.ts) fall
   // through to a validator/archive from there, same as if this didn't
   // exist. This never rejects.
-  requestRange(fromHeight: number, toHeight: number, timeoutMs: number): Promise<any[]> {
-    const openPeers = [...this.peers.values()].filter((p) => p.channel?.readyState === "open");
+  requestRange(fromHeight: number, toHeight: number, timeoutMs: number, onlyPeerIds?: string[]): Promise<any[]> {
+    let openPeers = [...this.peers.entries()].filter(([, p]) => p.channel?.readyState === "open");
+    if (onlyPeerIds && onlyPeerIds.length > 0) {
+      const allow = new Set(onlyPeerIds);
+      openPeers = openPeers.filter(([id]) => allow.has(id));
+    }
     if (openPeers.length === 0) return Promise.resolve([]);
 
     const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -422,7 +429,7 @@ export class PeerMesh {
       }, timeoutMs);
 
       this.pendingRangeRequests.set(requestId, { received: new Map(), timer, resolve });
-      openPeers.forEach((peer) => peer.channel!.send(msg));
+      openPeers.forEach(([, peer]) => peer.channel!.send(msg));
     });
   }
 
@@ -464,11 +471,10 @@ export class PeerMesh {
   private createConnection(peerNodeId: string): RTCPeerConnection {
     const pc = new RTCPeerConnection({
       iceServers: this.iceServers,
-      // Pre-gather a few candidates so the next dial is faster
-      iceCandidatePoolSize: 2,
+      // Pre-gather candidates — helps Mini App re-dials after brief backgrounding
+      iceCandidatePoolSize: 4,
       bundlePolicy: "max-bundle",
       rtcpMuxPolicy: "require",
-      // "all" = try direct first, TURN as fallback (never force-relay only)
       iceTransportPolicy: "all",
     });
     pc.onicecandidate = (ev) => {

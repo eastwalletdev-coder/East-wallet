@@ -1,22 +1,43 @@
-# Wire Phase 3 into wallet-onboarding-actions.ts
+# Wire early-bird + channel gate
 
-In `src/actions/wallet-onboarding-actions.ts`:
-
-```ts
-import { applyChainBalanceToUser } from '@/lib/chain-balance';
+## Env (Vercel)
+```
+TELEGRAM_BOT_TOKEN=...          # BotFather — bot must be **admin** of @Eastnetwork
+NEXT_PUBLIC_REQUIRED_CHANNEL=@Eastnetwork
+EARLY_BIRD_USER_LIMIT=10000     # optional, default 10000
+EARLY_BIRD_BONUS_EAST=200       # optional, default 200
 ```
 
-Wherever you `return { ok: true, user: mapUserRow(...) }` (or similar), change to:
-
-```ts
-const user = mapUserRow(row, eastId);
-return { ok: true, user: await applyChainBalanceToUser(user) };
+## 1. DB migration (once)
+Admin → migrate OR:
+```
+POST /api/admin/migrate-early-bird  + founder session + passphrase
 ```
 
-Do this for every path that returns the user object used by the dashboard balance
-(getOrCreateUser / getUserProfile / etc.).
+## 2. `createSelfCustodyWallet` (wallet-onboarding-actions.ts)
+After successful INSERT of new user, still inside the transaction:
 
-Behavior:
-- `USE_CHAIN_BALANCE` not `true` → still Neon (`balanceSource: "neon"`)
-- Flag on + Hub/validator OK → overwrites balance/staked from chain
-- Flag on + chain down → keeps Neon numbers (`balanceSource: "neon_fallback"`)
+```ts
+import { grantEarlyBirdBonusIfEligible } from '@/lib/early-bird';
+// ...
+const bird = await grantEarlyBirdBonusIfEligible(client, telegramId);
+```
+
+Then re-SELECT user before COMMIT so returned balance includes the bonus.
+
+## 3. `registerOrUpdateUser` (mining-actions.ts)
+Only on first insert path (when ON CONFLICT did not update an existing row).
+Safest: after INSERT, call `grantEarlyBirdBonusIfEligible` — function is idempotent via `early_bird_bonus` flag.
+
+## 4. `layout.tsx`
+```tsx
+import { ChannelJoinGate } from '@/components/ChannelJoinGate';
+// wrap children:
+<ChannelJoinGate>
+  <main>...</main>
+</ChannelJoinGate>
+```
+
+## Note
+Bonus credits **Neon identity.users.balance** (mining ledger), not validator Badger.
+Users who want on-chain balance still use Deposit / migrate.

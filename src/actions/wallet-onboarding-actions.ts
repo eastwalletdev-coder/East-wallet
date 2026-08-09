@@ -19,6 +19,7 @@ import { getCachedUser, setCachedUser, invalidateCachedUser } from '@/lib/db/red
 import { validateTelegramData, extractVerifiedUserId } from '@/lib/telegram';
 import { verifyEvmOwnership, isValidEvmAddress } from '@/lib/evm-signature';
 import { generateEastId } from '@/lib/east-id';
+import { grantEarlyBirdBonusIfEligible } from '@/lib/early-bird';
 
 const FOUNDER_IDS = (process.env.FOUNDER_IDS || '').split(',').map(id => id.trim()).filter(Boolean);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -123,6 +124,16 @@ export async function createSelfCustodyWallet(
       VALUES ($1, $2, $3, $4, 'self_custody_evm', $5, NOW())
     `, [telegramId, address, username, isFounder, publicKey]);
 
+    // First 10,000 users: +200 EAST on Neon mining balance (once)
+    try {
+      const bird = await grantEarlyBirdBonusIfEligible(client, telegramId);
+      if (bird.granted > 0) {
+        console.log(`[EASTCHAIN] Early bird +${bird.granted} EAST for ${telegramId} (${bird.remainingSlots} slots left)`);
+      }
+    } catch (e: any) {
+      console.error('[EASTCHAIN] early bird grant failed (non-fatal for wallet create):', e?.message || e);
+    }
+
     // Auto-register referral from Telegram deep link start_param — same
     // behavior as the legacy registerOrUpdateUser flow.
     if (startParam && startParam !== telegramId) {
@@ -201,16 +212,9 @@ export async function upgradeToSelfCustodyWallet(
       await client.query('ROLLBACK');
       return { success: false, error: 'USER_NOT_FOUND' };
     }
-    const prev = existing.rows[0];
-    const prevAddr = String(prev.wallet_address || '').toLowerCase();
-    const nextAddr = address.toLowerCase();
-
-    // Same address already registered → idempotent success (import/re-open).
-    // Different address with valid signature → rebind Profile to vault (import mnemonic).
-    if (prev.wallet_type === 'self_custody_evm' && prevAddr === nextAddr) {
+    if (existing.rows[0].wallet_type === 'self_custody_evm') {
       await client.query('ROLLBACK');
-      const eastId = generateEastId(address);
-      return { success: true, user: mapUserRow(prev, eastId), alreadySynced: true };
+      return { success: false, error: 'ALREADY_SELF_CUSTODY' };
     }
 
     await client.query(`

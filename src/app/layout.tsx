@@ -7,6 +7,7 @@ import { RPCProvider } from '@/lib/rpc-context';
 import Link from 'next/link';
 import { Globe } from 'lucide-react';
 import { SplashScreen } from '@/components/SplashScreen';
+import { ChannelJoinGate } from '@/components/ChannelJoinGate';
 import { SpeedInsights } from '@vercel/speed-insights/next';
 
 export const metadata: Metadata = {
@@ -40,9 +41,11 @@ export default function RootLayout({
               </Link>
             </div>
             <SplashScreen />
+            <ChannelJoinGate>
             <main style={{ minHeight: '100vh', paddingTop: 80 }}>
               {children}
             </main>
+            </ChannelJoinGate>
             <BottomNav />
             <Toaster />
           </RPCProvider>

@@ -8,6 +8,7 @@
  */
 
 import { identityPool } from '@/lib/db/identity';
+import { grantEarlyBirdBonusIfEligible } from '@/lib/early-bird';
 import { ledgerPool } from '@/lib/db/ledger';
 import { getCachedUser, setCachedUser, invalidateCachedUser, setNetworkStatus } from '@/lib/db/redis';
 import { generateWalletFromTelegramId } from '@/lib/blockchain';
@@ -188,6 +189,12 @@ export async function registerOrUpdateUser(
             is_founder = identity.users.is_founder OR $4,
             public_key = COALESCE(identity.users.public_key, $5)
     `, [telegramId, walletAddress, username, isFounder, publicKeyHex]);
+
+    try {
+      await grantEarlyBirdBonusIfEligible(client, telegramId);
+    } catch (e: any) {
+      console.error('[EASTCHAIN] early bird (registerOrUpdateUser):', e?.message || e);
+    }
 
     // Auto-register referral from Telegram deep link start_param
     if (startParam && startParam !== telegramId) {

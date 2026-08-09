@@ -6,11 +6,11 @@ const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || process.env.BOT_TOKEN || '';
 const REQUIRED_CHANNEL =
   process.env.NEXT_PUBLIC_REQUIRED_CHANNEL ||
   process.env.REQUIRED_CHANNEL ||
-  '@Eastnetwork';
+  '@Eastnetworkupdate';
 
 export function getRequiredChannel(): string {
   const c = REQUIRED_CHANNEL.trim();
-  if (!c) return '@Eastnetwork';
+  if (!c) return '@Eastnetworkupdate';
   return c.startsWith('@') ? c : `@${c}`;
 }
 

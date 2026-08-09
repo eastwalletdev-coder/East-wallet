@@ -6,8 +6,8 @@ import { verifyRequiredChannel } from "@/actions/channel-gate-actions";
 import { Button } from "@/components/ui/button";
 import { Loader2, Radio } from "lucide-react";
 
-const DEFAULT_CHANNEL = "@Eastnetwork";
-const DEFAULT_INVITE = "https://t.me/Eastnetwork";
+const DEFAULT_CHANNEL = "@Eastnetworkupdate";
+const DEFAULT_INVITE = "https://t.me/Eastnetworkupdate";
 
 function getTg() {
   if (typeof window === "undefined") return null;
@@ -53,7 +53,7 @@ function openChannel(url: string) {
 }
 
 /**
- * Full-screen gate: user must join @Eastnetwork before using the app.
+ * Full-screen gate: user must join @Eastnetworkupdate before using the app.
  * Skipped outside Telegram (no userId) so browser/dev still works.
  */
 export function ChannelJoinGate({ children }: { children: React.ReactNode }) {

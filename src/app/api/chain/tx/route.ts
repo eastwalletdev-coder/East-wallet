@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordTransferForActivity } from "@/lib/record-chain-tx-ledger";
 
 /**
  * POST /api/chain/tx
@@ -52,6 +53,32 @@ const ALLOWED_TYPES = new Set([
   "claim_unstake",
   "claim_mining",
 ]);
+
+
+async function maybeIndexTransfer(body: Record<string, unknown>, json: unknown) {
+  if (String(body.type || "") !== "transfer") return;
+  const from = String(body.from || "");
+  const to = String(body.to || "");
+  const amount = Number(body.amount);
+  let txHash = "";
+  if (json && typeof json === "object") {
+    const o = json as Record<string, unknown>;
+    txHash = String(o.tx_hash || o.txHash || o.hash || "");
+    if (!txHash && o.raw && typeof o.raw === "object") {
+      const r = o.raw as Record<string, unknown>;
+      txHash = String(r.tx_hash || r.txHash || r.hash || "");
+    }
+  }
+  if (!txHash) txHash = `transfer-${from.slice(0, 10)}-${Date.now()}`;
+  await recordTransferForActivity({
+    txHash,
+    from,
+    to,
+    amount,
+    amountIsSubunits: true,
+    status: "confirmed",
+  });
+}
 
 export async function POST(req: NextRequest) {
   let body: Record<string, unknown>;
@@ -134,6 +161,9 @@ export async function POST(req: NextRequest) {
           { status: res.status >= 400 && res.status < 600 ? res.status : 502 },
         );
       }
+      try {
+        await maybeIndexTransfer(body, json);
+      } catch { /* ignore */ }
       return NextResponse.json({
         ok: true,
         via: "hub",
@@ -188,6 +218,9 @@ export async function POST(req: NextRequest) {
           { status: res.status >= 400 && res.status < 600 ? res.status : 502 },
         );
       }
+      try {
+        await maybeIndexTransfer(body, json);
+      } catch { /* ignore */ }
       return NextResponse.json({
         ok: true,
         via: "validator",

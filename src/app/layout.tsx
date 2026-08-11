@@ -7,7 +7,7 @@ import { RPCProvider } from '@/lib/rpc-context';
 import Link from 'next/link';
 import { Globe } from 'lucide-react';
 import { SplashScreen } from '@/components/SplashScreen';
-import { ThemeProvider } from '@/lib/theme';
+import { ChannelJoinGate } from '@/components/ChannelJoinGate';
 import { SpeedInsights } from '@vercel/speed-insights/next';
 
 export const metadata: Metadata = {
@@ -21,7 +21,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark" suppressHydrationWarning>
+    <html lang="en">
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
@@ -29,7 +29,6 @@ export default function RootLayout({
         <script src="https://telegram.org/js/telegram-web-app.js" async></script>
       </head>
       <body className="font-body antialiased bg-background text-foreground overflow-x-hidden pb-20">
-        <ThemeProvider>
         <WalletProvider>
           <RPCProvider>
             <div style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 50, padding: '24px 16px 8px', background: 'rgba(14,12,18,0.85)', backdropFilter: 'blur(12px)', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
@@ -42,14 +41,15 @@ export default function RootLayout({
               </Link>
             </div>
             <SplashScreen />
+            <ChannelJoinGate>
             <main style={{ minHeight: '100vh', paddingTop: 80 }}>
               {children}
             </main>
+            </ChannelJoinGate>
             <BottomNav />
             <Toaster />
           </RPCProvider>
         </WalletProvider>
-        </ThemeProvider>
         <SpeedInsights />
       </body>
     </html>

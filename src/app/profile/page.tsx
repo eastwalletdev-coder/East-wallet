@@ -14,7 +14,6 @@ import { useWallet } from '@/lib/wallet-context';
 import { getEvmIdentity, signEvmMessage } from '@/lib/wallet-service';
 import { upgradeToSelfCustodyWallet } from '@/actions/wallet-onboarding-actions';
 import { useToast } from '@/hooks/use-toast';
-import { ThemeToggle } from "@/components/ThemeToggle";
 
 export default function ProfilePage() {
   const { userId, user, loading, initData, refreshUser } = useTelegram();
@@ -92,11 +91,6 @@ export default function ProfilePage() {
         <h1 className="text-white font-extrabold text-xl uppercase tracking-widest">Profile</h1>
         <Settings className="w-5 h-5 text-white/40" />
       </header>
-
-      <div className="px-4 mt-2">
-        <ThemeToggle />
-      </div>
-
 
       {/* Avatar */}
       <div className="flex flex-col items-center gap-3 py-2">

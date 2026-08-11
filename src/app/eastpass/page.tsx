@@ -16,6 +16,7 @@ import { useWallet } from '@/lib/wallet-context';
 import { submitChainStake, submitChainTx, useChainTxEnabled } from '@/lib/chain-tx-client';
 import { getEvmIdentity } from '@/lib/wallet-service';
 import { getChainAccountForAddress } from '@/actions/chain-account-actions';
+import { pushLocalActivity } from '@/lib/chain-activity-local';
 
 function formatCountdown(secs: number) {
   if (secs <= 0) return '00:00:00';

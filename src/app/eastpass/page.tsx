@@ -148,7 +148,19 @@ export default function EastpassPage() {
     if (stakeMode === 'stake') {
       const res = await submitChainStake(mnemonic, sliderAmount);
       if (res.success) {
-        toast({ title: "On-chain stake submitted", description: `${sliderAmount} EAST (${res.status}). Updates after next block (~3 min).` });
+        toast({ title: "On-chain stake submitted", description: `${sliderAmount} EAST (${res.status}). Updates after next block.` });
+        try {
+          const { address } = getEvmIdentity(mnemonic);
+          pushLocalActivity({
+            type: "stake",
+            token: "EAST",
+            amount: String(sliderAmount),
+            status: res.status === "pending" ? "pending" : "confirmed",
+            address: address,
+            wallet: address,
+            txHash: res.txHash || `stake-${Date.now()}`,
+          });
+        } catch { /* ignore */ }
         refreshUser();
         refreshChainAccount();
         setSliderAmount(0);
@@ -168,7 +180,19 @@ export default function EastpassPage() {
         amountHuman: sliderAmount,
       });
       if (res.success) {
-        toast({ title: "On-chain unstake submitted", description: `${sliderAmount} EAST (${res.status}). Updates after next block (~3 min).` });
+        toast({ title: "On-chain unstake submitted", description: `${sliderAmount} EAST (${res.status}). Updates after next block.` });
+        try {
+          const { address } = getEvmIdentity(mnemonic);
+          pushLocalActivity({
+            type: "unstake",
+            token: "EAST",
+            amount: String(sliderAmount),
+            status: res.status === "pending" ? "pending" : "confirmed",
+            address: address,
+            wallet: address,
+            txHash: res.txHash || `unstake-${Date.now()}`,
+          });
+        } catch { /* ignore */ }
         refreshUser();
         refreshChainAccount();
         setSliderAmount(0);
@@ -218,6 +242,18 @@ export default function EastpassPage() {
       amountHuman,
     });
     if (res.success) {
+        try {
+          const { address } = getEvmIdentity(mnemonic);
+          pushLocalActivity({
+            type: "claim",
+            token: "EAST",
+            amount: String(amountHuman),
+            status: res.status === "pending" ? "pending" : "confirmed",
+            address: address,
+            wallet: address,
+            txHash: res.txHash || `claim-unstake-${Date.now()}`,
+          });
+        } catch { /* ignore */ }
       toast({
         title: "On-chain claim submitted",
         description: `${amountHuman} EAST (${res.status}). Balance updates after next block (~3 min).`,

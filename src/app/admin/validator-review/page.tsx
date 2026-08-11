@@ -21,7 +21,7 @@ declare global {
 }
 
 // Reuses the same bot username already configured for the Mini App itself.
-const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME;
+const BOT_USERNAME = process.env.NEXT_PUBLIC_BOT_USERNAME || 'Eastnetwork_bot';
 
 type AuthState = 'checking' | 'signed_out' | 'signed_in' | 'forbidden';
 

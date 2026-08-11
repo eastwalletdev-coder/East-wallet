@@ -5,28 +5,52 @@
 @tailwind utilities;
 
 @layer base {
+  /* Light (default when html has no .dark) */
   :root {
+    --background: 210 40% 98%;
+    --foreground: 240 10% 8%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 10% 8%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 10% 8%;
+    --primary: 248 68% 42%;
+    --primary-foreground: 210 20% 98%;
+    --secondary: 240 5% 92%;
+    --secondary-foreground: 240 10% 12%;
+    --muted: 240 5% 94%;
+    --muted-foreground: 240 4% 40%;
+    --accent: 199 89% 42%;
+    --accent-foreground: 210 20% 98%;
+    --destructive: 0 72% 50%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 240 6% 88%;
+    --input: 240 6% 88%;
+    --ring: 248 68% 42%;
+    --radius: 1rem;
+    --app-zoom: 0.92;
+  }
+
+  /* Dark — previous default palette */
+  .dark {
     --background: 240 10% 3.9%;
     --foreground: 210 20% 98%;
     --card: 240 10% 6%;
     --card-foreground: 210 20% 98%;
     --popover: 240 10% 3.9%;
     --popover-foreground: 210 20% 98%;
-    --primary: 248 68% 38%; /* Deep Indigo Purple, leaning toward light blue */
+    --primary: 248 68% 38%;
     --primary-foreground: 210 20% 98%;
     --secondary: 240 3.7% 15.9%;
     --secondary-foreground: 210 20% 98%;
     --muted: 240 3.7% 15.9%;
     --muted-foreground: 240 5% 64.9%;
-    --accent: 199 89% 48%; /* Cyber Blue */
+    --accent: 199 89% 48%;
     --accent-foreground: 210 20% 98%;
     --destructive: 0 62.8% 30.6%;
     --destructive-foreground: 210 20% 98%;
     --border: 240 3.7% 15.9%;
     --input: 240 3.7% 15.9%;
     --ring: 248 68% 38%;
-    --radius: 1rem;
-    --app-zoom: 0.92; /* global layout scale — lower = more zoomed out */
   }
 }
 
@@ -158,4 +182,22 @@ input, textarea, [contenteditable] {
   -webkit-user-select: text;
   -moz-user-select: text;
   user-select: text;
+}
+
+
+/* Theme helpers for pages that still use hardcoded white/black */
+html:not(.dark) .theme-surface {
+  background-color: hsl(var(--card));
+  color: hsl(var(--foreground));
+}
+html.dark .theme-surface {
+  background-color: hsl(var(--card));
+  color: hsl(var(--foreground));
+}
+
+/* Soften pure white text on light mode when components use text-white */
+html:not(.dark) .text-white\/50,
+html:not(.dark) .text-white\/40,
+html:not(.dark) .text-white\/55 {
+  color: hsl(var(--muted-foreground)) !important;
 }

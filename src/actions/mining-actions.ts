@@ -8,7 +8,7 @@
  */
 
 import { identityPool } from '@/lib/db/identity';
-import { grantEarlyBirdBonusIfEligible } from '@/lib/early-bird';
+import { applyChainBalanceToUser } from '@/lib/chain-balance';
 import { ledgerPool } from '@/lib/db/ledger';
 import { getCachedUser, setCachedUser, invalidateCachedUser, setNetworkStatus } from '@/lib/db/redis';
 import { generateWalletFromTelegramId } from '@/lib/blockchain';
@@ -163,9 +163,10 @@ export async function registerOrUpdateUser(
         [username, telegramId]
       ).catch(() => {}).finally(() => client.release());
 
+      const mergedCached = await applyChainBalanceToUser(cached as any);
       return {
         success: true,
-        user: cached,
+        user: mergedCached,
         referralLink: `https://t.me/${process.env.NEXT_PUBLIC_BOT_USERNAME || 'Eastwallet_bot'}?start=${telegramId}`,
         fromCache: true,
       };
@@ -189,12 +190,6 @@ export async function registerOrUpdateUser(
             is_founder = identity.users.is_founder OR $4,
             public_key = COALESCE(identity.users.public_key, $5)
     `, [telegramId, walletAddress, username, isFounder, publicKeyHex]);
-
-    try {
-      await grantEarlyBirdBonusIfEligible(client, telegramId);
-    } catch (e: any) {
-      console.error('[EASTCHAIN] early bird (registerOrUpdateUser):', e?.message || e);
-    }
 
     // Auto-register referral from Telegram deep link start_param
     if (startParam && startParam !== telegramId) {
@@ -239,12 +234,13 @@ export async function registerOrUpdateUser(
       totalReferralBonus: Number(user.total_referral_bonus),
     };
 
-    // ── Cache for next visit ───────────────────────────────────────
+    // ── Cache Neon identity only (merge chain at read time) ────────
     await setCachedUser(telegramId, userData);
 
+    const mergedUser = await applyChainBalanceToUser(userData as any);
     return {
       success: true,
-      user: userData,
+      user: mergedUser,
       referralLink: `https://t.me/${process.env.NEXT_PUBLIC_BOT_USERNAME || 'Eastwallet_bot'}?start=${telegramId}`,
     };
   } catch (err: any) {

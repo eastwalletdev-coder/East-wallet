@@ -14,12 +14,12 @@
  * and evm-signature.ts here).
  */
 
-import { identityPool } from '@/lib/db/identity';
+import { identityPool } from '@/lib/db/identity'
+import { applyChainBalanceToUser } from '@/lib/chain-balance';;
 import { getCachedUser, setCachedUser, invalidateCachedUser } from '@/lib/db/redis';
 import { validateTelegramData, extractVerifiedUserId } from '@/lib/telegram';
 import { verifyEvmOwnership, isValidEvmAddress } from '@/lib/evm-signature';
 import { generateEastId } from '@/lib/east-id';
-import { grantEarlyBirdBonusIfEligible } from '@/lib/early-bird';
 
 const FOUNDER_IDS = (process.env.FOUNDER_IDS || '').split(',').map(id => id.trim()).filter(Boolean);
 const IS_PRODUCTION = process.env.NODE_ENV === 'production';
@@ -124,16 +124,6 @@ export async function createSelfCustodyWallet(
       VALUES ($1, $2, $3, $4, 'self_custody_evm', $5, NOW())
     `, [telegramId, address, username, isFounder, publicKey]);
 
-    // First 10,000 users: +200 EAST on Neon mining balance (once)
-    try {
-      const bird = await grantEarlyBirdBonusIfEligible(client, telegramId);
-      if (bird.granted > 0) {
-        console.log(`[EASTCHAIN] Early bird +${bird.granted} EAST for ${telegramId} (${bird.remainingSlots} slots left)`);
-      }
-    } catch (e: any) {
-      console.error('[EASTCHAIN] early bird grant failed (non-fatal for wallet create):', e?.message || e);
-    }
-
     // Auto-register referral from Telegram deep link start_param — same
     // behavior as the legacy registerOrUpdateUser flow.
     if (startParam && startParam !== telegramId) {
@@ -157,10 +147,11 @@ export async function createSelfCustodyWallet(
 
     const userData = mapUserRow(userRes.rows[0], eastId);
     await setCachedUser(telegramId, userData);
+    const mergedUser = await applyChainBalanceToUser(userData as any);
 
     return {
       success: true,
-      user: userData,
+      user: mergedUser,
       referralLink: `https://t.me/${process.env.NEXT_PUBLIC_BOT_USERNAME || 'Eastwallet_bot'}?start=${telegramId}`,
     };
   } catch (err) {
@@ -231,8 +222,9 @@ export async function upgradeToSelfCustodyWallet(
     const userData = mapUserRow(userRes.rows[0], eastId);
     await invalidateCachedUser(telegramId);
     await setCachedUser(telegramId, userData);
+    const mergedUser = await applyChainBalanceToUser(userData as any);
 
-    return { success: true, user: userData };
+    return { success: true, user: mergedUser };
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('[EASTCHAIN] upgradeToSelfCustodyWallet error:', err);

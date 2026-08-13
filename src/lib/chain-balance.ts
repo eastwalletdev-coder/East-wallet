@@ -8,8 +8,6 @@
  * balance is 6-decimal subunits (1 EAST = 1_000_000).
  */
 
-import { hubBases } from "@/lib/hub-urls";
-
 const SUBUNITS_PER_EAST = 1_000_000;
 
 export type ChainAccount = {
@@ -24,6 +22,12 @@ export type ChainAccount = {
   raw: unknown;
 };
 
+function hubBase(): string {
+  return (process.env.RAILWAY_HUB_URL || process.env.EAST_HUB_URL || "")
+    .trim()
+    .replace(/\/$/, "");
+}
+
 function validatorBase(): string {
   return (process.env.EAST_VALIDATOR_URL || process.env.VALIDATOR_HTTP_URL || "")
     .trim()
@@ -32,7 +36,7 @@ function validatorBase(): string {
 
 /** Prefer Hub /rpc/account (Phase 2 gateway); fall back to validator direct. */
 export function chainReadConfigured(): boolean {
-  return Boolean(hubBases().length || validatorBase());
+  return Boolean(hubBase() || validatorBase());
 }
 
 export function useChainBalanceEnabled(): boolean {
@@ -53,12 +57,9 @@ export async function fetchChainAccount(
   const addr = encodeURIComponent(address);
 
   const candidates: { url: string; source: "hub" | "validator" }[] = [];
-  // Primary region hub first, then secondary region hub, before falling
-  // back to hitting the validator directly.
-  for (const hub of hubBases()) {
-    candidates.push({ url: `${hub}/rpc/account/${addr}`, source: "hub" });
-  }
+  const hub = hubBase();
   const val = validatorBase();
+  if (hub) candidates.push({ url: `${hub}/rpc/account/${addr}`, source: "hub" });
   if (val) candidates.push({ url: `${val}/account/${addr}`, source: "validator" });
   if (candidates.length === 0) return null;
 
@@ -104,27 +105,66 @@ export async function fetchChainAccount(
 }
 
 /**
- * Merge chain balances into a mapped user object (from mapUserRow).
- * On failure / disabled flag, returns user unchanged and sets balanceSource.
+ * Merge Neon (identity by telegram_id) + on-chain (profile wallet address).
+ *
+ * Home / mining balance stays Neon (loaded by telegram id upstream).
+ * EastPass stake display = Neon staked + validator staked.
+ * Profile self-custody address is used only to READ chain — never to look up Neon.
  */
 export async function applyChainBalanceToUser<T extends {
   walletAddress?: string | null;
   balance?: number;
   stakedAmount?: number;
   pendingUnstakeAmount?: number;
-}>(user: T): Promise<T & { balanceSource?: string }> {
-  if (!useChainBalanceEnabled() || !user?.walletAddress) {
-    return { ...user, balanceSource: "neon" };
+}>(user: T): Promise<T & {
+  balanceSource?: string;
+  balanceOnChain?: number;
+  stakedNeon?: number;
+  stakedOnChain?: number;
+}> {
+  const neonBalance = Number(user.balance || 0);
+  const neonStaked = Number(user.stakedAmount || 0);
+  const neonPending = Number(user.pendingUnstakeAmount || 0);
+
+  if (!user?.walletAddress || !chainReadConfigured()) {
+    return {
+      ...user,
+      balance: neonBalance,
+      stakedAmount: neonStaked,
+      pendingUnstakeAmount: neonPending,
+      balanceOnChain: 0,
+      stakedNeon: neonStaked,
+      stakedOnChain: 0,
+      balanceSource: "neon",
+    };
   }
+
   const chain = await fetchChainAccount(user.walletAddress);
   if (!chain) {
-    return { ...user, balanceSource: "neon_fallback" };
+    return {
+      ...user,
+      balance: neonBalance,
+      stakedAmount: neonStaked,
+      pendingUnstakeAmount: neonPending,
+      balanceOnChain: 0,
+      stakedNeon: neonStaked,
+      stakedOnChain: 0,
+      balanceSource: "neon_fallback",
+    };
   }
+
+  // Home free balance: Neon only (telegram identity). Optional total free for wallet UIs.
+  const preferChainFree = useChainBalanceEnabled();
+  const freeDisplay = preferChainFree ? neonBalance + chain.balance : neonBalance;
+
   return {
     ...user,
-    balance: chain.balance,
-    stakedAmount: chain.staked,
-    pendingUnstakeAmount: chain.pendingUnstake,
-    balanceSource: `chain:${chain.source}`,
+    balance: freeDisplay,
+    balanceOnChain: chain.balance,
+    stakedNeon: neonStaked,
+    stakedOnChain: chain.staked,
+    stakedAmount: neonStaked + chain.staked, // EastPass tier uses merged stake
+    pendingUnstakeAmount: neonPending + chain.pendingUnstake,
+    balanceSource: preferChainFree ? `neon+chain:${chain.source}` : `neon+stake_chain:${chain.source}`,
   };
 }

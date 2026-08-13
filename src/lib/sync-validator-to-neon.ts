@@ -4,14 +4,10 @@
  */
 import { ledgerPool } from '@/lib/db/ledger';
 
+import { hubBases } from '@/lib/hub-urls';
+
 function validatorBase(): string {
   return (process.env.EAST_VALIDATOR_URL || process.env.VALIDATOR_HTTP_URL || '')
-    .trim()
-    .replace(/\/$/, '');
-}
-
-function hubBase(): string {
-  return (process.env.RAILWAY_HUB_URL || process.env.EAST_HUB_URL || '')
     .trim()
     .replace(/\/$/, '');
 }
@@ -32,9 +28,10 @@ async function fetchJson(url: string): Promise<any | null> {
 
 async function chainGet(path: string): Promise<any | null> {
   const p = path.startsWith('/') ? path : `/${path}`;
-  const hub = hubBase();
   const val = validatorBase();
-  if (hub) {
+  // Try each configured hub (primary region first, then secondary) before
+  // falling back to hitting the validator directly.
+  for (const hub of hubBases()) {
     for (const u of [`${hub}/rpc${p}`, `${hub}${p}`]) {
       const j = await fetchJson(u);
       if (j) return j;

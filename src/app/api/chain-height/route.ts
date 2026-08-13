@@ -9,17 +9,12 @@
  * 0→461 from Hub/peers and hang forever.
  */
 import { NextResponse } from 'next/server';
+import { hubBases } from '@/lib/hub-urls';
 
 export const dynamic = 'force-dynamic';
 
 function validatorBase(): string {
   return (process.env.EAST_VALIDATOR_URL || process.env.VALIDATOR_HTTP_URL || '')
-    .trim()
-    .replace(/\/$/, '');
-}
-
-function hubBase(): string {
-  return (process.env.RAILWAY_HUB_URL || process.env.EAST_HUB_URL || '')
     .trim()
     .replace(/\/$/, '');
 }
@@ -40,7 +35,6 @@ async function fetchJson(url: string): Promise<any | null> {
 
 async function tipFromValidator(): Promise<{ latestHeight: number; source: string; hash?: string } | null> {
   const val = validatorBase();
-  const hub = hubBase();
 
   // 1) Validator /block/latest
   if (val) {
@@ -60,8 +54,9 @@ async function tipFromValidator(): Promise<{ latestHeight: number; source: strin
     }
   }
 
-  // 3) Hub health embedded chain tip
-  if (hub) {
+  // 3) Hub health embedded chain tip — try each configured hub in order
+  // (primary region first, then secondary) before giving up.
+  for (const hub of hubBases()) {
     const hubHealth = await fetchJson(`${hub}/health`);
     const raw = hubHealth?.chain?.raw;
     const h = raw?.bft?.height ?? hubHealth?.hub?.latestHeaderHeight;
@@ -88,7 +83,7 @@ export async function GET() {
       {
         latestHeight: -1,
         error: 'validator_unreachable',
-        hint: 'Set EAST_VALIDATOR_URL (or RAILWAY_HUB_URL). Do not use Neon height.',
+        hint: 'Set EAST_VALIDATOR_URL (or RAILWAY_HUB_URL / RAILWAY_HUB_URL_2). Do not use Neon height.',
       },
       { status: 502, headers: { 'Cache-Control': 'no-store' } },
     );

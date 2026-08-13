@@ -8,6 +8,8 @@
  * balance is 6-decimal subunits (1 EAST = 1_000_000).
  */
 
+import { hubBases } from "@/lib/hub-urls";
+
 const SUBUNITS_PER_EAST = 1_000_000;
 
 export type ChainAccount = {
@@ -22,12 +24,6 @@ export type ChainAccount = {
   raw: unknown;
 };
 
-function hubBase(): string {
-  return (process.env.RAILWAY_HUB_URL || process.env.EAST_HUB_URL || "")
-    .trim()
-    .replace(/\/$/, "");
-}
-
 function validatorBase(): string {
   return (process.env.EAST_VALIDATOR_URL || process.env.VALIDATOR_HTTP_URL || "")
     .trim()
@@ -36,7 +32,7 @@ function validatorBase(): string {
 
 /** Prefer Hub /rpc/account (Phase 2 gateway); fall back to validator direct. */
 export function chainReadConfigured(): boolean {
-  return Boolean(hubBase() || validatorBase());
+  return Boolean(hubBases().length || validatorBase());
 }
 
 export function useChainBalanceEnabled(): boolean {
@@ -57,9 +53,12 @@ export async function fetchChainAccount(
   const addr = encodeURIComponent(address);
 
   const candidates: { url: string; source: "hub" | "validator" }[] = [];
-  const hub = hubBase();
+  // Primary region hub first, then secondary region hub, before falling
+  // back to hitting the validator directly.
+  for (const hub of hubBases()) {
+    candidates.push({ url: `${hub}/rpc/account/${addr}`, source: "hub" });
+  }
   const val = validatorBase();
-  if (hub) candidates.push({ url: `${hub}/rpc/account/${addr}`, source: "hub" });
   if (val) candidates.push({ url: `${val}/account/${addr}`, source: "validator" });
   if (candidates.length === 0) return null;
 

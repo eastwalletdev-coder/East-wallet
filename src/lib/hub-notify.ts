@@ -8,18 +8,19 @@
 // replica going stale until the next successful push for that address,
 // which /api/rpc's eth_getBalance already tolerates (falls back to
 // Postgres on any hub-side miss).
-const HUB_URL = process.env.RAILWAY_HUB_URL;
+import { postHubJson, hasHub } from '@/lib/hub-urls';
+
 const HUB_SECRET = process.env.RAILWAY_VALIDATOR_SECRET;
 
 export function notifyHubBalanceChanged(address: string | null | undefined, balance: number | string): void {
-  if (!HUB_URL || !HUB_SECRET || !address) return;
-  fetch(`${HUB_URL}/internal/push-balance-update`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-railway-secret': HUB_SECRET },
-    body: JSON.stringify({ address: address.toLowerCase(), balance: String(balance) }),
-  }).catch(() => {
-    // best effort — see file doc comment
-  });
+  if (!hasHub() || !HUB_SECRET || !address) return;
+  void postHubJson(
+    '/internal/push-balance-update',
+    { address: address.toLowerCase(), balance: String(balance) },
+    { 'x-railway-secret': HUB_SECRET },
+  );
+  // best effort — see file doc comment; postHubJson already tries every
+  // configured hub (primary region, then secondary) before giving up.
 }
 
 // Relays a VERIFIED (signature already checked server-side) sync
@@ -31,13 +32,8 @@ export function notifyHubBalanceChanged(address: string | null | undefined, bala
 export function notifyHubSyncAttestation(attestation: {
   walletAddress: string; nodeId: string; height: number; signedAt: number; signature: string;
 }): void {
-  if (!HUB_URL || !HUB_SECRET) return;
-  fetch(`${HUB_URL}/internal/push-sync-attestation`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-railway-secret': HUB_SECRET },
-    body: JSON.stringify(attestation),
-  }).catch(() => {
-    // best effort — the attestation is already durably stored in Postgres
-    // regardless; this only affects how quickly peers see it.
-  });
+  if (!hasHub() || !HUB_SECRET) return;
+  void postHubJson('/internal/push-sync-attestation', attestation, { 'x-railway-secret': HUB_SECRET });
+  // best effort — the attestation is already durably stored in Postgres
+  // regardless; this only affects how quickly peers see it.
 }

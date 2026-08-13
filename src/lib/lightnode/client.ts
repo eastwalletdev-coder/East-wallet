@@ -296,6 +296,8 @@ export class LightNodeClient {
   private lastHash: string | null = null;
   private pingSentAt = 0;
   private url: string;
+  private urls: string[];
+  private urlIndex = 0;
   private peerMesh: PeerMesh;
   private fullSyncProviders: string[] = [];
   private pendingFullSyncRequest: { fromNodeId: string; resolve: (ok: boolean) => void; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -315,8 +317,9 @@ export class LightNodeClient {
   // case handler for how this gets populated and checked.
   private receivedAttestations = new Map<string, { height: number; signedAt: number; signature: string }>();
 
-  constructor(url: string) {
-    this.url = url;
+  constructor(urls: string[] | string) {
+    this.urls = (Array.isArray(urls) ? urls : [urls]).map((u) => u.trim()).filter(Boolean);
+    this.url = this.urls[0] || "";
     this.state = loadState();
     // Restore fullnode preference + replica after Mini App reload
     void getFullNodePref().then((on) => {
@@ -457,8 +460,11 @@ export class LightNodeClient {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
     this.manualDisconnect = false;
     if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+    // Pick the current hub in the failover rotation (primary region first;
+    // wraps back to it once earlier hubs have all been retried).
+    this.url = this.urls[this.urlIndex % Math.max(this.urls.length, 1)] || this.url;
     this.set({ connectionStatus: "connecting" });
-    this.log("Connecting…");
+    this.log(`Connecting to ${this.url || "(no hub configured)"}…`);
 
     const ws = new WebSocket(this.url);
     this.ws = ws;
@@ -703,6 +709,9 @@ export class LightNodeClient {
       if (this.syncRequestWatchdog) { clearTimeout(this.syncRequestWatchdog); this.syncRequestWatchdog = null; }
 
       if (this.manualDisconnect) return; // user closed it — don't fight that
+      // Rotate to the next configured hub (e.g. Singapore → US) so a
+      // region-wide outage on the current hub doesn't stall reconnects.
+      if (this.urls.length > 1) this.urlIndex = (this.urlIndex + 1) % this.urls.length;
       const delay = withJitter(this.reconnectDelayMs);
       this.log(`Reconnecting in ${Math.round(delay / 1000)}s…`);
       this.reconnectTimer = setTimeout(() => this.connect(), delay);
@@ -1536,8 +1545,11 @@ export class LightNodeClient {
 let singleton: LightNodeClient | null = null;
 export function getLightNodeClient(): LightNodeClient {
   if (!singleton) {
-    const url = process.env.NEXT_PUBLIC_RAILWAY_WS_URL || "";
-    singleton = new LightNodeClient(url);
+    // Primary region hub first (e.g. Singapore), then secondary (e.g. US) —
+    // client.ts's connect()/onclose rotate through these on disconnect.
+    const urls = [process.env.NEXT_PUBLIC_RAILWAY_WS_URL, process.env.NEXT_PUBLIC_RAILWAY_WS_URL_2]
+      .filter((u): u is string => Boolean(u && u.trim()));
+    singleton = new LightNodeClient(urls);
   }
   return singleton;
 }

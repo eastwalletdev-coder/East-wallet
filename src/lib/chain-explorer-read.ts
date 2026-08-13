@@ -8,14 +8,9 @@ import {
   getCachedValidatorExplorerBlocks,
   setCachedValidatorExplorerBlocks,
 } from '@/lib/db/redis-chain-explorer';
+import { hubBases } from '@/lib/hub-urls';
 
 const SUBUNITS = 1_000_000;
-
-function hubBase(): string {
-  return (process.env.RAILWAY_HUB_URL || process.env.EAST_HUB_URL || '')
-    .trim()
-    .replace(/\/$/, '');
-}
 
 function validatorBase(): string {
   return (process.env.EAST_VALIDATOR_URL || process.env.VALIDATOR_HTTP_URL || '')
@@ -41,14 +36,12 @@ async function fetchJson(url: string, timeoutMs = 10_000): Promise<any | null> {
   }
 }
 
-/** Prefer Hub /rpc/* when present; fall back to validator direct. */
+/** Prefer Hub /rpc/* when present (primary region, then secondary); fall back to validator direct. */
 async function chainGet(path: string): Promise<{ data: any; source: 'hub' | 'validator' } | null> {
   const pathNorm = path.startsWith('/') ? path : `/${path}`;
-  const hub = hubBase();
   const val = validatorBase();
 
-  // Hub Phase-2 style: /rpc/account works; try /rpc/block/... and /rpc/health-style
-  if (hub) {
+  for (const hub of hubBases()) {
     const candidates = [
       `${hub}/rpc${pathNorm}`,
       `${hub}${pathNorm}`,

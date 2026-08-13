@@ -20,16 +20,13 @@ import { recordTransferForActivity } from "@/lib/record-chain-tx-ledger";
  * }
  *
  * Env (server):
- *   RAILWAY_HUB_URL or EAST_HUB_URL — Hub base URL
+ *   RAILWAY_HUB_URL (+ optional RAILWAY_HUB_URL_2 for a second-region
+ *   failover hub) or EAST_HUB_URL — Hub base URL(s)
  *   Optional fallback: EAST_VALIDATOR_URL + EAST_VALIDATOR_API_SECRET
- *     (direct to validator if Hub not configured)
+ *     (direct to validator if no hub is configured/reachable)
  */
 
-function hubBase(): string {
-  return (process.env.RAILWAY_HUB_URL || process.env.EAST_HUB_URL || "")
-    .trim()
-    .replace(/\/$/, "");
-}
+import { hubBases } from "@/lib/hub-urls";
 
 function validatorBase(): string {
   return (process.env.EAST_VALIDATOR_URL || process.env.VALIDATOR_HTTP_URL || "")
@@ -130,11 +127,15 @@ export async function POST(req: NextRequest) {
   };
 
   const payload = JSON.stringify(normalized);
-  const hub = hubBase();
   const val = validatorBase();
 
-  // Prefer Hub gateway (attaches API secret server-side on Hub)
-  if (hub) {
+  // Prefer Hub gateway (attaches API secret server-side on Hub). Try each
+  // configured hub in order — primary region first, then secondary — but
+  // only move to the next hub on a network-level failure (unreachable,
+  // timeout). A response that actually came back (ok or rejected) means
+  // the tx reached a validator gateway, so we return it as-is instead of
+  // risking a duplicate submission against another hub.
+  for (const hub of hubBases()) {
     try {
       const res = await fetch(`${hub}/rpc/tx`, {
         method: "POST",
@@ -169,16 +170,19 @@ export async function POST(req: NextRequest) {
         via: "hub",
         ...(typeof json === "object" && json ? (json as object) : { raw: json }),
       });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      // Fall through to direct validator if configured
-      if (!val) {
-        return NextResponse.json(
-          { ok: false, error: "hub_unreachable", detail: message },
-          { status: 502 },
-        );
-      }
+    } catch {
+      // network-level failure on this hub — try the next configured hub
+      continue;
     }
+  }
+
+  // Every configured hub was unreachable — fall through to direct
+  // validator if configured, otherwise report hub_unreachable.
+  if (!val && hubBases().length > 0) {
+    return NextResponse.json(
+      { ok: false, error: "hub_unreachable", detail: "all configured hubs unreachable" },
+      { status: 502 },
+    );
   }
 
   // Direct validator fallback (needs API secret on Vercel)
@@ -238,7 +242,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(
     {
       ok: false,
-      error: "chain write not configured — set RAILWAY_HUB_URL (preferred) or EAST_VALIDATOR_URL + API secret",
+      error: "chain write not configured — set RAILWAY_HUB_URL / RAILWAY_HUB_URL_2 (preferred) or EAST_VALIDATOR_URL + API secret",
     },
     { status: 503 },
   );

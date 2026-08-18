@@ -273,15 +273,18 @@ export default function EastpassPage() {
     setClaimLoading(false);
   };
 
-  const currentStaked = chainAccount?.staked || 0;
+  // Hybrid stake for Pass/tier UI only — does not change Home mining balance
+  const currentStaked =
+    Number(user?.stakedAmount || 0) + Number(chainAccount?.staked || 0);
   const currentTier = getTierFromStaked(currentStaked);
   let walletAddress = user?.walletAddress || '0x0000000000000000000000000000000000000000';
   try {
     if (mnemonic && !isLocked) walletAddress = getEvmIdentity(mnemonic).address;
   } catch { /* keep profile */ }
   const eastId = walletAddress !== '0x...' ? generateEastId(walletAddress) : 'EAST-????-????-????';
-  const passLabel = getPassStatusLabel(user?.eastpassTier || 0);
-  const passActive = isPassActive(user?.eastpassTier || 0);
+  const passTier = Math.max(Number(user?.eastpassTier || 0), currentTier.level);
+  const passLabel = getPassStatusLabel(passTier);
+  const passActive = isPassActive(passTier);
   const shortAddress = walletAddress.length > 10
     ? `${walletAddress.substring(0, 6)}...${walletAddress.substring(walletAddress.length - 4)}`
     : walletAddress;

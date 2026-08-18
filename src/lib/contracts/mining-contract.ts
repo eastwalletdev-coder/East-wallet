@@ -6,6 +6,7 @@
  */
 import { mintFromBucket } from '@/lib/db/ledger';
 import { getTierFromStaked } from '@/lib/ledger';
+import { fetchChainAccount } from '@/lib/chain-balance';
 import { computeBlockHash, computeSequenceHash, computeMerkleRoot, getActiveValidator } from '@/lib/block-engine';
 import { signChainHeader } from '@/lib/consensus/chain-signing';
 import { resolveBlockProducer } from '@/lib/consensus/leader-schedule';
@@ -95,7 +96,17 @@ export async function execute(
     };
   }
 
-  const tier = getTierFromStaked(Number(user.staked_amount));
+  // Boost from Neon stake + on-chain stake. Does NOT touch user.balance (mining Neon).
+  let chainStaked = 0;
+  try {
+    const addr = String(user.wallet_address || '');
+    if (addr.startsWith('0x')) {
+      const chain = await fetchChainAccount(addr, { timeoutMs: 5_000 });
+      if (chain) chainStaked = Number(chain.staked) || 0;
+    }
+  } catch { /* Neon-only fallback */ }
+  const tier = getTierFromStaked(Number(user.staked_amount || 0) + chainStaked);
+
 
   // Light Node epoch bonus: 0.1 EAST per epoch elapsed since this user's
   // last claim, capped at LIGHTNODE_MAX_EPOCHS_PER_CLAIM. currentEpochCount

@@ -44,3 +44,5 @@ next-env.d.ts
 firebase-debug.log
 firestore-debug.logeastchain.zip
 eastchain.zip
+emergency-backup.sh
+emergency-backup.sh.bak

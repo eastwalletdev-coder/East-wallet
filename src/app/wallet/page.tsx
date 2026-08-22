@@ -14,6 +14,7 @@ import { ReceiveDialog } from "@/components/ReceiveDialog";
 import { scanTokensForAddress, type Token } from "@/lib/token-service";
 import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
 import { listLocalActivity, listAllLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
+import { mergeReceivesIntoLocalActivity } from "@/lib/merge-receive-activity";
 import { AIScout } from "@/components/AIScout";
 import { ContractAnalyzer } from "@/components/ContractAnalyzer";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -100,6 +101,18 @@ function WalletPageContent() {
           getPendingEastTransactions(addr),
         ]);
         if (cancelled) return;
+        try {
+          mergeReceivesIntoLocalActivity(
+            addr,
+            hist.map((tx) => ({
+              txHash: tx.txHash || tx.id,
+              type: tx.type,
+              amount: String(tx.amount || "").replace(/^[+-]/, "").replace(/,/g, ""),
+              address: tx.address || "",
+              status: tx.status,
+            })),
+          );
+        } catch { /* ignore */ }
         setTransactions(hist);
         setPendingTransactions(pending);
         setLocalActivity(listAllLocalActivity());

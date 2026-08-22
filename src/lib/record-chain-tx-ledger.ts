@@ -1,7 +1,6 @@
 /**
- * Best-effort write to ledger.transactions so recipients see "receive"
- * in getEastTransactions / Recent Activity (Neon).
- * Does not affect validator state — indexing only.
+ * Index on-chain transfers into ledger.transactions so self-custody
+ * recipients see "receive" in Recent Activity (Neon index only).
  */
 import { ledgerPool } from '@/lib/db/ledger';
 
@@ -9,36 +8,44 @@ export async function recordTransferForActivity(params: {
   txHash: string;
   from: string;
   to: string;
-  /** Human EAST or subunits — stored as numeric amount for display */
   amount: number;
   amountIsSubunits?: boolean;
   status?: string;
-}): Promise<void> {
+}): Promise<{ ok: boolean; error?: string }> {
   const hash = (params.txHash || '').trim();
-  const from = (params.from || '').toLowerCase();
-  const to = (params.to || '').toLowerCase();
-  if (!hash || !from.startsWith('0x') || !to.startsWith('0x')) return;
-
-  // Prefer human EAST in ledger if amount was subunits (1e18 or 1e6 style)
-  let amount = params.amount;
-  if (params.amountIsSubunits && amount >= 1e6) {
-    // Heuristic: 18-decimal chain uses 1e18; older 6-decimal uses 1e6
-    if (amount >= 1e15) amount = amount / 1e18;
-    else amount = amount / 1e6;
+  const from = (params.from || '').trim().toLowerCase();
+  const to = (params.to || '').trim().toLowerCase();
+  if (!hash || !from.startsWith('0x') || !to.startsWith('0x')) {
+    return { ok: false, error: 'bad_params' };
   }
+
+  let amount = Number(params.amount);
+  if (!Number.isFinite(amount) || amount < 0) amount = 0;
+  if (params.amountIsSubunits && amount >= 1e6) {
+    if (amount >= 1e15) amount = amount / 1e18;
+    else amount = amount / 1_000_000;
+  }
+
+  // Sentinel: not from L2 seal engine; still queryable by recipient address
+  const blockIndex = -1;
 
   const client = await ledgerPool.connect();
   try {
     await client.query(
       `INSERT INTO ledger.transactions
-         (tx_hash, tx_type, sender_address, recipient_address, amount, status, created_at)
-       VALUES ($1, 'TRANSFER', $2, $3, $4, $5, NOW())
-       ON CONFLICT (tx_hash) DO NOTHING`,
-      [hash, from, to, amount, params.status || 'confirmed'],
+         (tx_hash, block_index, tx_type, sender_address, recipient_address,
+          sender_id, recipient_id, amount, gas_fee, status, created_at)
+       VALUES ($1, $2, 'TRANSFER', $3, $4, 'chain', 'chain', $5, 0, $6, NOW())
+       ON CONFLICT (tx_hash) DO UPDATE SET
+         status = EXCLUDED.status,
+         amount = COALESCE(NULLIF(EXCLUDED.amount, 0), ledger.transactions.amount)`,
+      [hash, blockIndex, from, to, amount, params.status || 'confirmed'],
     );
+    return { ok: true };
   } catch (err) {
-    // Table/constraint may differ — never fail the user tx
-    console.warn('[EASTCHAIN] recordTransferForActivity:', (err as Error)?.message || err);
+    const msg = (err as Error)?.message || String(err);
+    console.warn('[EASTCHAIN] recordTransferForActivity:', msg);
+    return { ok: false, error: msg };
   } finally {
     client.release();
   }

@@ -21,6 +21,7 @@ import { SignatureDialog } from "@/components/SignatureDialog";
 import { AuditTrailSheet } from "@/components/AuditTrailSheet";
 import { getEastTransactions, getPendingEastTransactions, type Transaction, type PendingTransaction } from "@/lib/transaction-service";
 import { listLocalActivity, listAllLocalActivity, pushLocalActivity, type LocalActivity } from "@/lib/chain-activity-local";
+import { mergeReceivesIntoLocalActivity } from "@/lib/merge-receive-activity";
 import { FullNodeConsentDialog } from "@/components/FullNodeConsentDialog";
 import { checkFullNodeAgreement, agreeToFullNodeTerms, setFullNodeActiveStatus } from "@/actions/full-node-actions";
 import { getLightNodeClient, type LightNodeState } from "@/lib/lightnode/client";
@@ -350,7 +351,18 @@ async function handleTransferOnchain() {
           getEastTransactions(walletAddress),
           getPendingEastTransactions(walletAddress),
         ]);
-        // Device-local on-chain sends (vault addr may differ from profile walletAddress)
+        try {
+          mergeReceivesIntoLocalActivity(
+            walletAddress,
+            confirmed.map((tx) => ({
+              txHash: tx.txHash || tx.id,
+              type: tx.type,
+              amount: String(tx.amount || "").replace(/^[+-]/, "").replace(/,/g, ""),
+              address: tx.address || "",
+              status: tx.status,
+            })),
+          );
+        } catch { /* ignore */ }
         const local = listAllLocalActivity();
         if (!cancelled) {
           setTransactions(confirmed);

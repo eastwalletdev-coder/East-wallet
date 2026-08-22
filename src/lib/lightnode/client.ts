@@ -441,8 +441,45 @@ export class LightNodeClient {
     this.listeners.forEach((fn) => fn(this.state));
   }
 
+
+  /** Strip hub/validator hostnames from user-visible activity log (no infra leak). */
+  private redactInfra(message: string): string {
+    let m = message;
+    // wss/ws/http(s) URLs → generic label
+    m = m.replace(
+      /wss?:\/\/[^\s\]"'<>]+/gi,
+      "wss://[hub]",
+    );
+    m = m.replace(
+      /https?:\/\/[^\s\]"'<>]+/gi,
+      (url) => {
+        const lower = url.toLowerCase();
+        if (
+          lower.includes("railway") ||
+          lower.includes("rlwy") ||
+          lower.includes("hub") ||
+          lower.includes("validator") ||
+          lower.includes("vercel")
+        ) {
+          return "[rpc]";
+        }
+        return "[url]";
+      },
+    );
+    // bare hostname patterns
+    m = m.replace(
+      /\b[a-z0-9.-]+\.up\.railway\.app\b/gi,
+      "[hub]",
+    );
+    m = m.replace(
+      /\b[a-z0-9.-]+\.rlwy\.net\b/gi,
+      "[hub]",
+    );
+    return m;
+  }
+
   private log(message: string, level: "info" | "warn" | "error" = "info") {
-    const entry = { time: Date.now(), message, level };
+    const entry = { time: Date.now(), message: this.redactInfra(message), level };
     // 200 instead of 50 — signature rejections/backfill detail add more
     // entries per session than before, and this is the only record of
     // what a given node actually verified.
@@ -464,7 +501,7 @@ export class LightNodeClient {
     // wraps back to it once earlier hubs have all been retried).
     this.url = this.urls[this.urlIndex % Math.max(this.urls.length, 1)] || this.url;
     this.set({ connectionStatus: "connecting" });
-    this.log(`Connecting to ${this.url || "(no hub configured)"}…`);
+    this.log(this.url ? "Connecting to hub…" : "Connecting… (no hub configured)");
 
     const ws = new WebSocket(this.url);
     this.ws = ws;

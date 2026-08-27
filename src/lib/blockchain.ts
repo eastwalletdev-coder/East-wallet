@@ -40,7 +40,7 @@ export const TREASURY_CAP         =   100_000_000;
 export const FOUNDER_CAP          =    50_000_000;
 export const MARKETING_CAP        =    50_000_000;
 export const TEAM_CAP             =    50_000_000;
-export const MINING_REWARD        =    10;
+export const MINING_REWARD        =     5;
 
 // REFERRAL CONSTANTS
 export const REFERRAL_BONUS       =    1;
